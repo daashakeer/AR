@@ -17,16 +17,16 @@ interface Props {
 
 const STEP_INSTRUCTIONS: Record<MeasurementStep, string> = {
   idle: 'Initialising…',
-  detecting: 'Move your phone slowly until a surface is detected.',
-  'place-a': 'Tap to place Point A',
-  'place-b': 'Move to Point B and tap.',
+  detecting: 'Scanning for a surface…',
+  'place-a': '✦  Tap to place Point A',
+  'place-b': '✦  Move to Point B and tap.',
   measured: 'Measurement complete.',
 };
 
 const TRACKING_LABEL: Record<TrackingStatus, string> = {
-  detecting: 'Surface not detected',
-  good: 'Tracking: Good',
-  lost: 'Move your phone slowly',
+  detecting: 'Scanning…',
+  good: 'Tracking: Good ✓',
+  lost: 'Move slowly',
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -50,6 +50,7 @@ export const HUD: React.FC<Props> = ({
   onDebug,
 }) => {
   const allUnits = distanceMeters !== null ? formatAllUnits(distanceMeters) : null;
+  const isDetecting = step === 'detecting' || step === 'idle';
 
   return (
     <div className="hud">
@@ -77,8 +78,21 @@ export const HUD: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── Instruction bar ─────────────────────────────────────────────── */}
-      {!error && step !== 'measured' && (
+      {/* ── Surface detection tips (shown while scanning) ────────────────── */}
+      {!error && isDetecting && (
+        <div className="hud-tips-card">
+          <p className="hud-tips-title">📡 Looking for a surface</p>
+          <ul className="hud-tips-list">
+            <li>Point at a <strong>textured, flat surface</strong> (floor, table, desk)</li>
+            <li>Make sure the area is <strong>well-lit</strong></li>
+            <li><strong>Move slowly</strong> side to side</li>
+            <li>Avoid <strong>plain white walls or glass</strong></li>
+          </ul>
+        </div>
+      )}
+
+      {/* ── Instruction pill ────────────────────────────────────────────── */}
+      {!error && step !== 'measured' && !isDetecting && (
         <div className="hud-instruction-wrap">
           <div className="hud-instruction">
             {STEP_INSTRUCTIONS[step]}

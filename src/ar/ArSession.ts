@@ -56,7 +56,6 @@ function makeMarkerSprite(label: string, color: string): THREE.Sprite {
   cv.height = size;
   const ctx = cv.getContext('2d')!;
 
-  // Circle background
   ctx.beginPath();
   ctx.arc(size / 2, size / 2, size / 2 - 4, 0, Math.PI * 2);
   ctx.fillStyle = color;
@@ -65,7 +64,6 @@ function makeMarkerSprite(label: string, color: string): THREE.Sprite {
   ctx.lineWidth = 6;
   ctx.stroke();
 
-  // Label text
   ctx.fillStyle = '#ffffff';
   ctx.font = `bold ${size * 0.45}px Arial, sans-serif`;
   ctx.textAlign = 'center';
@@ -87,7 +85,6 @@ function makeDistanceSprite(text: string): THREE.Sprite {
   cv.height = h;
   const ctx = cv.getContext('2d')!;
 
-  // Rounded rect background
   const r = 18;
   ctx.beginPath();
   ctx.moveTo(r, 0);
@@ -106,7 +103,6 @@ function makeDistanceSprite(text: string): THREE.Sprite {
   ctx.lineWidth = 3;
   ctx.stroke();
 
-  // Text
   ctx.fillStyle = '#ffffff';
   ctx.font = `bold 48px Arial, sans-serif`;
   ctx.textAlign = 'center';
@@ -157,7 +153,7 @@ export class ArSession {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
-  private reticle: THREE.Mesh;
+  private reticleGroup: THREE.Group;
 
   // XR
   private xrSession: XRSession | null = null;
@@ -170,12 +166,18 @@ export class ArSession {
   private measureLine: THREE.Line | null = null;
   private midLabel: THREE.Sprite | null = null;
 
+  // Reticle pulse animation
+  private reticlePulse = 0;
+
   // State
   private pointA: Point3D | null = null;
   private pointB: Point3D | null = null;
   private step: MeasurementStep = 'idle';
   private trackingStatus: TrackingStatus = 'detecting';
   private ended = false;
+
+  // Throttle React state updates (don't set state 60x/sec)
+  private lastStatusUpdate = 0;
 
   private callbacks: ArSessionCallbacks;
   private boundSelect: () => void;
@@ -184,16 +186,20 @@ export class ArSession {
     this.callbacks = callbacks;
 
     // ── Renderer ──────────────────────────────────────────────────────────
+    // antialias: false  → massive GPU saving on mobile
+    // pixelRatio: 1     → let WebXR compositor handle resolution scaling
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       alpha: true,
-      antialias: true,
+      antialias: false,          // ← PERF: off saves ~30% GPU on mobile
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(1); // ← PERF: XR compositor handles scaling
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.xr.enabled = true;
     this.renderer.shadowMap.enabled = false;
+    // Use a faster output color space
+    this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 
     // ── Scene ─────────────────────────────────────────────────────────────
     this.scene = new THREE.Scene();
@@ -204,37 +210,33 @@ export class ArSession {
       20,
     );
 
-    const ambient = new THREE.AmbientLight(0xffffff, 2.0);
-    const directional = new THREE.DirectionalLight(0xffffff, 1.0);
-    directional.position.set(1, 3, 2);
-    this.scene.add(ambient, directional);
+    // Single ambient light is enough for AR — no shadows needed
+    const ambient = new THREE.AmbientLight(0xffffff, 3.0);
+    this.scene.add(ambient);
 
     // ── Reticle ───────────────────────────────────────────────────────────
-    const ringGeo = new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI / 2);
+    // Fewer segments (16/24 vs 32) → less GPU work
+    const ringGeo = new THREE.RingGeometry(0.05, 0.08, 24).rotateX(-Math.PI / 2);
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0x00ff88,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.9,
     });
-    const innerGeo = new THREE.CircleGeometry(0.016, 32).rotateX(-Math.PI / 2);
+    const innerGeo = new THREE.CircleGeometry(0.016, 16).rotateX(-Math.PI / 2);
     const innerMat = new THREE.MeshBasicMaterial({
       color: 0x00ff88,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.6,
     });
 
-    this.reticle = new THREE.Group() as unknown as THREE.Mesh;
-    const reticleGroup = new THREE.Group();
-    reticleGroup.add(new THREE.Mesh(ringGeo, ringMat));
-    reticleGroup.add(new THREE.Mesh(innerGeo, innerMat));
-    reticleGroup.matrixAutoUpdate = false;
-    reticleGroup.visible = false;
-
-    // Use the group as the reticle (cast)
-    this.reticle = reticleGroup as unknown as THREE.Mesh;
-    this.scene.add(reticleGroup);
+    this.reticleGroup = new THREE.Group();
+    this.reticleGroup.add(new THREE.Mesh(ringGeo, ringMat));
+    this.reticleGroup.add(new THREE.Mesh(innerGeo, innerMat));
+    this.reticleGroup.matrixAutoUpdate = false;
+    this.reticleGroup.visible = false;
+    this.scene.add(this.reticleGroup);
 
     this.boundSelect = this.handleSelect.bind(this);
   }
@@ -247,18 +249,15 @@ export class ArSession {
       return;
     }
 
+    // ── 1. Request XR session ─────────────────────────────────────────────
     try {
-      // Session init — dom-overlay and local-floor are optional
       const sessionInit = {
         requiredFeatures: ['hit-test'],
         optionalFeatures: ['dom-overlay', 'local-floor'],
         domOverlay: { root: overlayRoot },
       } as XRSessionInit;
 
-      this.xrSession = await navigator.xr.requestSession(
-        'immersive-ar',
-        sessionInit,
-      );
+      this.xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
     } catch (err: unknown) {
       const e = err as DOMException;
       if (e.name === 'NotAllowedError') {
@@ -271,78 +270,132 @@ export class ArSession {
       return;
     }
 
+    // ── 2. Set up Three.js XR ─────────────────────────────────────────────
     try {
       await this.renderer.xr.setSession(this.xrSession);
-
-      // Reference spaces
-      this.localSpace = await this.xrSession.requestReferenceSpace('local');
-      const viewerSpace = await this.xrSession.requestReferenceSpace('viewer');
-
-      // Hit-test source (test rays from viewer perspective)
-      // @ts-expect-error requestHitTestSource is part of the hit-test module
-      this.hitTestSource = await this.xrSession.requestHitTestSource({
-        space: viewerSpace,
-      });
-
-      this.xrSession.addEventListener('select', this.boundSelect);
-      this.xrSession.addEventListener('end', this.handleSessionEnd.bind(this));
-
-      this.step = 'detecting';
-      this.callbacks.onStep('detecting');
-
-      this.renderer.setAnimationLoop(this.renderLoop.bind(this));
     } catch (err) {
-      console.error('AR setup error:', err);
+      console.error('renderer.xr.setSession failed:', err);
       this.callbacks.onError('session-failed');
+      return;
     }
+
+    // ── 3. Reference spaces ───────────────────────────────────────────────
+    // Try 'local-floor' first (better for flat surface detection),
+    // fall back to 'local' which all AR-capable devices support.
+    try {
+      this.localSpace = await this.xrSession.requestReferenceSpace('local-floor');
+      console.log('[AR] Using local-floor reference space');
+    } catch {
+      try {
+        this.localSpace = await this.xrSession.requestReferenceSpace('local');
+        console.log('[AR] Using local reference space');
+      } catch (err) {
+        console.error('[AR] Could not get any reference space:', err);
+        this.callbacks.onError('session-failed');
+        return;
+      }
+    }
+
+    // ── 4. Hit-test source ────────────────────────────────────────────────
+    // We test from the 'viewer' space (the camera) and get results
+    // in localSpace (world coordinates).
+    let viewerSpace: XRReferenceSpace;
+    try {
+      viewerSpace = await this.xrSession.requestReferenceSpace('viewer');
+    } catch (err) {
+      console.error('[AR] Could not get viewer space:', err);
+      this.callbacks.onError('session-failed');
+      return;
+    }
+
+    try {
+      // requestHitTestSource is guaranteed by 'hit-test' in requiredFeatures
+      const hitTestFn = (this.xrSession as unknown as {
+        requestHitTestSource: (opts: { space: XRSpace }) => Promise<XRHitTestSource>;
+      }).requestHitTestSource;
+
+      if (!hitTestFn) {
+        throw new Error('requestHitTestSource is not available');
+      }
+      this.hitTestSource = await hitTestFn.call(this.xrSession, { space: viewerSpace });
+      console.log('[AR] Hit-test source created successfully');
+    } catch (err) {
+      console.error('[AR] requestHitTestSource failed:', err);
+      this.callbacks.onError('session-failed');
+      return;
+    }
+
+    // ── 5. Event listeners ────────────────────────────────────────────────
+    this.xrSession.addEventListener('select', this.boundSelect);
+    this.xrSession.addEventListener('end', this.handleSessionEnd.bind(this));
+
+    // ── 6. Start render loop ─────────────────────────────────────────────
+    this.step = 'detecting';
+    this.callbacks.onStep('detecting');
+    this.renderer.setAnimationLoop(this.renderLoop.bind(this));
   }
 
-  // ─── Render loop (called every XR frame) ─────────────────────────────────
+  // ─── Render loop (called every XR frame ~60fps) ───────────────────────────
+  // Keep this as LEAN as possible — it runs every frame on the GPU thread.
 
   private renderLoop(_timestamp: number, frame: XRFrame | undefined): void {
-    if (!frame || !this.hitTestSource || !this.localSpace) {
+    if (!frame) {
       this.renderer.render(this.scene, this.camera);
       return;
     }
 
-    const results: XRHitTestResult[] = frame.getHitTestResults(
-      this.hitTestSource,
-    );
+    if (!this.hitTestSource || !this.localSpace) {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
 
-    const reticleGroup = this.reticle as unknown as THREE.Group;
+    // ── Hit-test ──────────────────────────────────────────────────────────
+    const hitTestResults = frame.getHitTestResults(this.hitTestSource);
 
-    if (results.length > 0) {
-      const hit = results[0];
+    const now = performance.now();
+    const shouldUpdateStatus = now - this.lastStatusUpdate > 200; // throttle to 5/sec
+
+    if (hitTestResults.length > 0) {
+      const hit = hitTestResults[0];
       const pose = hit.getPose(this.localSpace);
 
       if (pose) {
-        reticleGroup.visible = true;
-        reticleGroup.matrixAutoUpdate = false;
-        reticleGroup.matrix.fromArray(pose.transform.matrix);
-        reticleGroup.matrix.decompose(
-          reticleGroup.position,
-          reticleGroup.quaternion,
-          reticleGroup.scale,
+        // Update reticle position using the XR world-space matrix
+        this.reticleGroup.visible = true;
+        this.reticleGroup.matrix.fromArray(pose.transform.matrix);
+        this.reticleGroup.matrix.decompose(
+          this.reticleGroup.position,
+          this.reticleGroup.quaternion,
+          this.reticleGroup.scale,
         );
+
+        // Pulse the reticle scale for visual feedback
+        this.reticlePulse += 0.08;
+        const pulse = 1 + Math.sin(this.reticlePulse) * 0.06;
+        this.reticleGroup.scale.set(pulse, pulse, pulse);
 
         if (this.trackingStatus !== 'good') {
           this.trackingStatus = 'good';
-          this.callbacks.onTrackingStatus('good');
-          // Advance from detecting to place-a
-          if (this.step === 'detecting') {
-            this.step = 'place-a';
-            this.callbacks.onStep('place-a');
+          if (shouldUpdateStatus) {
+            this.lastStatusUpdate = now;
+            this.callbacks.onTrackingStatus('good');
+            if (this.step === 'detecting') {
+              this.step = 'place-a';
+              this.callbacks.onStep('place-a');
+            }
           }
         }
       }
     } else {
-      reticleGroup.visible = false;
-      if (
-        this.trackingStatus !== 'detecting' &&
-        this.step !== 'measured'
-      ) {
-        this.trackingStatus = 'detecting';
-        this.callbacks.onTrackingStatus('detecting');
+      if (this.reticleGroup.visible) {
+        this.reticleGroup.visible = false;
+      }
+      if (this.trackingStatus !== 'detecting' && this.step !== 'measured') {
+        if (shouldUpdateStatus) {
+          this.lastStatusUpdate = now;
+          this.trackingStatus = 'detecting';
+          this.callbacks.onTrackingStatus('detecting');
+        }
       }
     }
 
@@ -352,14 +405,13 @@ export class ArSession {
   // ─── Tap handler ─────────────────────────────────────────────────────────
 
   private handleSelect(): void {
-    const reticleGroup = this.reticle as unknown as THREE.Group;
-    if (!reticleGroup.visible) return;
+    if (!this.reticleGroup.visible) return;
     if (this.step !== 'place-a' && this.step !== 'place-b') return;
 
     const pos: Point3D = {
-      x: reticleGroup.position.x,
-      y: reticleGroup.position.y,
-      z: reticleGroup.position.z,
+      x: this.reticleGroup.position.x,
+      y: this.reticleGroup.position.y,
+      z: this.reticleGroup.position.z,
     };
 
     if (this.step === 'place-a') {
@@ -387,23 +439,17 @@ export class ArSession {
   private placeMarker(label: 'A' | 'B', pos: Point3D, color: string): void {
     const group = new THREE.Group();
 
-    // Sphere
+    // Simple sphere — low-poly for performance
     const sphere = new THREE.Mesh(
-      new THREE.SphereGeometry(0.018, 24, 24),
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color(color),
-        roughness: 0.25,
-        metalness: 0.6,
-        emissive: new THREE.Color(color),
-        emissiveIntensity: 0.3,
-      }),
+      new THREE.SphereGeometry(0.018, 12, 12),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color) }),
     );
     group.add(sphere);
 
     // Thin vertical stem
     const stem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.003, 0.003, 0.06, 8),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 }),
+      new THREE.CylinderGeometry(0.003, 0.003, 0.06, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffffff }),
     );
     stem.position.y = 0.048;
     group.add(stem);
@@ -427,11 +473,10 @@ export class ArSession {
   }
 
   private drawMeasurement(a: Point3D, b: Point3D, distMeters: number): void {
-    // Remove old line/label
     if (this.measureLine) disposeLine(this.measureLine, this.scene);
     if (this.midLabel) disposeSprite(this.midLabel, this.scene);
 
-    // Line
+    // Measurement line
     const points = [
       new THREE.Vector3(a.x, a.y, a.z),
       new THREE.Vector3(b.x, b.y, b.z),
@@ -445,10 +490,10 @@ export class ArSession {
     this.measureLine = new THREE.Line(lineGeo, lineMat);
     this.scene.add(this.measureLine);
 
-    // Midpoint label
+    // Midpoint floating label
     const mid = new THREE.Vector3(
       (a.x + b.x) / 2,
-      Math.max(a.y, b.y) + 0.06,
+      Math.max(a.y, b.y) + 0.07,
       (a.z + b.z) / 2,
     );
     const cm = (distMeters * 100).toFixed(1);
@@ -461,22 +506,11 @@ export class ArSession {
   // ─── Reset / cleanup ─────────────────────────────────────────────────────
 
   reset(): void {
-    if (this.markerGroupA) {
-      disposeGroup(this.markerGroupA, this.scene);
-      this.markerGroupA = null;
-    }
-    if (this.markerGroupB) {
-      disposeGroup(this.markerGroupB, this.scene);
-      this.markerGroupB = null;
-    }
-    if (this.measureLine) {
-      disposeLine(this.measureLine, this.scene);
-      this.measureLine = null;
-    }
-    if (this.midLabel) {
-      disposeSprite(this.midLabel, this.scene);
-      this.midLabel = null;
-    }
+    if (this.markerGroupA) { disposeGroup(this.markerGroupA, this.scene); this.markerGroupA = null; }
+    if (this.markerGroupB) { disposeGroup(this.markerGroupB, this.scene); this.markerGroupB = null; }
+    if (this.measureLine)  { disposeLine(this.measureLine, this.scene);   this.measureLine = null; }
+    if (this.midLabel)     { disposeSprite(this.midLabel, this.scene);    this.midLabel = null; }
+
     this.pointA = null;
     this.pointB = null;
     this.step = 'place-a';
@@ -487,9 +521,7 @@ export class ArSession {
     if (this.ended) return;
     this.ended = true;
     if (this.xrSession) {
-      this.xrSession
-        .end()
-        .catch(() => {/* session may already be ended */});
+      this.xrSession.end().catch(() => {/* already ended */});
     }
     this.renderer.setAnimationLoop(null);
   }

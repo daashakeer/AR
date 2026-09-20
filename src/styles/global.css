@@ -430,6 +430,51 @@ button {
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ── Surface detection tips card ──────────────────────────── */
+.hud-tips-card {
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  margin: 0 4px;
+  pointer-events: none;
+  animation: fadeIn 0.4s ease;
+}
+
+.hud-tips-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffc800;
+  margin-bottom: 10px;
+  letter-spacing: 0.2px;
+}
+
+.hud-tips-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.hud-tips-list li {
+  font-size: 13px;
+  color: rgba(255,255,255,0.8);
+  padding-left: 16px;
+  position: relative;
+  line-height: 1.4;
+}
+
+.hud-tips-list li::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: #00ff88;
+  font-size: 11px;
+  top: 1px;
+}
+
 /* ── Error banner ──────────────────────────────────────────── */
 .hud-error-banner {
   background: rgba(255,60,70,0.2);
