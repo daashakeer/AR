@@ -868,7 +868,7 @@ export class ArSession {
       // 1. Capture snapshot from current WebGL canvas
       const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85);
 
-      // 2. Query Hugging Face Space (SAM3 + HRNet + Gemini)
+      // 2. Query direct HRNet API (AR_hrnet)
       const scanResult = await detectGarmentLandmarks(dataUrl);
       if (!scanResult.success || !scanResult.landmarks) {
         throw new Error(scanResult.error || 'Failed to detect garment landmarks');

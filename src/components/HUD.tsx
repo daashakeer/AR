@@ -445,7 +445,7 @@ export const HUD: React.FC<Props> = ({
             </div>
 
             <p className="result-disclaimer">
-              3D AR planar unprojection from Hugging Face HRNet landmarks.
+              3D AR planar unprojection from HRNet DeepFashion2 landmarks.
             </p>
           </div>
         </div>
@@ -806,7 +806,7 @@ export const HUD: React.FC<Props> = ({
 
         <p className="hud-privacy">
           {mode === 'garment'
-            ? '🤖 HRNet & SAM3 running via Hugging Face API'
+            ? '🤖 HRNet DeepFashion2 running via direct inference API'
             : isSimulator ? '🕹 Simulator running locally' : '🔒 Camera feed processed on-device'}
         </p>
       </div>

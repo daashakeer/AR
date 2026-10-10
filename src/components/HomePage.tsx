@@ -60,7 +60,7 @@ export const HomePage: React.FC<Props> = ({
             <span className="feat-icon">🤖</span>
             <div>
               <strong>AI Garment Landmarks</strong>
-              <p>Hugging Face HRNet + SAM3 waist detector</p>
+              <p>HRNet DeepFashion2 local waist detector</p>
             </div>
           </div>
           <div className="home-feature-pill">
