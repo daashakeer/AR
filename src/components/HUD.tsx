@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type {
   MeasurementStep,
   TrackingStatus,
@@ -48,6 +48,7 @@ interface Props {
   onScanGarment: () => void;
   onCapture: () => void;
   onRetake: () => void;
+  onCaptureUpdate?: (result: CaptureResult) => void;
   onToggleSound: () => void;
   onUnitChange: (u: Unit) => void;
   onReset: () => void;
@@ -102,6 +103,7 @@ export const HUD: React.FC<Props> = ({
   onScanGarment,
   onCapture,
   onRetake,
+  onCaptureUpdate,
   onToggleSound,
   onUnitChange,
   onReset,
@@ -113,9 +115,67 @@ export const HUD: React.FC<Props> = ({
   const [showHistory, setShowHistory] = useState(false);
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [metaBlobUrl, setMetaBlobUrl] = useState<string | null>(null);
+
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const allUnits = distanceMeters !== null ? formatAllUnits(distanceMeters) : null;
   const isDetecting = step === 'detecting' || step === 'idle';
+
+  // Create persistent Blob URLs whenever a capture result arrives
+  useEffect(() => {
+    if (!captureResult?.imageDataUrl) {
+      setBlobUrl(null);
+      setMetaBlobUrl(null);
+      return;
+    }
+
+    let imgUrl: string | null = null;
+    let metaUrl: string | null = null;
+
+    try {
+      const parts = captureResult.imageDataUrl.split(',');
+      const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
+      const bstr = atob(parts[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      const imgBlob = new Blob([u8arr], { type: mime });
+      imgUrl = URL.createObjectURL(imgBlob);
+      setBlobUrl(imgUrl);
+
+      const metaData = {
+        capturedAt: captureResult.capturedAt,
+        imageWidth: captureResult.imageWidth,
+        imageHeight: captureResult.imageHeight,
+        Z_m: captureResult.Z_m,
+        distanceSource: captureResult.distanceSource,
+        fx_pixels: captureResult.fx_pixels,
+        fy_pixels: captureResult.fy_pixels,
+        intrinsicsSource: captureResult.intrinsicsSource,
+        cameraPose: captureResult.cameraPose,
+        planePosition: captureResult.planePosition,
+        planeNormal: captureResult.planeNormal,
+        projectionMatrix: captureResult.projectionMatrix,
+        trackingValid: captureResult.trackingValid,
+        reliabilityNote: captureResult.reliabilityNote,
+      };
+      const jsonBlob = new Blob([JSON.stringify(metaData, null, 2)], { type: 'application/json' });
+      metaUrl = URL.createObjectURL(jsonBlob);
+      setMetaBlobUrl(metaUrl);
+    } catch (err) {
+      console.warn('[HUD] Error creating blob URLs:', err);
+      setBlobUrl(captureResult.imageDataUrl);
+    }
+
+    return () => {
+      if (imgUrl) URL.revokeObjectURL(imgUrl);
+      if (metaUrl) URL.revokeObjectURL(metaUrl);
+    };
+  }, [captureResult]);
 
   const handleCopy = () => {
     let text = '';
@@ -130,71 +190,53 @@ export const HUD: React.FC<Props> = ({
     });
   };
 
-  const handleDownload = async () => {
-    if (!captureResult?.imageDataUrl) return;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `trouser_image_${timestamp}.jpg`;
+  // Handler for capturing an actual crystal-clear camera photograph via device camera
+  const handleCameraPhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-    try {
-      // 1. Convert base64 dataUrl to binary Blob (required for Android Chrome download)
-      const parts = captureResult.imageDataUrl.split(',');
-      const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
-      const bstr = atob(parts[1]);
-      let n = bstr.length;
-      const u8arr = new Uint8Array(n);
-      while (n--) {
-        u8arr[n] = bstr.charCodeAt(n);
-      }
-      const imgBlob = new Blob([u8arr], { type: mime });
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      const img = new Image();
+      img.onload = () => {
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
 
-      // 2. Try native Web Share API (opens Android "Save to Device", "Photos", or share)
-      const nav = navigator as unknown as {
-        canShare?: (data: unknown) => boolean;
-        share?: (data: unknown) => Promise<void>;
-      };
-      if (typeof File !== 'undefined' && typeof nav.share === 'function') {
-        const file = new File([imgBlob], filename, { type: mime });
-        if (typeof nav.canShare === 'function' && nav.canShare({ files: [file] })) {
-          try {
-            await nav.share({
-              files: [file],
-              title: 'Trouser Photo & AR Measurement',
-              text: `Camera Distance Z: ${captureResult.Z_m !== null ? captureResult.Z_m.toFixed(3) + 'm' : 'N/A'} | fx: ${captureResult.fx_pixels !== null ? captureResult.fx_pixels.toFixed(1) + 'px' : 'N/A'}`,
-            });
-            setDownloaded(true);
-            setTimeout(() => setDownloaded(false), 2500);
-            return;
-          } catch (e: unknown) {
-            if ((e as Error)?.name === 'AbortError') {
-              return; // User dismissed share sheet
-            }
-          }
+        let fx = captureResult?.fx_pixels ?? null;
+        let fy = captureResult?.fy_pixels ?? null;
+        if (captureResult?.projectionMatrix && captureResult.projectionMatrix[0] > 0) {
+          fx = (captureResult.projectionMatrix[0] * w) / 2;
+          fy = (captureResult.projectionMatrix[5] * h) / 2;
         }
-      }
 
-      // 3. Fallback: Standard Blob URL anchor download
-      const imgUrl = URL.createObjectURL(imgBlob);
-      const link = document.createElement('a');
-      link.href = imgUrl;
-      link.download = filename;
-      link.rel = 'noopener';
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        if (link.parentElement) document.body.removeChild(link);
-        URL.revokeObjectURL(imgUrl);
-      }, 5000);
+        const updated: CaptureResult = {
+          imageDataUrl: dataUrl,
+          imageWidth: w,
+          imageHeight: h,
+          Z_m: captureResult?.Z_m ?? null,
+          distanceSource: captureResult?.distanceSource ?? (mode === 'manual' ? 'webxr-hittest' : 'focus-distance'),
+          fx_pixels: fx,
+          fy_pixels: fy,
+          intrinsicsSource: captureResult?.intrinsicsSource ?? 'webxr-projection',
+          cameraPose: captureResult?.cameraPose ?? null,
+          planePosition: captureResult?.planePosition ?? null,
+          planeNormal: captureResult?.planeNormal ?? null,
+          projectionMatrix: captureResult?.projectionMatrix ?? null,
+          capturedAt: new Date().toISOString(),
+          trackingValid: true,
+          reliabilityNote:
+            'Image: High-resolution photo from device camera | Z: ' +
+            (captureResult?.Z_m !== null && captureResult?.Z_m !== undefined ? captureResult.Z_m.toFixed(3) + 'm' : 'Recorded AR distance'),
+        };
 
-      setDownloaded(true);
-      setTimeout(() => setDownloaded(false), 2500);
-    } catch (err) {
-      console.error('[HUD] Download error:', err);
-      // Fallback: open image in a new tab so user can long-press to save
-      const win = window.open();
-      if (win) {
-        win.document.write(`<img src="${captureResult.imageDataUrl}" style="max-width:100%;height:auto;"/>`);
-      }
-    }
+        onCaptureUpdate?.(updated);
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+    // Reset input so same file or another photo can be snapped
+    e.target.value = '';
   };
 
   return (
@@ -458,6 +500,16 @@ export const HUD: React.FC<Props> = ({
         </div>
       )}
 
+      {/* Hidden file input for native mobile camera photography */}
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style={{ display: 'none' }}
+        onChange={handleCameraPhotoSelect}
+      />
+
       {/* ── Capture Result Panel ──────────────────────────────────────── */}
       {captureResult && (
         <div className="capture-panel">
@@ -466,9 +518,30 @@ export const HUD: React.FC<Props> = ({
               {captureResult.distanceSource === 'simulator' ? '🎮 Simulator Capture' : '📷 Captured Frame'}
             </span>
             <div className="capture-header-actions">
-              <button className="capture-download-btn" onClick={handleDownload}>
+              <a
+                className="capture-download-btn"
+                href={blobUrl || captureResult.imageDataUrl}
+                download={`trouser_image_${new Date().toISOString().slice(0, 10)}.jpg`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => {
+                  setDownloaded(true);
+                  setTimeout(() => setDownloaded(false), 2500);
+                }}
+              >
                 {downloaded ? '✓ Saved!' : '💾 Download'}
-              </button>
+              </a>
+              {metaBlobUrl && (
+                <a
+                  className="capture-json-btn"
+                  href={metaBlobUrl}
+                  download={`trouser_metadata_${new Date().toISOString().slice(0, 10)}.json`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  📄 Data
+                </a>
+              )}
               <button className="capture-retake-btn" onClick={onRetake}>🔄 Retake</button>
             </div>
           </div>
@@ -483,6 +556,17 @@ export const HUD: React.FC<Props> = ({
           ) : (
             <div className="capture-no-image">⚠️ No image available</div>
           )}
+
+          {/* Button to snap a clear camera photo if live feed was black or dark */}
+          <button
+            className="capture-snap-camera-btn"
+            onClick={() => cameraInputRef.current?.click()}
+          >
+            📸 Snap Clear Photo with Phone Camera
+          </button>
+          <p className="capture-save-tip">
+            💡 Tap "Download" above, or long-press the picture to "Save Image"
+          </p>
 
           {/* Distance */}
           <div className="capture-meta-row">
@@ -591,16 +675,25 @@ export const HUD: React.FC<Props> = ({
           </button>
         )}
 
-        {/* Capture Image button — visible in both modes when no capture in progress */}
+        {/* Dual capture buttons — live capture and camera snapshot */}
         {!captureResult && (
-          <button
-            className="hud-btn hud-btn-capture"
-            onClick={onCapture}
-            disabled={isCapturing}
-            title="Capture the current camera frame with distance and calibration data"
-          >
-            {isCapturing ? '⏳ Capturing…' : '📷 Capture Image'}
-          </button>
+          <div className="hud-capture-row">
+            <button
+              className="hud-btn hud-btn-capture"
+              onClick={onCapture}
+              disabled={isCapturing}
+              title="Capture the current camera frame with distance and calibration data"
+            >
+              {isCapturing ? '⏳ Capturing…' : '📷 Capture Image'}
+            </button>
+            <button
+              className="hud-btn hud-btn-snap"
+              onClick={() => cameraInputRef.current?.click()}
+              title="Take a photo with your phone camera"
+            >
+              📸 Snap Photo
+            </button>
+          </div>
         )}
 
         <p className="hud-privacy">

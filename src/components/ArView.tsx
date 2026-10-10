@@ -215,6 +215,7 @@ export const ArView: React.FC<Props> = ({
           onScanGarment={handleScanGarment}
           onCapture={handleCapture}
           onRetake={handleRetake}
+          onCaptureUpdate={setCaptureResult}
           onToggleSound={handleToggleSound}
           onUnitChange={setUnit}
           onReset={handleReset}

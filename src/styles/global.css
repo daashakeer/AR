@@ -1404,6 +1404,9 @@ button {
   transition: all 0.15s;
   cursor: pointer;
   pointer-events: auto !important;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -1412,6 +1415,25 @@ button {
 }
 .capture-download-btn:hover {
   filter: brightness(1.1);
+}
+
+.capture-json-btn {
+  background: rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  transition: background 0.15s;
+  pointer-events: auto !important;
+}
+.capture-json-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
 }
 
 .capture-retake-btn {
@@ -1435,7 +1457,7 @@ button {
   background: rgba(255, 255, 255, 0.18);
 }
 
-/* Captured image preview */
+/* Captured image preview — enables native mobile long-press to save */
 .capture-preview {
   width: 100%;
   max-height: 220px;
@@ -1443,6 +1465,64 @@ button {
   border-radius: var(--radius-md);
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: #000;
+  user-select: auto !important;
+  -webkit-user-select: auto !important;
+  -webkit-touch-callout: default !important;
+  pointer-events: auto !important;
+  touch-action: auto !important;
+}
+
+.capture-snap-camera-btn {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border: none;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+  cursor: pointer;
+  pointer-events: auto !important;
+  margin-top: 4px;
+  width: 100%;
+  transition: opacity 0.15s;
+}
+.capture-snap-camera-btn:active {
+  transform: scale(0.98);
+}
+
+.capture-save-tip {
+  font-size: 11px;
+  color: #94a3b8;
+  text-align: center;
+  margin-top: -2px;
+  margin-bottom: 2px;
+}
+
+.hud-capture-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  pointer-events: auto !important;
+}
+
+.hud-btn-snap {
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+  white-space: nowrap;
+  flex: 1;
+  cursor: pointer;
+  pointer-events: auto !important;
+  border: none;
+  transition: opacity 0.15s;
+}
+.hud-btn-snap:active {
+  transform: scale(0.97);
 }
 
 .capture-no-image {
