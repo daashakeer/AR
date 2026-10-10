@@ -51,10 +51,19 @@ export function calculateGarmentMetrics(
   points: Garment3DPoints,
   pantType: string = 'Jeans'
 ): GarmentMetrics {
-  // 1. Flat Waist Width
-  const waistWidthMeters = points.waistLeft.distanceTo(points.waistRight);
-  const waistWidthCm = waistWidthMeters * 100;
-  const waistWidthInches = waistWidthMeters * 39.3701;
+  // 1. Physical coordinates in centimetres on the horizontal plane
+  const xLeftCm = points.waistLeft.x * 100;
+  // If points are on horizontal XZ plane, planar Y is the Z depth axis
+  const yLeftCm = points.waistLeft.z * 100;
+  const xRightCm = points.waistRight.x * 100;
+  const yRightCm = points.waistRight.z * 100;
+
+  // Formula: distance_cm = sqrt((X_right - X_left)^2 + (Y_right - Y_left)^2)
+  const waistWidthCm = Math.sqrt(
+    Math.pow(xRightCm - xLeftCm, 2) + Math.pow(yRightCm - yLeftCm, 2)
+  );
+  const waistWidthMeters = waistWidthCm / 100;
+  const waistWidthInches = waistWidthCm / 2.54;
 
   // Garment sizing formula: circumference is approx flat width * 2 minus 1 inch for ease/seam allowance
   const fullWaistInches = Math.max(24, Math.round((waistWidthInches * 2) - 1));

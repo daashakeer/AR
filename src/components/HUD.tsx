@@ -208,7 +208,7 @@ export const HUD: React.FC<Props> = ({
             <div className="viewfinder-waist-guide">Waistband Line</div>
           </div>
           <div className="garment-guide-pill">
-            👖 Frame flat-laid pant inside the box
+            👖 Point camera at flat-laid trousers — Auto Measuring
           </div>
         </div>
       )}
@@ -219,8 +219,8 @@ export const HUD: React.FC<Props> = ({
           <div className="scanning-box">
             <div className="scanning-laser" />
             <div className="scanning-spinner" />
-            <h3>Analyzing Garment with AI…</h3>
-            <p>SAM3 Segmentation + HRNet Landmark Detection</p>
+            <h3>Measuring Waistband…</h3>
+            <p>HRNet Predicting Left & Right Waist Points</p>
           </div>
         </div>
       )}
@@ -259,36 +259,21 @@ export const HUD: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── AI Garment Sizing Result Card ───────────────────────────────── */}
+      {/* ── AI Garment Waist Measurement Result Card ────────────────────── */}
       {mode === 'garment' && garmentMetrics && !isScanningGarment && (
         <div className="hud-result-wrap">
           <div className="hud-result-card garment-result-card">
             <div className="result-header">
-              <span className="result-badge">✓ AI Measured</span>
-              <span className="result-orientation-badge">👖 {garmentMetrics.pantType}</span>
+              <span className="result-badge">✓ Auto-Measured by HRNet</span>
+              <span className="result-orientation-badge">👖 Trouser Waist</span>
             </div>
 
             <div className="garment-primary-size">
-              <span className="size-label">Recommended Size</span>
-              <span className="size-number">Size {garmentMetrics.recommendedSize}</span>
-            </div>
-
-            <div className="garment-metrics-grid">
-              <div className="garment-metric-item">
-                <span className="metric-title">Waist Width</span>
-                <span className="metric-val">{garmentMetrics.waistWidthCm.toFixed(1)} cm</span>
-                <span className="metric-sub">({garmentMetrics.waistWidthInches.toFixed(1)} in)</span>
-              </div>
-              <div className="garment-metric-item">
-                <span className="metric-title">Inseam</span>
-                <span className="metric-val">{garmentMetrics.inseamInches.toFixed(1)} in</span>
-                <span className="metric-sub">({(garmentMetrics.inseamMeters * 100).toFixed(1)} cm)</span>
-              </div>
-              <div className="garment-metric-item">
-                <span className="metric-title">Outseam</span>
-                <span className="metric-val">{garmentMetrics.outseamInches.toFixed(1)} in</span>
-                <span className="metric-sub">({(garmentMetrics.outseamMeters * 100).toFixed(1)} cm)</span>
-              </div>
+              <span className="size-label">Flat Waistband Width</span>
+              <span className="size-number">{garmentMetrics.waistWidthCm.toFixed(1)} cm</span>
+              <span className="metric-sub" style={{ fontSize: '1rem', color: '#94a3b8' }}>
+                ({garmentMetrics.waistWidthInches.toFixed(1)} in) · Est. Size {garmentMetrics.recommendedSize}
+              </span>
             </div>
 
             <div className="result-actions">

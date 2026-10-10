@@ -7,6 +7,7 @@ import {
   CameraGuidance,
 } from '../ar/ArSession';
 import { ArSimulator } from '../ar/ArSimulator';
+import { MobileCameraSession } from '../ar/MobileCameraSession';
 import { HUD, SavedMeasurement, MeasurementMode } from './HUD';
 import { DebugPanel } from './DebugPanel';
 import type { DeviceCapabilities } from '../hooks/useDeviceCapabilities';
@@ -30,7 +31,7 @@ export const ArView: React.FC<Props> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  const sessionRef = useRef<ArSession | ArSimulator | null>(null);
+  const sessionRef = useRef<ArSession | ArSimulator | MobileCameraSession | null>(null);
 
   const [mode, setMode] = useState<MeasurementMode>(initialMode);
   const [step, setStep] = useState<MeasurementStep>('idle');
@@ -58,7 +59,7 @@ export const ArView: React.FC<Props> = ({
     const overlay = overlayRef.current;
     if (!canvas || !overlay) return;
 
-    let activeSession: ArSession | ArSimulator;
+    let activeSession: ArSession | ArSimulator | MobileCameraSession;
 
     const callbacks = {
       onTrackingStatus: (s: TrackingStatus) => setTrackingStatus(s),
@@ -106,6 +107,8 @@ export const ArView: React.FC<Props> = ({
 
     if (isSimulator) {
       activeSession = new ArSimulator(canvas, callbacks);
+    } else if (mode === 'garment' || !capabilities.arSupported) {
+      activeSession = new MobileCameraSession(canvas, callbacks);
     } else {
       activeSession = new ArSession(canvas, callbacks);
     }
@@ -118,7 +121,7 @@ export const ArView: React.FC<Props> = ({
       sessionRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSimulator]);
+  }, [isSimulator, mode, capabilities.arSupported]);
 
   const handleReset = useCallback(() => {
     sessionRef.current?.reset();

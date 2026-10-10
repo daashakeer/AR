@@ -798,7 +798,7 @@ export class ArSession {
       };
 
       // 5. Compute metric measurements
-      const metrics = calculateGarmentMetrics(garment3D, scanResult.pantType);
+      const metrics = calculateGarmentMetrics(garment3D, scanResult.pantType || 'Trousers');
 
       // 6. Build and render 3D holographic garment meshes in AR
       if (this.garmentMeshGroup) {

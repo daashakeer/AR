@@ -55,23 +55,26 @@ export default function App() {
         />
       );
     }
-    if (!caps.webXRSupported) {
-      return (
-        <UnsupportedScreen
-          reason="no-webxr"
-          caps={caps}
-          onLaunchSimulator={() => setScreen('simulator')}
-        />
-      );
-    }
-    if (!caps.arSupported) {
-      return (
-        <UnsupportedScreen
-          reason="no-ar"
-          caps={caps}
-          onLaunchSimulator={() => setScreen('simulator')}
-        />
-      );
+    // If not in garment mode and WebXR is missing, show unsupported screen
+    if (initialMode !== 'garment') {
+      if (!caps.webXRSupported) {
+        return (
+          <UnsupportedScreen
+            reason="no-webxr"
+            caps={caps}
+            onLaunchSimulator={() => setScreen('simulator')}
+          />
+        );
+      }
+      if (!caps.arSupported) {
+        return (
+          <UnsupportedScreen
+            reason="no-ar"
+            caps={caps}
+            onLaunchSimulator={() => setScreen('simulator')}
+          />
+        );
+      }
     }
 
     return (
@@ -96,7 +99,9 @@ export default function App() {
 
   const handleStartGarment = () => {
     setInitialMode('garment');
-    if (caps.isMobile && caps.arSupported) {
+    if (caps.isMobile && caps.hasCamera) {
+      setScreen('ar');
+    } else if (caps.isMobile && caps.arSupported) {
       setScreen('ar');
     } else {
       setScreen('simulator');

@@ -736,6 +736,9 @@ export class ArSimulator {
     try {
       const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85);
       const scanResult = await detectGarmentLandmarks(dataUrl);
+      if (!scanResult.success || !scanResult.landmarks) {
+        throw new Error(scanResult.error || 'Failed to detect garment landmarks');
+      }
 
       // In the 3D room, study table top is at Y = 0.775
       const isLookingAtTable = this.camera.position.y > 0.5 && this.camera.position.z > -1.2;
@@ -758,7 +761,7 @@ export class ArSimulator {
         outerAnkleRight: pAnkleR,
       };
 
-      const metrics = calculateGarmentMetrics(garment3D, scanResult.pantType);
+      const metrics = calculateGarmentMetrics(garment3D, scanResult.pantType || 'Trousers');
 
       if (this.garmentMeshGroup) {
         this.scene.remove(this.garmentMeshGroup);
