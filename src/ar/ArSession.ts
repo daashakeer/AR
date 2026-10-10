@@ -29,9 +29,24 @@ import {
   calculateGarmentMetrics,
   buildGarment3DMeshes,
 } from './garmentMeasure';
-import type { CaptureResult } from './captureTypes';
+import type {
+  CaptureResult,
+  CameraPoseData,
+  CameraIntrinsicsData,
+  TrouserPlaneData,
+  WaistbandLandmarks,
+  WaistbandWidthResult,
+} from './captureTypes';
+import { deriveIntrinsicsFromMatrix, calculateTiltCorrectedWaistWidth } from './waistbandGeometry';
 
-export type { CaptureResult };
+export type {
+  CaptureResult,
+  CameraPoseData,
+  CameraIntrinsicsData,
+  TrouserPlaneData,
+  WaistbandLandmarks,
+  WaistbandWidthResult,
+};
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -970,10 +985,12 @@ export class ArSession {
   async captureImage(): Promise<CaptureResult> {
     const capturedAt = new Date().toISOString();
 
-    // ── 1. Calculate Z_m, planePosition, planeNormal BEFORE releasing WebXR ───
+    // ── 1. Calculate Z_m, planePosition, planeNormal, planeTransform BEFORE releasing WebXR ───
     let Z_m: number | null = null;
     let planePosition: { x: number; y: number; z: number } | null = null;
     let planeNormal: { x: number; y: number; z: number } | null = null;
+    let planeQuaternion: { x: number; y: number; z: number; w: number } | null = null;
+    let planeTransform: number[] | null = null;
     const trackingValid = this.hasHit && this.trackingStatus === 'good';
 
     if (trackingValid) {
@@ -981,31 +998,58 @@ export class ArSession {
       this.camera.getWorldPosition(camPos);
 
       const up = new THREE.Vector3(0, 1, 0);
-      const normal = up.applyQuaternion(this.currentSmoothedQuat);
+      const normal = up.applyQuaternion(this.currentSmoothedQuat.clone()).normalize();
 
       const toPlane = camPos.clone().sub(this.currentSmoothedPos);
       Z_m = Math.abs(toPlane.dot(normal));  // Perpendicular distance in metres
 
       planePosition = { x: this.currentSmoothedPos.x, y: this.currentSmoothedPos.y, z: this.currentSmoothedPos.z };
       planeNormal = { x: normal.x, y: normal.y, z: normal.z };
+      planeQuaternion = {
+        x: this.currentSmoothedQuat.x,
+        y: this.currentSmoothedQuat.y,
+        z: this.currentSmoothedQuat.z,
+        w: this.currentSmoothedQuat.w,
+      };
+
+      const planeMat = new THREE.Matrix4().compose(
+        this.currentSmoothedPos,
+        this.currentSmoothedQuat,
+        new THREE.Vector3(1, 1, 1)
+      );
+      planeTransform = Array.from(planeMat.elements);
     }
 
-    // ── 2. Camera pose from WebXR viewer pose ─────────────────────────────────
-    let cameraPose: CaptureResult['cameraPose'] = null;
+    // ── 2. Camera pose from WebXR viewer pose or Three.js camera ─────────────
+    let cameraPose: CameraPoseData | null = null;
     if (this.lastViewerPose) {
       const xrT = this.lastViewerPose.transform;
+      const camMat = xrT.matrix ? Array.from(xrT.matrix) : Array.from(this.camera.matrixWorld.elements);
+      const camMatInv = xrT.inverse?.matrix
+        ? Array.from(xrT.inverse.matrix)
+        : Array.from(new THREE.Matrix4().fromArray(camMat).invert().elements);
+
       cameraPose = {
         position: { x: xrT.position.x, y: xrT.position.y, z: xrT.position.z },
         quaternion: { x: xrT.orientation.x, y: xrT.orientation.y, z: xrT.orientation.z, w: xrT.orientation.w },
+        cameraMatrix: camMat,
+        cameraMatrixInverse: camMatInv,
+      };
+    } else if (this.camera) {
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      this.camera.getWorldPosition(pos);
+      this.camera.getWorldQuaternion(quat);
+      cameraPose = {
+        position: { x: pos.x, y: pos.y, z: pos.z },
+        quaternion: { x: quat.x, y: quat.y, z: quat.z, w: quat.w },
+        cameraMatrix: Array.from(this.camera.matrixWorld.elements),
+        cameraMatrixInverse: Array.from(this.camera.matrixWorldInverse.elements),
       };
     }
 
     // ── 3. Projection matrix ──────────────────────────────────────────────────
     const projMat = this.lastViewProjectionMatrix || (this.camera?.projectionMatrix ? Array.from(this.camera.projectionMatrix.elements) : null);
-    let fx_pixels: number | null = null;
-    let fy_pixels: number | null = null;
-    let intrinsicsSource: CaptureResult['intrinsicsSource'] = null;
-    let projectionMatrix: number[] | null = null;
 
     // ── 4. Capture real camera photograph ─────────────────────────────────────
     // On Android, ARCore holds exclusive lock on the camera sensor while WebXR is running,
@@ -1064,16 +1108,47 @@ export class ArSession {
 
     this.isCapturingImage = false;
 
-    // ── 5. Scale focal lengths to captured image resolution ───────────────────
+    // ── 5. Scale focal lengths & principal point to captured image resolution ──
+    let fx_pixels: number | null = null;
+    let fy_pixels: number | null = null;
+    let cx_pixels: number | null = null;
+    let cy_pixels: number | null = null;
+    let intrinsicsSource: CaptureResult['intrinsicsSource'] = null;
+    let projectionMatrix: number[] | null = null;
+
     if (projMat && projMat[0] > 0 && projMat[5] > 0) {
-      const m = projMat;
       const targetW = imageWidth > 0 ? imageWidth : (window.innerWidth * (window.devicePixelRatio || 1));
       const targetH = imageHeight > 0 ? imageHeight : (window.innerHeight * (window.devicePixelRatio || 1));
-      fx_pixels = (m[0] * targetW) / 2;
-      fy_pixels = (m[5] * targetH) / 2;
-      intrinsicsSource = 'webxr-projection';
-      projectionMatrix = m;
+      const derived = deriveIntrinsicsFromMatrix(projMat, targetW, targetH);
+      if (derived) {
+        fx_pixels = derived.fx_pixels;
+        fy_pixels = derived.fy_pixels;
+        cx_pixels = derived.cx_pixels;
+        cy_pixels = derived.cy_pixels;
+        intrinsicsSource = 'webxr-projection';
+        projectionMatrix = projMat;
+      }
     }
+
+    const intrinsicsBundle: CameraIntrinsicsData | null = intrinsicsSource ? {
+      fx_pixels,
+      fy_pixels,
+      cx_pixels,
+      cy_pixels,
+      imageWidth,
+      imageHeight,
+      projectionMatrix,
+      intrinsicsSource,
+    } : null;
+
+    const planeBundle: TrouserPlaneData | null = trackingValid ? {
+      planePosition,
+      planeNormal,
+      planeQuaternion,
+      planeTransform,
+      planeSource: 'webxr-hittest',
+      planeTrackingValid: true,
+    } : null;
 
     // ── 6. Build reliability note ─────────────────────────────────────────────
     const parts: string[] = [];
@@ -1081,8 +1156,11 @@ export class ArSession {
     else parts.push('Image: Camera capture failed');
     if (Z_m !== null) parts.push(`Z: ${Z_m.toFixed(3)} m from WebXR hit-test plane (perpendicular)`);
     else parts.push('Z: unavailable — no plane detected or tracking lost');
-    if (fx_pixels !== null) parts.push(`fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels!.toFixed(1)} px from WebXR projection matrix`);
-    else parts.push('fx/fy: unavailable');
+    if (fx_pixels !== null && fy_pixels !== null) {
+      parts.push(`fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels.toFixed(1)} px, cx=${cx_pixels?.toFixed(1) ?? 'N/A'}, cy=${cy_pixels?.toFixed(1) ?? 'N/A'} (WebXR projection)`);
+    } else {
+      parts.push('fx/fy: unavailable');
+    }
     const reliabilityNote = parts.join(' | ');
 
     const result: CaptureResult = {
@@ -1091,13 +1169,25 @@ export class ArSession {
       imageHeight,
       Z_m,
       distanceSource: trackingValid ? 'webxr-hittest' : null,
+      distanceValid: trackingValid && Z_m !== null,
+      distanceDefinition: 'perpendicular-camera-to-plane',
       fx_pixels,
       fy_pixels,
+      cx_pixels,
+      cy_pixels,
       intrinsicsSource,
+      intrinsics: intrinsicsBundle,
       cameraPose,
       planePosition,
       planeNormal,
+      planeQuaternion,
+      planeTransform,
+      planeSource: trackingValid ? 'webxr-hittest' : null,
+      planeTrackingValid: trackingValid,
+      plane: planeBundle,
       projectionMatrix,
+      waistbandLandmarks: null,
+      waistbandWidthResult: null,
       capturedAt,
       trackingValid,
       reliabilityNote,

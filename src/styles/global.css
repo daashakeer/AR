@@ -1588,3 +1588,67 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.07);
   word-break: break-word;
 }
+
+/* ── Capture Waistband Result Card ─────────────────────────────── */
+.capture-waist-card {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1.5px solid rgba(16, 185, 129, 0.4);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.capture-waist-badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #34d399;
+  margin-bottom: 4px;
+}
+
+.capture-waist-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+}
+
+.capture-waist-val {
+  font-size: 26px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: -0.5px;
+}
+
+.capture-waist-sub {
+  font-size: 14px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.capture-waist-tilt {
+  font-size: 11px;
+  color: #60a5fa;
+  margin-top: 4px;
+  font-family: var(--mono);
+}
+
+.capture-waist-warnings {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+.capture-warn-item {
+  font-size: 11px;
+  color: #facc15;
+  background: rgba(250, 204, 21, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 1.3;
+}
+

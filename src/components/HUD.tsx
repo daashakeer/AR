@@ -14,7 +14,15 @@ import {
 } from '../utils/units';
 import type { LineOrientation } from '../utils/distance';
 import type { GarmentMetrics } from '../ar/garmentMeasure';
-import type { CaptureResult } from '../ar/captureTypes';
+import type {
+  CaptureResult,
+  CameraPoseData,
+  CameraIntrinsicsData,
+  TrouserPlaneData,
+  WaistbandLandmarks,
+  WaistbandWidthResult,
+} from '../ar/captureTypes';
+import { calculateTiltCorrectedWaistWidth } from '../ar/waistbandGeometry';
 
 export type MeasurementMode = 'manual' | 'garment';
 
@@ -153,13 +161,33 @@ export const HUD: React.FC<Props> = ({
         imageHeight: captureResult.imageHeight,
         Z_m: captureResult.Z_m,
         distanceSource: captureResult.distanceSource,
+        distanceValid: captureResult.distanceValid ?? (captureResult.Z_m !== null),
+        distanceDefinition: captureResult.distanceDefinition ?? 'perpendicular-camera-to-plane',
         fx_pixels: captureResult.fx_pixels,
         fy_pixels: captureResult.fy_pixels,
+        cx_pixels: captureResult.cx_pixels ?? null,
+        cy_pixels: captureResult.cy_pixels ?? null,
         intrinsicsSource: captureResult.intrinsicsSource,
+        intrinsics: captureResult.intrinsics ?? {
+          fx_pixels: captureResult.fx_pixels,
+          fy_pixels: captureResult.fy_pixels,
+          cx_pixels: captureResult.cx_pixels ?? null,
+          cy_pixels: captureResult.cy_pixels ?? null,
+          imageWidth: captureResult.imageWidth,
+          imageHeight: captureResult.imageHeight,
+          projectionMatrix: captureResult.projectionMatrix,
+          intrinsicsSource: captureResult.intrinsicsSource,
+        },
         cameraPose: captureResult.cameraPose,
         planePosition: captureResult.planePosition,
         planeNormal: captureResult.planeNormal,
+        planeQuaternion: captureResult.planeQuaternion ?? null,
+        planeTransform: captureResult.planeTransform ?? null,
+        planeSource: captureResult.planeSource ?? (captureResult.distanceSource === 'simulator' ? 'simulator' : 'webxr-hittest'),
+        planeTrackingValid: captureResult.planeTrackingValid ?? captureResult.trackingValid,
         projectionMatrix: captureResult.projectionMatrix,
+        waistbandLandmarks: captureResult.waistbandLandmarks ?? null,
+        waistbandWidthResult: captureResult.waistbandWidthResult ?? null,
         trackingValid: captureResult.trackingValid,
         reliabilityNote: captureResult.reliabilityNote,
       };
@@ -216,13 +244,25 @@ export const HUD: React.FC<Props> = ({
           imageHeight: h,
           Z_m: captureResult?.Z_m ?? null,
           distanceSource: captureResult?.distanceSource ?? (mode === 'manual' ? 'webxr-hittest' : 'focus-distance'),
+          distanceValid: (captureResult?.Z_m ?? null) !== null,
+          distanceDefinition: captureResult?.distanceDefinition ?? 'perpendicular-camera-to-plane',
           fx_pixels: fx,
           fy_pixels: fy,
+          cx_pixels: captureResult?.cx_pixels ?? (w / 2),
+          cy_pixels: captureResult?.cy_pixels ?? (h / 2),
           intrinsicsSource: captureResult?.intrinsicsSource ?? 'webxr-projection',
+          intrinsics: captureResult?.intrinsics ?? null,
           cameraPose: captureResult?.cameraPose ?? null,
           planePosition: captureResult?.planePosition ?? null,
           planeNormal: captureResult?.planeNormal ?? null,
+          planeQuaternion: captureResult?.planeQuaternion ?? null,
+          planeTransform: captureResult?.planeTransform ?? null,
+          planeSource: captureResult?.planeSource ?? 'webxr-hittest',
+          planeTrackingValid: captureResult?.planeTrackingValid ?? true,
+          plane: captureResult?.plane ?? null,
           projectionMatrix: captureResult?.projectionMatrix ?? null,
+          waistbandLandmarks: captureResult?.waistbandLandmarks ?? null,
+          waistbandWidthResult: captureResult?.waistbandWidthResult ?? null,
           capturedAt: new Date().toISOString(),
           trackingValid: true,
           reliabilityNote:
@@ -568,6 +608,50 @@ export const HUD: React.FC<Props> = ({
             💡 Tap "Download" above, or long-press the picture to "Save Image"
           </p>
 
+          {/* Waistband Width Result Card (if calculated) */}
+          {captureResult.waistbandWidthResult && captureResult.waistbandWidthResult.waistWidthCm !== null && (
+            <div className="capture-waist-card">
+              <div className="capture-waist-badge">
+                {captureResult.waistbandWidthResult.measurementStatus === 'valid'
+                  ? '✓ Calibrated Waistband'
+                  : captureResult.waistbandWidthResult.measurementStatus === 'approximate'
+                  ? '⚠️ Approximate Waistband'
+                  : '⚠️ Warning'}
+              </div>
+              <div className="capture-waist-main">
+                <span className="capture-waist-val">
+                  {captureResult.waistbandWidthResult.waistWidthCm.toFixed(1)} cm
+                </span>
+                <span className="capture-waist-sub">
+                  ({captureResult.waistbandWidthResult.waistWidthInches?.toFixed(1)} in)
+                </span>
+              </div>
+              {captureResult.waistbandWidthResult.tiltAngleDeg !== null && (
+                <div className="capture-waist-tilt">
+                  Camera Tilt: {captureResult.waistbandWidthResult.tiltAngleDeg.toFixed(1)}° from vertical
+                </div>
+              )}
+              {captureResult.waistbandWidthResult.measurementWarnings.length > 0 && (
+                <div className="capture-waist-warnings">
+                  {captureResult.waistbandWidthResult.measurementWarnings.map((w, idx) => (
+                    <div key={idx} className="capture-warn-item">⚠️ {w}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Waistband Landmarks Info (if present) */}
+          {captureResult.waistbandLandmarks && (
+            <div className="capture-meta-row">
+              <span className="capture-meta-label">Waistband Landmarks</span>
+              <span className="capture-meta-value">
+                L: ({Math.round(captureResult.waistbandLandmarks.waistLeft.u)}, {Math.round(captureResult.waistbandLandmarks.waistLeft.v)}) px ·
+                R: ({Math.round(captureResult.waistbandLandmarks.waistRight.u)}, {Math.round(captureResult.waistbandLandmarks.waistRight.v)}) px
+              </span>
+            </div>
+          )}
+
           {/* Distance */}
           <div className="capture-meta-row">
             <span className="capture-meta-label">Z (camera → plane)</span>
@@ -580,21 +664,25 @@ export const HUD: React.FC<Props> = ({
           <div className="capture-meta-row">
             <span className="capture-meta-label">Distance source</span>
             <span className="capture-meta-value capture-source-tag">
-              {captureResult.distanceSource ?? 'none'}
+              {captureResult.distanceSource ?? 'none'} ({captureResult.distanceDefinition ?? 'perpendicular'})
             </span>
           </div>
 
-          {/* Focal lengths */}
+          {/* Focal lengths & Principal point */}
           <div className="capture-meta-row">
-            <span className="capture-meta-label">fx (pixels)</span>
+            <span className="capture-meta-label">fx / fy (pixels)</span>
             <span className={`capture-meta-value ${captureResult.fx_pixels === null ? 'meta-warn' : ''}`}>
-              {captureResult.fx_pixels !== null ? captureResult.fx_pixels.toFixed(1) : 'N/A'}
+              {captureResult.fx_pixels !== null && captureResult.fy_pixels !== null
+                ? `${captureResult.fx_pixels.toFixed(1)} / ${captureResult.fy_pixels.toFixed(1)} px`
+                : 'N/A'}
             </span>
           </div>
           <div className="capture-meta-row">
-            <span className="capture-meta-label">fy (pixels)</span>
-            <span className={`capture-meta-value ${captureResult.fy_pixels === null ? 'meta-warn' : ''}`}>
-              {captureResult.fy_pixels !== null ? captureResult.fy_pixels.toFixed(1) : 'N/A'}
+            <span className="capture-meta-label">cx / cy (principal pt)</span>
+            <span className="capture-meta-value">
+              {captureResult.cx_pixels !== null && captureResult.cx_pixels !== undefined && captureResult.cy_pixels !== null && captureResult.cy_pixels !== undefined
+                ? `${captureResult.cx_pixels.toFixed(1)} / ${captureResult.cy_pixels.toFixed(1)} px`
+                : 'N/A'}
             </span>
           </div>
           <div className="capture-meta-row">
@@ -603,6 +691,26 @@ export const HUD: React.FC<Props> = ({
               {captureResult.intrinsicsSource ?? 'none'}
             </span>
           </div>
+
+          {/* Camera Pose Summary */}
+          {captureResult.cameraPose && (
+            <div className="capture-meta-row">
+              <span className="capture-meta-label">Camera Pose (world)</span>
+              <span className="capture-meta-value">
+                Pos: [{captureResult.cameraPose.position.x.toFixed(2)}, {captureResult.cameraPose.position.y.toFixed(2)}, {captureResult.cameraPose.position.z.toFixed(2)}]
+              </span>
+            </div>
+          )}
+
+          {/* Surface Plane Summary */}
+          {captureResult.planePosition && captureResult.planeNormal && (
+            <div className="capture-meta-row">
+              <span className="capture-meta-label">Surface Plane</span>
+              <span className="capture-meta-value">
+                N: [{captureResult.planeNormal.x.toFixed(2)}, {captureResult.planeNormal.y.toFixed(2)}, {captureResult.planeNormal.z.toFixed(2)}] · {captureResult.planeSource ?? 'tracked'}
+              </span>
+            </div>
+          )}
 
           {/* Image dimensions */}
           <div className="capture-meta-row">

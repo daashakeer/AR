@@ -807,6 +807,8 @@ export class ArSimulator {
     const vFovRad = (this.camera.fov * Math.PI) / 180;
     const fy_pixels = (imageHeight / 2) / Math.tan(vFovRad / 2);
     const fx_pixels = fy_pixels * this.camera.aspect;
+    const cx_pixels = imageWidth / 2;
+    const cy_pixels = imageHeight / 2;
 
     // Camera pose
     const cameraPose: CaptureResult['cameraPose'] = {
@@ -817,13 +819,30 @@ export class ArSimulator {
         z: this.camera.quaternion.z,
         w: this.camera.quaternion.w,
       },
+      cameraMatrix: Array.from(this.camera.matrixWorld.elements),
+      cameraMatrixInverse: Array.from(this.camera.matrixWorldInverse.elements),
     };
 
     const planePosition = this.hasHit
       ? { x: this.currentSmoothedPos.x, y: this.currentSmoothedPos.y, z: this.currentSmoothedPos.z }
       : null;
     const planeNormal = this.hasHit
-      ? (() => { const n = new THREE.Vector3(0,1,0).applyQuaternion(this.currentSmoothedQuat); return { x: n.x, y: n.y, z: n.z }; })()
+      ? (() => { const n = new THREE.Vector3(0,1,0).applyQuaternion(this.currentSmoothedQuat.clone()).normalize(); return { x: n.x, y: n.y, z: n.z }; })()
+      : null;
+    const planeQuaternion = this.hasHit
+      ? {
+          x: this.currentSmoothedQuat.x,
+          y: this.currentSmoothedQuat.y,
+          z: this.currentSmoothedQuat.z,
+          w: this.currentSmoothedQuat.w,
+        }
+      : null;
+    const planeTransform = this.hasHit
+      ? Array.from(
+          new THREE.Matrix4()
+            .compose(this.currentSmoothedPos, this.currentSmoothedQuat, new THREE.Vector3(1, 1, 1))
+            .elements
+        )
       : null;
 
     const reliabilityNote = [
@@ -838,13 +857,41 @@ export class ArSimulator {
       imageHeight,
       Z_m,
       distanceSource: 'simulator',
+      distanceValid: this.hasHit && Z_m !== null,
+      distanceDefinition: 'euclidean-camera-to-hitpoint',
       fx_pixels,
       fy_pixels,
+      cx_pixels,
+      cy_pixels,
       intrinsicsSource: 'simulator',
+      intrinsics: {
+        fx_pixels,
+        fy_pixels,
+        cx_pixels,
+        cy_pixels,
+        imageWidth,
+        imageHeight,
+        projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
+        intrinsicsSource: 'simulator',
+      },
       cameraPose,
       planePosition,
       planeNormal,
-      projectionMatrix: null,
+      planeQuaternion,
+      planeTransform,
+      planeSource: 'simulator',
+      planeTrackingValid: this.hasHit,
+      plane: this.hasHit ? {
+        planePosition,
+        planeNormal,
+        planeQuaternion,
+        planeTransform,
+        planeSource: 'simulator',
+        planeTrackingValid: true,
+      } : null,
+      projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
+      waistbandLandmarks: null,
+      waistbandWidthResult: null,
       capturedAt,
       trackingValid: this.hasHit,
       reliabilityNote,

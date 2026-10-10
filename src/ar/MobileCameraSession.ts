@@ -372,13 +372,25 @@ export class MobileCameraSession {
         imageHeight: 0,
         Z_m: null,
         distanceSource: null,
+        distanceValid: false,
+        distanceDefinition: null,
         fx_pixels: null,
         fy_pixels: null,
+        cx_pixels: null,
+        cy_pixels: null,
         intrinsicsSource: null,
+        intrinsics: null,
         cameraPose: null,
         planePosition: null,
         planeNormal: null,
+        planeQuaternion: null,
+        planeTransform: null,
+        planeSource: null,
+        planeTrackingValid: false,
+        plane: null,
         projectionMatrix: null,
+        waistbandLandmarks: null,
+        waistbandWidthResult: null,
         capturedAt: now,
         trackingValid: false,
         reliabilityNote: 'Error: Camera video not ready — cannot capture image.',
@@ -424,12 +436,16 @@ export class MobileCameraSession {
     // fx_pixels = fy_pixels * (imageWidth / imageHeight)   [square pixels assumed]
     let fx_pixels: number | null = null;
     let fy_pixels: number | null = null;
+    let cx_pixels: number | null = null;
+    let cy_pixels: number | null = null;
     let intrinsicsSource: CaptureResult['intrinsicsSource'] = null;
 
     if (imageWidth > 0 && imageHeight > 0) {
       const vFovRad = (this.camera.fov * Math.PI) / 180;
       fy_pixels = (imageHeight / 2) / Math.tan(vFovRad / 2);
       fx_pixels = fy_pixels * (imageWidth / imageHeight);
+      cx_pixels = imageWidth / 2;
+      cy_pixels = imageHeight / 2;
       intrinsicsSource = 'fov-derived';
     }
 
@@ -443,12 +459,16 @@ export class MobileCameraSession {
         z: this.camera.quaternion.z,
         w: this.camera.quaternion.w,
       },
+      cameraMatrix: Array.from(this.camera.matrixWorld.elements),
+      cameraMatrixInverse: Array.from(this.camera.matrixWorldInverse.elements),
     };
 
     // ── 5. Plane geometry ─────────────────────────────────────────────────────
     // The calibrated surface plane is at Y=0 with normal (0,1,0).
     const planePosition = { x: 0, y: 0, z: 0 };
     const planeNormal = { x: 0, y: 1, z: 0 };
+    const planeQuaternion = { x: 0, y: 0, z: 0, w: 1 };
+    const planeTransform = Array.from(new THREE.Matrix4().identity().elements);
 
     // ── 6. Reliability note ───────────────────────────────────────────────────
     const parts: string[] = ['Image: real camera frame from <video> element'];
@@ -470,13 +490,41 @@ export class MobileCameraSession {
       imageHeight,
       Z_m,
       distanceSource,
+      distanceValid: Z_m !== null,
+      distanceDefinition: 'perpendicular-camera-to-plane',
       fx_pixels,
       fy_pixels,
+      cx_pixels,
+      cy_pixels,
       intrinsicsSource,
+      intrinsics: intrinsicsSource ? {
+        fx_pixels,
+        fy_pixels,
+        cx_pixels,
+        cy_pixels,
+        imageWidth,
+        imageHeight,
+        projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
+        intrinsicsSource,
+      } : null,
       cameraPose,
       planePosition,
       planeNormal,
-      projectionMatrix: null,  // Not available without WebXR
+      planeQuaternion,
+      planeTransform,
+      planeSource: 'floor-estimate',
+      planeTrackingValid: true,
+      plane: {
+        planePosition,
+        planeNormal,
+        planeQuaternion,
+        planeTransform,
+        planeSource: 'floor-estimate',
+        planeTrackingValid: true,
+      },
+      projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
+      waistbandLandmarks: null,
+      waistbandWidthResult: null,
       capturedAt,
       trackingValid: true,
       reliabilityNote,
