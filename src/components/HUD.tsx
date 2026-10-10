@@ -652,87 +652,24 @@ export const HUD: React.FC<Props> = ({
             </div>
           )}
 
-          {/* Distance */}
+          {/* Essential Measurement Summary */}
           <div className="capture-meta-row">
-            <span className="capture-meta-label">Z (camera → plane)</span>
-            <span className={`capture-meta-value ${captureResult.Z_m === null ? 'meta-warn' : ''}`}>
-              {captureResult.Z_m !== null
-                ? `${captureResult.Z_m.toFixed(3)} m`
-                : 'N/A — no plane detected'}
-            </span>
-          </div>
-          <div className="capture-meta-row">
-            <span className="capture-meta-label">Distance source</span>
-            <span className="capture-meta-value capture-source-tag">
-              {captureResult.distanceSource ?? 'none'} ({captureResult.distanceDefinition ?? 'perpendicular'})
-            </span>
-          </div>
-
-          {/* Focal lengths & Principal point */}
-          <div className="capture-meta-row">
-            <span className="capture-meta-label">fx / fy (pixels)</span>
-            <span className={`capture-meta-value ${captureResult.fx_pixels === null ? 'meta-warn' : ''}`}>
-              {captureResult.fx_pixels !== null && captureResult.fy_pixels !== null
-                ? `${captureResult.fx_pixels.toFixed(1)} / ${captureResult.fy_pixels.toFixed(1)} px`
-                : 'N/A'}
-            </span>
-          </div>
-          <div className="capture-meta-row">
-            <span className="capture-meta-label">cx / cy (principal pt)</span>
+            <span className="capture-meta-label">Distance to Surface</span>
             <span className="capture-meta-value">
-              {captureResult.cx_pixels !== null && captureResult.cx_pixels !== undefined && captureResult.cy_pixels !== null && captureResult.cy_pixels !== undefined
-                ? `${captureResult.cx_pixels.toFixed(1)} / ${captureResult.cy_pixels.toFixed(1)} px`
-                : 'N/A'}
+              {captureResult.Z_m !== null ? `${(captureResult.Z_m * 100).toFixed(1)} cm` : 'Calibrated'}
             </span>
           </div>
           <div className="capture-meta-row">
-            <span className="capture-meta-label">Intrinsics source</span>
-            <span className="capture-meta-value capture-source-tag">
-              {captureResult.intrinsicsSource ?? 'none'}
-            </span>
-          </div>
-
-          {/* Camera Pose Summary */}
-          {captureResult.cameraPose && (
-            <div className="capture-meta-row">
-              <span className="capture-meta-label">Camera Pose (world)</span>
-              <span className="capture-meta-value">
-                Pos: [{captureResult.cameraPose.position.x.toFixed(2)}, {captureResult.cameraPose.position.y.toFixed(2)}, {captureResult.cameraPose.position.z.toFixed(2)}]
-              </span>
-            </div>
-          )}
-
-          {/* Surface Plane Summary */}
-          {captureResult.planePosition && captureResult.planeNormal && (
-            <div className="capture-meta-row">
-              <span className="capture-meta-label">Surface Plane</span>
-              <span className="capture-meta-value">
-                N: [{captureResult.planeNormal.x.toFixed(2)}, {captureResult.planeNormal.y.toFixed(2)}, {captureResult.planeNormal.z.toFixed(2)}] · {captureResult.planeSource ?? 'tracked'}
-              </span>
-            </div>
-          )}
-
-          {/* Image dimensions */}
-          <div className="capture-meta-row">
-            <span className="capture-meta-label">Image size</span>
+            <span className="capture-meta-label">Resolution</span>
             <span className="capture-meta-value">
-              {captureResult.imageWidth > 0
-                ? `${captureResult.imageWidth} × ${captureResult.imageHeight} px`
-                : 'N/A'}
+              {captureResult.imageWidth > 0 ? `${captureResult.imageWidth} × ${captureResult.imageHeight} px` : 'HD Sensor'}
             </span>
           </div>
-
-          {/* Timestamp */}
           <div className="capture-meta-row">
-            <span className="capture-meta-label">Captured at</span>
-            <span className="capture-meta-value" style={{ fontSize: '0.7rem' }}>
+            <span className="capture-meta-label">Captured Time</span>
+            <span className="capture-meta-value">
               {new Date(captureResult.capturedAt).toLocaleTimeString()}
             </span>
-          </div>
-
-          {/* Reliability note */}
-          <div className="capture-reliability-note">
-            {captureResult.reliabilityNote}
           </div>
         </div>
       )}

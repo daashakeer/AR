@@ -117,7 +117,6 @@ export default function App() {
     <HomePage
       onStart={handleStartManual}
       onStartGarment={handleStartGarment}
-      onStartSimulator={handleStartSimulator}
       isArSupported={caps.arSupported}
     />
   );
