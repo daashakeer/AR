@@ -210,6 +210,8 @@ export class ArSession {
   private lastViewportWidth = 0;
   private lastViewportHeight = 0;
   private rearCameraTrack: MediaStreamTrack | null = null;  // For real image capture
+  private captureVideo: HTMLVideoElement | null = null;     // Background video sink to keep camera decoding active
+  private captureStream: MediaStream | null = null;
 
   // Measurement State & Visuals
   private markers: MarkerItem[] = [];
@@ -397,12 +399,43 @@ export class ArSession {
     // We need this because canvas.toDataURL() in WebXR only captures the Three.js
     // overlay layer, not the AR camera passthrough rendered by the XR compositor.
     navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
-      .then((stream) => {
+      .getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false,
+      })
+      .then(async (stream) => {
+        this.captureStream = stream;
         const track = stream.getVideoTracks()[0];
         if (track) {
           this.rearCameraTrack = track;
           console.log('[AR] Rear camera track acquired for image capture:', track.label);
+
+          // Create an offscreen video element to act as an active sink.
+          // This forces the browser/hardware to decode live frames continuously.
+          const video = document.createElement('video');
+          video.setAttribute('playsinline', 'true');
+          video.setAttribute('autoplay', 'true');
+          video.muted = true;
+          video.srcObject = stream;
+          video.style.position = 'fixed';
+          video.style.top = '-9999px';
+          video.style.left = '-9999px';
+          video.style.width = '1px';
+          video.style.height = '1px';
+          video.style.opacity = '0';
+          video.style.pointerEvents = 'none';
+          document.body.appendChild(video);
+          try {
+            await video.play();
+            this.captureVideo = video;
+            console.log('[AR] Background camera video active and decoding');
+          } catch (e) {
+            console.warn('[AR] Background video play error:', e);
+          }
         }
       })
       .catch((err) => {
@@ -936,53 +969,114 @@ export class ArSession {
   async captureImage(): Promise<CaptureResult> {
     const capturedAt = new Date().toISOString();
 
-    // ── 1. Real camera image via ImageCapture ────────────────────────────────
+    // Helper to test if canvas buffer is completely pitch-black
+    const isBufferBlack = (ctx: CanvasRenderingContext2D, w: number, h: number): boolean => {
+      if (w <= 0 || h <= 0) return true;
+      const pts = [
+        [Math.floor(w * 0.25), Math.floor(h * 0.25)],
+        [Math.floor(w * 0.5), Math.floor(h * 0.5)],
+        [Math.floor(w * 0.75), Math.floor(h * 0.75)],
+        [Math.floor(w * 0.25), Math.floor(h * 0.75)],
+        [Math.floor(w * 0.75), Math.floor(h * 0.25)],
+      ];
+      for (const [x, y] of pts) {
+        try {
+          const pixel = ctx.getImageData(x, y, 1, 1).data;
+          if (pixel[0] + pixel[1] + pixel[2] > 15) {
+            return false;
+          }
+        } catch {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    // ── 1. Real camera image ────────────────────────────────
     let imageDataUrl = '';
     let imageWidth = 0;
     let imageHeight = 0;
 
-    if (this.rearCameraTrack && typeof (window as unknown as { ImageCapture?: unknown }).ImageCapture !== 'undefined') {
+    // Strategy A: Draw from active background video element (live decoded frames from camera stream)
+    if (this.captureVideo && this.captureVideo.readyState >= 2) {
       try {
-        const ImageCaptureClass = (window as unknown as { ImageCapture: new (track: MediaStreamTrack) => { grabFrame?: () => Promise<ImageBitmap>; takePhoto?: () => Promise<Blob> } }).ImageCapture;
-        const imageCapture = new ImageCaptureClass(this.rearCameraTrack);
-        if (typeof imageCapture.grabFrame === 'function') {
-          const bitmap = await imageCapture.grabFrame();
-          imageWidth = bitmap.width;
-          imageHeight = bitmap.height;
-
-          const offscreen = document.createElement('canvas');
-          offscreen.width = imageWidth;
-          offscreen.height = imageHeight;
-          const ctx = offscreen.getContext('2d')!;
-          ctx.drawImage(bitmap, 0, 0);
-          bitmap.close();
-          imageDataUrl = offscreen.toDataURL('image/jpeg', 0.92);
-        } else if (typeof imageCapture.takePhoto === 'function') {
-          const blob = await imageCapture.takePhoto();
-          const bitmap = await createImageBitmap(blob);
-          imageWidth = bitmap.width;
-          imageHeight = bitmap.height;
-
-          const offscreen = document.createElement('canvas');
-          offscreen.width = imageWidth;
-          offscreen.height = imageHeight;
-          const ctx = offscreen.getContext('2d')!;
-          ctx.drawImage(bitmap, 0, 0);
-          bitmap.close();
-          imageDataUrl = offscreen.toDataURL('image/jpeg', 0.92);
+        const vw = this.captureVideo.videoWidth;
+        const vh = this.captureVideo.videoHeight;
+        if (vw > 0 && vh > 0) {
+          const cv = document.createElement('canvas');
+          cv.width = vw;
+          cv.height = vh;
+          const ctx = cv.getContext('2d')!;
+          ctx.drawImage(this.captureVideo, 0, 0, vw, vh);
+          if (!isBufferBlack(ctx, vw, vh)) {
+            imageDataUrl = cv.toDataURL('image/jpeg', 0.95);
+            imageWidth = vw;
+            imageHeight = vh;
+            console.log(`[ArSession] Frame captured from active video element: ${vw}x${vh}`);
+          } else {
+            console.warn('[ArSession] Video element frame was black, trying takePhoto');
+          }
         }
       } catch (err) {
-        console.warn('[ArSession.captureImage] ImageCapture grabFrame/takePhoto failed:', err);
+        console.warn('[ArSession] drawImage from video failed:', err);
       }
     }
 
+    // Strategy B: ImageCapture.takePhoto() (Android Camera2 hardware sensor snapshot)
+    if (!imageDataUrl && this.rearCameraTrack && typeof (window as unknown as { ImageCapture?: unknown }).ImageCapture !== 'undefined') {
+      try {
+        const ImageCaptureClass = (window as unknown as { ImageCapture: new (track: MediaStreamTrack) => { takePhoto?: () => Promise<Blob>; grabFrame?: () => Promise<ImageBitmap> } }).ImageCapture;
+        const ic = new ImageCaptureClass(this.rearCameraTrack);
+        if (typeof ic.takePhoto === 'function') {
+          const blob = await ic.takePhoto();
+          const bitmap = await createImageBitmap(blob);
+          const cv = document.createElement('canvas');
+          cv.width = bitmap.width;
+          cv.height = bitmap.height;
+          const ctx = cv.getContext('2d')!;
+          ctx.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          if (!isBufferBlack(ctx, cv.width, cv.height)) {
+            imageDataUrl = cv.toDataURL('image/jpeg', 0.95);
+            imageWidth = cv.width;
+            imageHeight = cv.height;
+            console.log(`[ArSession] Frame captured via ImageCapture.takePhoto(): ${imageWidth}x${imageHeight}`);
+          }
+        }
+      } catch (err) {
+        console.warn('[ArSession] ImageCapture.takePhoto failed:', err);
+      }
+    }
+
+    // Strategy C: ImageCapture.grabFrame()
+    if (!imageDataUrl && this.rearCameraTrack && typeof (window as unknown as { ImageCapture?: unknown }).ImageCapture !== 'undefined') {
+      try {
+        const ImageCaptureClass = (window as unknown as { ImageCapture: new (track: MediaStreamTrack) => { grabFrame?: () => Promise<ImageBitmap> } }).ImageCapture;
+        const ic = new ImageCaptureClass(this.rearCameraTrack);
+        if (typeof ic.grabFrame === 'function') {
+          const bitmap = await ic.grabFrame();
+          const cv = document.createElement('canvas');
+          cv.width = bitmap.width;
+          cv.height = bitmap.height;
+          const ctx = cv.getContext('2d')!;
+          ctx.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          imageDataUrl = cv.toDataURL('image/jpeg', 0.92);
+          imageWidth = cv.width;
+          imageHeight = cv.height;
+          console.log(`[ArSession] Frame captured via ImageCapture.grabFrame(): ${imageWidth}x${imageHeight}`);
+        }
+      } catch (err) {
+        console.warn('[ArSession] ImageCapture.grabFrame failed:', err);
+      }
+    }
+
+    // Fallback: WebGL canvas (if hardware camera capture unavailable)
     if (!imageDataUrl) {
-      // Fallback: capture what the renderer canvas contains (overlay only, not camera).
-      // This is clearly flagged in reliabilityNote.
       imageDataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.92);
       imageWidth = this.renderer.domElement.width;
       imageHeight = this.renderer.domElement.height;
-      console.warn('[ArSession.captureImage] ImageCapture unavailable — overlay canvas used. Image will not show real camera view.');
+      console.warn('[ArSession.captureImage] Real camera frame unavailable — canvas overlay used.');
     }
 
     // ── 2. Camera-to-plane distance Z_m ─────────────────────────────────────
@@ -997,12 +1091,11 @@ export class ArSession {
 
       // The hit-test smoothed position is on the surface plane.
       // Compute perpendicular distance: project (cam - planePoint) onto plane normal.
-      // The plane normal is recovered from the smoothed quaternion (up vector rotated).
       const up = new THREE.Vector3(0, 1, 0);
       const normal = up.applyQuaternion(this.currentSmoothedQuat);
 
       const toPlane = camPos.clone().sub(this.currentSmoothedPos);
-      Z_m = Math.abs(toPlane.dot(normal));  // Perpendicular (signed → abs) distance in metres
+      Z_m = Math.abs(toPlane.dot(normal));  // Perpendicular distance in metres
 
       planePosition = { x: this.currentSmoothedPos.x, y: this.currentSmoothedPos.y, z: this.currentSmoothedPos.z };
       planeNormal = { x: normal.x, y: normal.y, z: normal.z };
@@ -1020,26 +1113,20 @@ export class ArSession {
 
     // ── 4. Focal length from XRCamera projection matrix ─────────────────────
     // Column-major 4×4 projection matrix from WebXR:
-    //   m[0]  = 2*fx / viewportWidth   (element [0][0] in column-major)
-    //   m[5]  = 2*fy / viewportHeight  (element [1][1] in column-major)
-    // We then scale to the actual captured image dimensions (imageW / viewportW).
+    //   m[0]  = 2*fx / width   →  fx_pixels = m[0] * imageWidth / 2
+    //   m[5]  = 2*fy / height  →  fy_pixels = m[5] * imageHeight / 2
     let fx_pixels: number | null = null;
     let fy_pixels: number | null = null;
     let intrinsicsSource: CaptureResult['intrinsicsSource'] = null;
     let projectionMatrix: number[] | null = null;
 
-    if (this.lastViewProjectionMatrix && this.lastViewportWidth > 0 && this.lastViewportHeight > 0) {
-      const m = this.lastViewProjectionMatrix;
-      // m[0] is column 0, row 0 in column-major; m[5] is column 1, row 1
-      const fx_vp = m[0] * this.lastViewportWidth / 2;
-      const fy_vp = m[5] * this.lastViewportHeight / 2;
-
-      // Scale to captured image resolution
-      const scaleX = imageWidth > 0 ? imageWidth / this.lastViewportWidth : 1;
-      const scaleY = imageHeight > 0 ? imageHeight / this.lastViewportHeight : 1;
-
-      fx_pixels = fx_vp * scaleX;
-      fy_pixels = fy_vp * scaleY;
+    const projMat = this.lastViewProjectionMatrix || (this.camera?.projectionMatrix ? Array.from(this.camera.projectionMatrix.elements) : null);
+    if (projMat && projMat[0] > 0 && projMat[5] > 0) {
+      const m = projMat;
+      const targetW = imageWidth > 0 ? imageWidth : (window.innerWidth * (window.devicePixelRatio || 1));
+      const targetH = imageHeight > 0 ? imageHeight : (window.innerHeight * (window.devicePixelRatio || 1));
+      fx_pixels = m[0] * targetW / 2;
+      fy_pixels = m[5] * targetH / 2;
       intrinsicsSource = 'webxr-projection';
       projectionMatrix = m;
     }
@@ -1081,11 +1168,20 @@ export class ArSession {
     if (this.ended) return;
     this.ended = true;
 
-    // Stop the rear camera track we opened for image capture
-    if (this.rearCameraTrack) {
-      this.rearCameraTrack.stop();
-      this.rearCameraTrack = null;
+    // Clean up background capture video and stream
+    if (this.captureVideo) {
+      this.captureVideo.pause();
+      this.captureVideo.srcObject = null;
+      if (this.captureVideo.parentElement) {
+        this.captureVideo.parentElement.removeChild(this.captureVideo);
+      }
+      this.captureVideo = null;
     }
+    if (this.captureStream) {
+      this.captureStream.getTracks().forEach((t) => t.stop());
+      this.captureStream = null;
+    }
+    this.rearCameraTrack = null;
 
     if (this.xrSession) {
       this.xrSession.end().catch(() => {});

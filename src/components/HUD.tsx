@@ -112,6 +112,7 @@ export const HUD: React.FC<Props> = ({
 }) => {
   const [showHistory, setShowHistory] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [downloaded, setDownloaded] = useState(false);
 
   const allUnits = distanceMeters !== null ? formatAllUnits(distanceMeters) : null;
   const isDetecting = step === 'detecting' || step === 'idle';
@@ -127,6 +128,49 @@ export const HUD: React.FC<Props> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  const handleDownload = () => {
+    if (!captureResult?.imageDataUrl) return;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+    // 1. Download captured trouser image
+    const imgLink = document.createElement('a');
+    imgLink.download = `trouser_image_${timestamp}.jpg`;
+    imgLink.href = captureResult.imageDataUrl;
+    document.body.appendChild(imgLink);
+    imgLink.click();
+    document.body.removeChild(imgLink);
+
+    // 2. Download camera calibration & measurement metadata JSON
+    const metaData = {
+      capturedAt: captureResult.capturedAt,
+      imageWidth: captureResult.imageWidth,
+      imageHeight: captureResult.imageHeight,
+      Z_m: captureResult.Z_m,
+      distanceSource: captureResult.distanceSource,
+      fx_pixels: captureResult.fx_pixels,
+      fy_pixels: captureResult.fy_pixels,
+      intrinsicsSource: captureResult.intrinsicsSource,
+      cameraPose: captureResult.cameraPose,
+      planePosition: captureResult.planePosition,
+      planeNormal: captureResult.planeNormal,
+      projectionMatrix: captureResult.projectionMatrix,
+      trackingValid: captureResult.trackingValid,
+      reliabilityNote: captureResult.reliabilityNote,
+    };
+    const jsonBlob = new Blob([JSON.stringify(metaData, null, 2)], { type: 'application/json' });
+    const jsonUrl = URL.createObjectURL(jsonBlob);
+    const jsonLink = document.createElement('a');
+    jsonLink.download = `trouser_metadata_${timestamp}.json`;
+    jsonLink.href = jsonUrl;
+    document.body.appendChild(jsonLink);
+    jsonLink.click();
+    document.body.removeChild(jsonLink);
+    URL.revokeObjectURL(jsonUrl);
+
+    setDownloaded(true);
+    setTimeout(() => setDownloaded(false), 2500);
   };
 
   return (
@@ -397,7 +441,12 @@ export const HUD: React.FC<Props> = ({
             <span className="capture-badge">
               {captureResult.distanceSource === 'simulator' ? '🎮 Simulator Capture' : '📷 Captured Frame'}
             </span>
-            <button className="capture-retake-btn" onClick={onRetake}>🔄 Retake</button>
+            <div className="capture-header-actions">
+              <button className="capture-download-btn" onClick={handleDownload}>
+                {downloaded ? '✓ Saved!' : '💾 Download'}
+              </button>
+              <button className="capture-retake-btn" onClick={onRetake}>🔄 Retake</button>
+            </div>
           </div>
 
           {/* Image preview */}

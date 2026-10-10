@@ -1382,6 +1382,27 @@ button {
   letter-spacing: 0.3px;
 }
 
+.capture-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.capture-download-btn {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+  transition: all 0.15s;
+}
+.capture-download-btn:hover {
+  filter: brightness(1.1);
+}
+
 .capture-retake-btn {
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
