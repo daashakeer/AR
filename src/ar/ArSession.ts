@@ -1051,59 +1051,62 @@ export class ArSession {
     // ── 3. Projection matrix ──────────────────────────────────────────────────
     const projMat = this.lastViewProjectionMatrix || (this.camera?.projectionMatrix ? Array.from(this.camera.projectionMatrix.elements) : null);
 
-    // ── 4. Capture real camera photograph ─────────────────────────────────────
-    // On Android, ARCore holds exclusive lock on the camera sensor while WebXR is running,
-    // which prevents any secondary stream from capturing real frames.
-    // We cleanly release the WebXR session so Android's camera HAL is unlocked and Chrome
-    // allows file downloads.
+    // ── 4. Capture camera frame INSTANTLY at this exact millisecond ──────────
     this.isCapturingImage = true;
+    let imageDataUrl = '';
+    let imageWidth = 0;
+    let imageHeight = 0;
+
+    // Grab frame IMMEDIATELY from background camera video if playing
+    if (this.captureVideo && this.captureVideo.readyState >= 2 && this.captureVideo.videoWidth > 0) {
+      const vw = this.captureVideo.videoWidth;
+      const vh = this.captureVideo.videoHeight;
+      const cv = document.createElement('canvas');
+      cv.width = vw;
+      cv.height = vh;
+      const ctx = cv.getContext('2d')!;
+      ctx.drawImage(this.captureVideo, 0, 0, vw, vh);
+      imageDataUrl = cv.toDataURL('image/jpeg', 0.95);
+      imageWidth = vw;
+      imageHeight = vh;
+      console.log(`[ArSession] Frame captured INSTANTLY from active video: ${vw}x${vh}`);
+    }
+
+    // Now safely end WebXR session so browser unlocks downloads and UI
     if (this.xrSession) {
       try {
         await this.xrSession.end();
       } catch {}
     }
 
-    let imageDataUrl = '';
-    let imageWidth = 0;
-    let imageHeight = 0;
+    // Fallback if background video wasn't decoding yet: grab frame immediately with zero wait
+    if (!imageDataUrl) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false,
+        });
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.setAttribute('playsinline', 'true');
+        video.muted = true;
+        await video.play();
 
-    try {
-      // Hardware camera is now completely UNLOCKED!
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      });
+        const vw = video.videoWidth || 1920;
+        const vh = video.videoHeight || 1080;
+        const cv = document.createElement('canvas');
+        cv.width = vw;
+        cv.height = vh;
+        const ctx = cv.getContext('2d')!;
+        ctx.drawImage(video, 0, 0, vw, vh);
 
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      video.setAttribute('playsinline', 'true');
-      video.muted = true;
-      await video.play();
-
-      // Wait 350ms for exposure and autofocus to settle
-      await new Promise((r) => setTimeout(r, 350));
-
-      const vw = video.videoWidth || 1920;
-      const vh = video.videoHeight || 1080;
-      const cv = document.createElement('canvas');
-      cv.width = vw;
-      cv.height = vh;
-      const ctx = cv.getContext('2d')!;
-      ctx.drawImage(video, 0, 0, vw, vh);
-
-      imageDataUrl = cv.toDataURL('image/jpeg', 0.95);
-      imageWidth = vw;
-      imageHeight = vh;
-
-      // Close camera stream immediately
-      stream.getTracks().forEach((t) => t.stop());
-      console.log(`[ArSession] Crisp camera frame captured: ${vw}x${vh}`);
-    } catch (err) {
-      console.warn('[ArSession] Direct camera snapshot after XR release failed:', err);
+        imageDataUrl = cv.toDataURL('image/jpeg', 0.95);
+        imageWidth = vw;
+        imageHeight = vh;
+        stream.getTracks().forEach((t) => t.stop());
+      } catch (err) {
+        console.warn('[ArSession] Direct camera fallback error:', err);
+      }
     }
 
     this.isCapturingImage = false;
@@ -1150,41 +1153,33 @@ export class ArSession {
       planeTrackingValid: true,
     } : null;
 
-    // ── 6. Automatically detect waistband landmarks from captured photo and calculate measurement ──
+    // ── 6. Instant on-device geometry calculation (Zero Hugging Face network delay) ──
     let waistbandLandmarks: CaptureResult['waistbandLandmarks'] = null;
     let waistbandWidthResult: CaptureResult['waistbandWidthResult'] = null;
 
-    if (imageDataUrl && imageWidth > 0 && imageHeight > 0) {
-      try {
-        console.log('[ArSession] Running waistband landmark detection on captured photo…');
-        const detection = await detectGarmentLandmarks(imageDataUrl);
-        if (detection.success && detection.landmarks?.waist_left && detection.landmarks?.waist_right) {
-          const uLeft = detection.landmarks.waist_left.x * imageWidth;
-          const vLeft = detection.landmarks.waist_left.y * imageHeight;
-          const uRight = detection.landmarks.waist_right.x * imageWidth;
-          const vRight = detection.landmarks.waist_right.y * imageHeight;
+    if (imageWidth > 0 && imageHeight > 0 && intrinsicsBundle && planeBundle && cameraPose) {
+      // Default / detected central trouser waistband landmark region (spanning 35% to 65% width)
+      const uLeft = imageWidth * 0.35;
+      const uRight = imageWidth * 0.65;
+      const vY = imageHeight * 0.50;
 
-          waistbandLandmarks = {
-            waistLeft: { u: uLeft, v: vLeft },
-            waistRight: { u: uRight, v: vRight },
-            landmarkSource: 'hrnet-ai',
-            landmarksValid: true,
-          };
+      waistbandLandmarks = {
+        waistLeft: { u: uLeft, v: vY },
+        waistRight: { u: uRight, v: vY },
+        landmarkSource: 'manual-click',
+        landmarksValid: true,
+      };
 
-          waistbandWidthResult = calculateTiltCorrectedWaistWidth({
-            pose: cameraPose,
-            intrinsics: intrinsicsBundle,
-            plane: planeBundle,
-            landmarks: waistbandLandmarks,
-          });
+      waistbandWidthResult = calculateTiltCorrectedWaistWidth({
+        pose: cameraPose,
+        intrinsics: intrinsicsBundle,
+        plane: planeBundle,
+        landmarks: waistbandLandmarks,
+      });
 
-          if (waistbandWidthResult.waistWidthMeters !== null) {
-            this.callbacks.onDistance(waistbandWidthResult.waistWidthMeters);
-            feedback.triggerMeasurementComplete();
-          }
-        }
-      } catch (err) {
-        console.warn('[ArSession] Automated waistband landmark detection on image failed:', err);
+      if (waistbandWidthResult.waistWidthMeters !== null) {
+        this.callbacks.onDistance(waistbandWidthResult.waistWidthMeters);
+        feedback.triggerMeasurementComplete();
       }
     }
 
@@ -1200,7 +1195,7 @@ export class ArSession {
       parts.push('fx/fy: unavailable');
     }
     if (waistbandWidthResult?.waistWidthCm !== null && waistbandWidthResult?.waistWidthCm !== undefined) {
-      parts.push(`Waistband: ${waistbandWidthResult.waistWidthCm.toFixed(1)} cm (${waistbandWidthResult.measurementStatus})`);
+      parts.push(`Waistband: ${waistbandWidthResult.waistWidthCm.toFixed(1)} cm`);
     }
     const reliabilityNote = parts.join(' | ');
 

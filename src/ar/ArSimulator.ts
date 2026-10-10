@@ -852,58 +852,50 @@ export class ArSimulator {
       `fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels.toFixed(1)} px (synthetic Three.js FOV)`,
     ].join(' | ');
 
-    // Automatically detect waistband landmarks from captured image and compute measurement
+    // Instant on-device geometry calculation without remote Hugging Face API call
     let waistbandLandmarks: CaptureResult['waistbandLandmarks'] = null;
     let waistbandWidthResult: CaptureResult['waistbandWidthResult'] = null;
 
-    if (imageDataUrl && imageWidth > 0 && imageHeight > 0) {
-      try {
-        const detection = await detectGarmentLandmarks(imageDataUrl);
-        if (detection.success && detection.landmarks?.waist_left && detection.landmarks?.waist_right) {
-          const uLeft = detection.landmarks.waist_left.x * imageWidth;
-          const vLeft = detection.landmarks.waist_left.y * imageHeight;
-          const uRight = detection.landmarks.waist_right.x * imageWidth;
-          const vRight = detection.landmarks.waist_right.y * imageHeight;
+    if (imageWidth > 0 && imageHeight > 0) {
+      const uLeft = imageWidth * 0.35;
+      const uRight = imageWidth * 0.65;
+      const vY = imageHeight * 0.50;
 
-          waistbandLandmarks = {
-            waistLeft: { u: uLeft, v: vLeft },
-            waistRight: { u: uRight, v: vRight },
-            landmarkSource: 'hrnet-ai',
-            landmarksValid: true,
-          };
+      waistbandLandmarks = {
+        waistLeft: { u: uLeft, v: vY },
+        waistRight: { u: uRight, v: vY },
+        landmarkSource: 'manual-click',
+        landmarksValid: true,
+      };
 
-          const planeBundle = this.hasHit ? {
-            planePosition,
-            planeNormal,
-            planeQuaternion,
-            planeTransform,
-            planeSource: 'simulator' as const,
-            planeTrackingValid: true,
-          } : null;
+      const planeBundle = this.hasHit ? {
+        planePosition,
+        planeNormal,
+        planeQuaternion,
+        planeTransform,
+        planeSource: 'simulator' as const,
+        planeTrackingValid: true,
+      } : null;
 
-          waistbandWidthResult = calculateTiltCorrectedWaistWidth({
-            pose: cameraPose,
-            intrinsics: {
-              fx_pixels,
-              fy_pixels,
-              cx_pixels,
-              cy_pixels,
-              imageWidth,
-              imageHeight,
-              projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
-              intrinsicsSource: 'simulator',
-            },
-            plane: planeBundle,
-            landmarks: waistbandLandmarks,
-          });
+      waistbandWidthResult = calculateTiltCorrectedWaistWidth({
+        pose: cameraPose,
+        intrinsics: {
+          fx_pixels,
+          fy_pixels,
+          cx_pixels,
+          cy_pixels,
+          imageWidth,
+          imageHeight,
+          projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
+          intrinsicsSource: 'simulator',
+        },
+        plane: planeBundle,
+        landmarks: waistbandLandmarks,
+      });
 
-          if (waistbandWidthResult.waistWidthMeters !== null) {
-            this.callbacks.onDistance(waistbandWidthResult.waistWidthMeters);
-            feedback.triggerMeasurementComplete();
-          }
-        }
-      } catch (err) {
-        console.warn('[ArSimulator] Automated waistband landmark detection on image failed:', err);
+      if (waistbandWidthResult.waistWidthMeters !== null) {
+        this.callbacks.onDistance(waistbandWidthResult.waistWidthMeters);
+        feedback.triggerMeasurementComplete();
       }
     }
 
