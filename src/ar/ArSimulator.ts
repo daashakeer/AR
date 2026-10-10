@@ -29,6 +29,8 @@ import {
   calculateGarmentMetrics,
   buildGarment3DMeshes,
 } from './garmentMeasure';
+import type { CaptureResult } from './captureTypes';
+
 
 interface MarkerItem {
   point: Point3D;
@@ -781,6 +783,75 @@ export class ArSimulator {
       this.isScanningGarment = false;
       this.callbacks.onGarmentScanning?.(false);
     }
+  }
+
+  /**
+   * Captures the current Three.js rendered scene image plus synthetic calibration data.
+   * All values are clearly labelled as 'simulator' source — not real device measurements.
+   */
+  async captureImage(): Promise<CaptureResult> {
+    const capturedAt = new Date().toISOString();
+
+    // Image: Three.js canvas render (synthetic 3D room, not a real camera)
+    const imageDataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.92);
+    const imageWidth = this.renderer.domElement.width;
+    const imageHeight = this.renderer.domElement.height;
+
+    // Z_m: Euclidean distance from simulator camera to the raycaster hit point
+    let Z_m: number | null = null;
+    if (this.hasHit) {
+      Z_m = this.camera.position.distanceTo(this.currentSmoothedPos);
+    }
+
+    // fx / fy: derived from the Three.js PerspectiveCamera parameters
+    const vFovRad = (this.camera.fov * Math.PI) / 180;
+    const fy_pixels = (imageHeight / 2) / Math.tan(vFovRad / 2);
+    const fx_pixels = fy_pixels * this.camera.aspect;
+
+    // Camera pose
+    const cameraPose: CaptureResult['cameraPose'] = {
+      position: { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z },
+      quaternion: {
+        x: this.camera.quaternion.x,
+        y: this.camera.quaternion.y,
+        z: this.camera.quaternion.z,
+        w: this.camera.quaternion.w,
+      },
+    };
+
+    const planePosition = this.hasHit
+      ? { x: this.currentSmoothedPos.x, y: this.currentSmoothedPos.y, z: this.currentSmoothedPos.z }
+      : null;
+    const planeNormal = this.hasHit
+      ? (() => { const n = new THREE.Vector3(0,1,0).applyQuaternion(this.currentSmoothedQuat); return { x: n.x, y: n.y, z: n.z }; })()
+      : null;
+
+    const reliabilityNote = [
+      'Image: SIMULATOR render (not a real camera — do not use for measurements)',
+      Z_m !== null ? `Z: ${Z_m.toFixed(3)} m (synthetic raycaster, not real)` : 'Z: no hit',
+      `fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels.toFixed(1)} px (synthetic Three.js FOV)`,
+    ].join(' | ');
+
+    const result: CaptureResult = {
+      imageDataUrl,
+      imageWidth,
+      imageHeight,
+      Z_m,
+      distanceSource: 'simulator',
+      fx_pixels,
+      fy_pixels,
+      intrinsicsSource: 'simulator',
+      cameraPose,
+      planePosition,
+      planeNormal,
+      projectionMatrix: null,
+      capturedAt,
+      trackingValid: this.hasHit,
+      reliabilityNote,
+    };
+
+    this.callbacks.onCapture?.(result);
+    return result;
   }
 
   reset(): void {

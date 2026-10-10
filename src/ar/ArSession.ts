@@ -29,6 +29,9 @@ import {
   calculateGarmentMetrics,
   buildGarment3DMeshes,
 } from './garmentMeasure';
+import type { CaptureResult } from './captureTypes';
+
+export type { CaptureResult };
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -69,6 +72,7 @@ export interface ArSessionCallbacks {
   onGuidance: (guidance: CameraGuidance) => void;
   onGarmentMeasured?: (metrics: GarmentMetrics) => void;
   onGarmentScanning?: (isScanning: boolean) => void;
+  onCapture?: (result: CaptureResult) => void;
   onError: (error: AppError) => void;
   onEnd: () => void;
 }
@@ -199,6 +203,14 @@ export class ArSession {
   private localSpace: XRReferenceSpace | null = null;
   private lastHitResult: XRHitTestResult | null = null;
 
+  // Capture State — updated every render loop tick
+  private lastXRFrame: XRFrame | null = null;
+  private lastViewerPose: XRViewerPose | null = null;
+  private lastViewProjectionMatrix: number[] | null = null;  // Column-major 4×4
+  private lastViewportWidth = 0;
+  private lastViewportHeight = 0;
+  private rearCameraTrack: MediaStreamTrack | null = null;  // For real image capture
+
   // Measurement State & Visuals
   private markers: MarkerItem[] = [];
   private measurementLines: THREE.Line[] = [];
@@ -227,6 +239,7 @@ export class ArSession {
 
   private callbacks: ArSessionCallbacks;
   private boundSelect: () => void;
+
 
   constructor(canvas: HTMLCanvasElement, callbacks: ArSessionCallbacks) {
     this.callbacks = callbacks;
@@ -379,6 +392,23 @@ export class ArSession {
     this.xrSession.addEventListener('select', this.boundSelect);
     this.xrSession.addEventListener('end', this.handleSessionEnd.bind(this));
 
+    // Acquire rear camera media track for real image capture.
+    // This runs in the background — it does not block session start.
+    // We need this because canvas.toDataURL() in WebXR only captures the Three.js
+    // overlay layer, not the AR camera passthrough rendered by the XR compositor.
+    navigator.mediaDevices
+      .getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
+      .then((stream) => {
+        const track = stream.getVideoTracks()[0];
+        if (track) {
+          this.rearCameraTrack = track;
+          console.log('[AR] Rear camera track acquired for image capture:', track.label);
+        }
+      })
+      .catch((err) => {
+        console.warn('[AR] Could not acquire rear camera track for capture:', err);
+      });
+
     // Immediately start in detecting state
     this.step = 'detecting';
     this.callbacks.onStep('detecting');
@@ -391,6 +421,27 @@ export class ArSession {
     if (!frame || !this.hitTestSource || !this.localSpace) {
       this.renderer.render(this.scene, this.camera);
       return;
+    }
+
+    // Store for captureImage() — updated every frame
+    this.lastXRFrame = frame;
+    const viewerPose = frame.getViewerPose(this.localSpace);
+    if (viewerPose) {
+      this.lastViewerPose = viewerPose;
+      // Extract projection matrix from the first view (the camera's optical parameters)
+      const view = viewerPose.views[0];
+      if (view) {
+        this.lastViewProjectionMatrix = Array.from(view.projectionMatrix);
+        // Viewport size from the WebXR layer (used to scale projection matrix → pixels)
+        const layer = this.renderer.xr.getBaseLayer();
+        if (layer && 'getViewport' in layer) {
+          const vp = (layer as XRWebGLLayer).getViewport(view);
+          if (vp) {
+            this.lastViewportWidth = vp.width;
+            this.lastViewportHeight = vp.height;
+          }
+        }
+      }
     }
 
     const hitTestResults = frame.getHitTestResults(this.hitTestSource);
@@ -858,9 +909,184 @@ export class ArSession {
     this.callbacks.onOrientation(null);
   }
 
+  // ─── Image Capture ───────────────────────────────────────────────────────
+
+  /**
+   * Captures a real camera image plus all calibration metadata at this moment.
+   *
+   * Image strategy (WebXR):
+   *   The AR camera passthrough is composited by the browser's XR runtime and
+   *   is NOT accessible via canvas.toDataURL() (which only has the Three.js overlay).
+   *   We use the ImageCapture API on the rear camera MediaStreamTrack we opened
+   *   separately in start().  grabFrame() returns an ImageBitmap from the actual
+   *   camera sensor at full resolution.
+   *
+   * Z_m strategy:
+   *   Derived from camera world position and the latest hit-test plane position —
+   *   both already available from the render loop. The perpendicular projection
+   *   onto the plane normal gives the true distance.
+   *
+   * fx / fy strategy:
+   *   From the XRCamera projection matrix P stored in lastViewProjectionMatrix.
+   *   For a column-major WebGL/WebXR projection matrix:
+   *     P[0]  = 2*fx / W    →  fx_pixels = P[0] * W / 2
+   *     P[5]  = 2*fy / H    →  fy_pixels = P[5] * H / 2
+   *   where W, H are the XR viewport dimensions in pixels.
+   */
+  async captureImage(): Promise<CaptureResult> {
+    const capturedAt = new Date().toISOString();
+
+    // ── 1. Real camera image via ImageCapture ────────────────────────────────
+    let imageDataUrl = '';
+    let imageWidth = 0;
+    let imageHeight = 0;
+
+    if (this.rearCameraTrack && typeof (window as unknown as { ImageCapture?: unknown }).ImageCapture !== 'undefined') {
+      try {
+        const ImageCaptureClass = (window as unknown as { ImageCapture: new (track: MediaStreamTrack) => { grabFrame?: () => Promise<ImageBitmap>; takePhoto?: () => Promise<Blob> } }).ImageCapture;
+        const imageCapture = new ImageCaptureClass(this.rearCameraTrack);
+        if (typeof imageCapture.grabFrame === 'function') {
+          const bitmap = await imageCapture.grabFrame();
+          imageWidth = bitmap.width;
+          imageHeight = bitmap.height;
+
+          const offscreen = document.createElement('canvas');
+          offscreen.width = imageWidth;
+          offscreen.height = imageHeight;
+          const ctx = offscreen.getContext('2d')!;
+          ctx.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          imageDataUrl = offscreen.toDataURL('image/jpeg', 0.92);
+        } else if (typeof imageCapture.takePhoto === 'function') {
+          const blob = await imageCapture.takePhoto();
+          const bitmap = await createImageBitmap(blob);
+          imageWidth = bitmap.width;
+          imageHeight = bitmap.height;
+
+          const offscreen = document.createElement('canvas');
+          offscreen.width = imageWidth;
+          offscreen.height = imageHeight;
+          const ctx = offscreen.getContext('2d')!;
+          ctx.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          imageDataUrl = offscreen.toDataURL('image/jpeg', 0.92);
+        }
+      } catch (err) {
+        console.warn('[ArSession.captureImage] ImageCapture grabFrame/takePhoto failed:', err);
+      }
+    }
+
+    if (!imageDataUrl) {
+      // Fallback: capture what the renderer canvas contains (overlay only, not camera).
+      // This is clearly flagged in reliabilityNote.
+      imageDataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.92);
+      imageWidth = this.renderer.domElement.width;
+      imageHeight = this.renderer.domElement.height;
+      console.warn('[ArSession.captureImage] ImageCapture unavailable — overlay canvas used. Image will not show real camera view.');
+    }
+
+    // ── 2. Camera-to-plane distance Z_m ─────────────────────────────────────
+    let Z_m: number | null = null;
+    let planePosition: { x: number; y: number; z: number } | null = null;
+    let planeNormal: { x: number; y: number; z: number } | null = null;
+    const trackingValid = this.hasHit && this.trackingStatus === 'good';
+
+    if (trackingValid) {
+      const camPos = new THREE.Vector3();
+      this.camera.getWorldPosition(camPos);
+
+      // The hit-test smoothed position is on the surface plane.
+      // Compute perpendicular distance: project (cam - planePoint) onto plane normal.
+      // The plane normal is recovered from the smoothed quaternion (up vector rotated).
+      const up = new THREE.Vector3(0, 1, 0);
+      const normal = up.applyQuaternion(this.currentSmoothedQuat);
+
+      const toPlane = camPos.clone().sub(this.currentSmoothedPos);
+      Z_m = Math.abs(toPlane.dot(normal));  // Perpendicular (signed → abs) distance in metres
+
+      planePosition = { x: this.currentSmoothedPos.x, y: this.currentSmoothedPos.y, z: this.currentSmoothedPos.z };
+      planeNormal = { x: normal.x, y: normal.y, z: normal.z };
+    }
+
+    // ── 3. Camera pose ───────────────────────────────────────────────────────
+    let cameraPose: CaptureResult['cameraPose'] = null;
+    if (this.lastViewerPose) {
+      const xrT = this.lastViewerPose.transform;
+      cameraPose = {
+        position: { x: xrT.position.x, y: xrT.position.y, z: xrT.position.z },
+        quaternion: { x: xrT.orientation.x, y: xrT.orientation.y, z: xrT.orientation.z, w: xrT.orientation.w },
+      };
+    }
+
+    // ── 4. Focal length from XRCamera projection matrix ─────────────────────
+    // Column-major 4×4 projection matrix from WebXR:
+    //   m[0]  = 2*fx / viewportWidth   (element [0][0] in column-major)
+    //   m[5]  = 2*fy / viewportHeight  (element [1][1] in column-major)
+    // We then scale to the actual captured image dimensions (imageW / viewportW).
+    let fx_pixels: number | null = null;
+    let fy_pixels: number | null = null;
+    let intrinsicsSource: CaptureResult['intrinsicsSource'] = null;
+    let projectionMatrix: number[] | null = null;
+
+    if (this.lastViewProjectionMatrix && this.lastViewportWidth > 0 && this.lastViewportHeight > 0) {
+      const m = this.lastViewProjectionMatrix;
+      // m[0] is column 0, row 0 in column-major; m[5] is column 1, row 1
+      const fx_vp = m[0] * this.lastViewportWidth / 2;
+      const fy_vp = m[5] * this.lastViewportHeight / 2;
+
+      // Scale to captured image resolution
+      const scaleX = imageWidth > 0 ? imageWidth / this.lastViewportWidth : 1;
+      const scaleY = imageHeight > 0 ? imageHeight / this.lastViewportHeight : 1;
+
+      fx_pixels = fx_vp * scaleX;
+      fy_pixels = fy_vp * scaleY;
+      intrinsicsSource = 'webxr-projection';
+      projectionMatrix = m;
+    }
+
+    // ── 5. Build reliability note ─────────────────────────────────────────────
+    const imageOk = this.rearCameraTrack && typeof ImageCapture !== 'undefined';
+    const parts: string[] = [];
+    if (!imageOk) parts.push('Image: overlay only (ImageCapture API not available — no real camera frame)');
+    else parts.push('Image: real camera frame via ImageCapture');
+    if (Z_m !== null) parts.push(`Z: ${Z_m.toFixed(3)} m from WebXR hit-test plane (perpendicular)`);
+    else parts.push('Z: unavailable — no plane detected or tracking lost');
+    if (fx_pixels !== null) parts.push(`fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels!.toFixed(1)} px from WebXR projection matrix`);
+    else parts.push('fx/fy: unavailable — no XRCamera projection matrix yet');
+    const reliabilityNote = parts.join(' | ');
+
+    const result: CaptureResult = {
+      imageDataUrl,
+      imageWidth,
+      imageHeight,
+      Z_m,
+      distanceSource: trackingValid ? 'webxr-hittest' : null,
+      fx_pixels,
+      fy_pixels,
+      intrinsicsSource,
+      cameraPose,
+      planePosition,
+      planeNormal,
+      projectionMatrix,
+      capturedAt,
+      trackingValid,
+      reliabilityNote,
+    };
+
+    this.callbacks.onCapture?.(result);
+    return result;
+  }
+
   end(): void {
     if (this.ended) return;
     this.ended = true;
+
+    // Stop the rear camera track we opened for image capture
+    if (this.rearCameraTrack) {
+      this.rearCameraTrack.stop();
+      this.rearCameraTrack = null;
+    }
+
     if (this.xrSession) {
       this.xrSession.end().catch(() => {});
     }

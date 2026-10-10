@@ -14,6 +14,7 @@ import type { DeviceCapabilities } from '../hooks/useDeviceCapabilities';
 import type { Point3D, LineOrientation } from '../utils/distance';
 import type { Unit } from '../utils/units';
 import type { GarmentMetrics } from '../ar/garmentMeasure';
+import type { CaptureResult } from '../ar/captureTypes';
 import { feedback } from '../utils/feedback';
 
 interface Props {
@@ -52,6 +53,10 @@ export const ArView: React.FC<Props> = ({
   // Garment Auto-Measure State
   const [garmentMetrics, setGarmentMetrics] = useState<GarmentMetrics | null>(null);
   const [isScanningGarment, setIsScanningGarment] = useState<boolean>(false);
+
+  // Image capture state
+  const [captureResult, setCaptureResult] = useState<CaptureResult | null>(null);
+  const [isCapturing, setIsCapturing] = useState(false);
 
   // Start AR session or Simulator once canvas and overlay are mounted
   useEffect(() => {
@@ -101,6 +106,7 @@ export const ArView: React.FC<Props> = ({
         ]);
       },
       onGarmentScanning: (scanning: boolean) => setIsScanningGarment(scanning),
+      onCapture: (result: CaptureResult) => setCaptureResult(result),
       onError: (e: AppError) => setError(e),
       onEnd: () => onExit(),
     };
@@ -132,6 +138,7 @@ export const ArView: React.FC<Props> = ({
     setLiveDistanceMeters(null);
     setOrientation(null);
     setGarmentMetrics(null);
+    setCaptureResult(null);
     setError(null);
   }, []);
 
@@ -156,6 +163,23 @@ export const ArView: React.FC<Props> = ({
   const handleScanGarment = useCallback(async () => {
     if (!sessionRef.current) return;
     await sessionRef.current.scanGarment();
+  }, []);
+
+  const handleCapture = useCallback(async () => {
+    if (!sessionRef.current || isCapturing) return;
+    setIsCapturing(true);
+    try {
+      await sessionRef.current.captureImage();
+      // result is delivered via the onCapture callback → setCaptureResult
+    } catch (err) {
+      console.error('[ArView] captureImage failed:', err);
+    } finally {
+      setIsCapturing(false);
+    }
+  }, [isCapturing]);
+
+  const handleRetake = useCallback(() => {
+    setCaptureResult(null);
   }, []);
 
   const handleClearHistory = useCallback(() => {
@@ -186,7 +210,11 @@ export const ArView: React.FC<Props> = ({
           history={history}
           garmentMetrics={garmentMetrics}
           isScanningGarment={isScanningGarment}
+          captureResult={captureResult}
+          isCapturing={isCapturing}
           onScanGarment={handleScanGarment}
+          onCapture={handleCapture}
+          onRetake={handleRetake}
           onToggleSound={handleToggleSound}
           onUnitChange={setUnit}
           onReset={handleReset}

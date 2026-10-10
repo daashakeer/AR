@@ -28,6 +28,7 @@ import {
   buildGarment3DMeshes,
 } from './garmentMeasure';
 import { feedback } from '../utils/feedback';
+import type { CaptureResult } from './captureTypes';
 
 export class MobileCameraSession {
   private canvas: HTMLCanvasElement;
@@ -312,6 +313,177 @@ export class MobileCameraSession {
   async scanGarment(): Promise<GarmentMetrics | null> {
     await this.processNextFrame();
     return null;
+  }
+
+  /**
+   * Captures a real camera image from the live <video> feed plus all available
+   * calibration metadata.
+   *
+   * Image:
+   *   Drawn from the live HTMLVideoElement at full sensor resolution (not the
+   *   Three.js overlay canvas).  The video element is the actual camera feed.
+   *
+   * Z_m (camera-to-trouser-plane distance):
+   *   First attempts to read the device-reported focus distance from
+   *   MediaStreamTrack.getSettings().focusDistance (metres).  This is the distance
+   *   the autofocus system measured to the subject — a good proxy for Z when the
+   *   trousers are the main subject.
+   *   If focusDistance is not exposed by the browser (common on iOS), falls back to
+   *   a fixed estimate of 0.55 m with distanceSource = 'fov-estimate'.  The user
+   *   is informed via reliabilityNote so they can substitute a manual measurement.
+   *
+   * fx / fy:
+   *   Derived from the Three.js PerspectiveCamera FOV and the actual captured
+   *   image resolution:
+   *     fy_pixels = (imageHeight / 2) / tan(vFOV_radians / 2)
+   *     fx_pixels = fy_pixels * (imageWidth / imageHeight)
+   *   The Three.js camera FOV is set to 60° which is a generic mobile camera
+   *   approximation.  This is flagged as 'fov-derived' in intrinsicsSource.
+   */
+  async captureImage(): Promise<CaptureResult> {
+    const capturedAt = new Date().toISOString();
+
+    // ── 1. Real camera image from <video> ─────────────────────────────────────
+    let imageDataUrl = '';
+    let imageWidth = 0;
+    let imageHeight = 0;
+
+    if (this.video && this.video.readyState >= 2) {
+      const vw = this.video.videoWidth;
+      const vh = this.video.videoHeight;
+      if (vw > 0 && vh > 0) {
+        const offscreen = document.createElement('canvas');
+        offscreen.width = vw;
+        offscreen.height = vh;
+        const ctx = offscreen.getContext('2d')!;
+        ctx.drawImage(this.video, 0, 0, vw, vh);
+        imageDataUrl = offscreen.toDataURL('image/jpeg', 0.92);
+        imageWidth = vw;
+        imageHeight = vh;
+      }
+    }
+
+    if (!imageDataUrl) {
+      // Video not ready — cannot provide a real image
+      const now = new Date().toISOString();
+      return {
+        imageDataUrl: '',
+        imageWidth: 0,
+        imageHeight: 0,
+        Z_m: null,
+        distanceSource: null,
+        fx_pixels: null,
+        fy_pixels: null,
+        intrinsicsSource: null,
+        cameraPose: null,
+        planePosition: null,
+        planeNormal: null,
+        projectionMatrix: null,
+        capturedAt: now,
+        trackingValid: false,
+        reliabilityNote: 'Error: Camera video not ready — cannot capture image.',
+      };
+    }
+
+    // ── 2. Camera-to-trouser-plane distance Z_m ───────────────────────────────
+    let Z_m: number | null = null;
+    let distanceSource: CaptureResult['distanceSource'] = null;
+
+    // Try device-reported autofocus distance (metres) — available on Android Chrome
+    // with manual focus or when the browser exposes focusDistance in getSettings().
+    const track = this.mediaStream?.getVideoTracks()[0];
+    if (track) {
+      try {
+        // getCapabilities() tells us what the track supports
+        const caps = track.getCapabilities() as MediaTrackCapabilities & { focusDistance?: { min: number; max: number } };
+        const settings = track.getSettings() as MediaTrackSettings & { focusDistance?: number };
+        if (typeof settings.focusDistance === 'number' && settings.focusDistance > 0) {
+          Z_m = settings.focusDistance;
+          distanceSource = 'focus-distance';
+          console.log(`[MobileCapture] focusDistance from device: ${Z_m.toFixed(3)} m`);
+        } else if (caps.focusDistance) {
+          // Range available but current value not set — use mid-range as estimate
+          Z_m = (caps.focusDistance.min + caps.focusDistance.max) / 2;
+          distanceSource = 'fov-estimate';
+          console.log(`[MobileCapture] focusDistance mid-range estimate: ${Z_m.toFixed(3)} m`);
+        }
+      } catch (err) {
+        console.debug('[MobileCapture] getCapabilities/getSettings failed:', err);
+      }
+    }
+
+    if (Z_m === null) {
+      // No device focus distance available — do not substitute a hardcoded value.
+      // Return null and report it clearly so the caller can prompt the user.
+      distanceSource = null;
+    }
+
+    // ── 3. Focal length from video resolution + Three.js camera FOV ──────────
+    // Three.js PerspectiveCamera.fov is the VERTICAL field-of-view in degrees.
+    // fy_pixels = (imageHeight / 2) / tan(vFOV / 2)
+    // fx_pixels = fy_pixels * (imageWidth / imageHeight)   [square pixels assumed]
+    let fx_pixels: number | null = null;
+    let fy_pixels: number | null = null;
+    let intrinsicsSource: CaptureResult['intrinsicsSource'] = null;
+
+    if (imageWidth > 0 && imageHeight > 0) {
+      const vFovRad = (this.camera.fov * Math.PI) / 180;
+      fy_pixels = (imageHeight / 2) / Math.tan(vFovRad / 2);
+      fx_pixels = fy_pixels * (imageWidth / imageHeight);
+      intrinsicsSource = 'fov-derived';
+    }
+
+    // ── 4. Camera pose (fixed for MobileCameraSession) ────────────────────────
+    // Camera position is fixed at (0, 0.6, 0) looking down at (0, 0, 0).
+    const cameraPose: CaptureResult['cameraPose'] = {
+      position: { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z },
+      quaternion: {
+        x: this.camera.quaternion.x,
+        y: this.camera.quaternion.y,
+        z: this.camera.quaternion.z,
+        w: this.camera.quaternion.w,
+      },
+    };
+
+    // ── 5. Plane geometry ─────────────────────────────────────────────────────
+    // The calibrated surface plane is at Y=0 with normal (0,1,0).
+    const planePosition = { x: 0, y: 0, z: 0 };
+    const planeNormal = { x: 0, y: 1, z: 0 };
+
+    // ── 6. Reliability note ───────────────────────────────────────────────────
+    const parts: string[] = ['Image: real camera frame from <video> element'];
+    if (Z_m !== null && distanceSource === 'focus-distance') {
+      parts.push(`Z: ${Z_m.toFixed(3)} m (device autofocus distance — accurate)`);
+    } else if (Z_m !== null) {
+      parts.push(`Z: ${Z_m.toFixed(3)} m (estimated from focusDistance range — less accurate)`);
+    } else {
+      parts.push('Z: unavailable — browser does not expose focusDistance. Measure manually.');
+    }
+    if (fx_pixels !== null) {
+      parts.push(`fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels!.toFixed(1)} px (derived from ${this.camera.fov}° FOV + ${imageWidth}×${imageHeight} — approximation)`);
+    }
+    const reliabilityNote = parts.join(' | ');
+
+    const result: CaptureResult = {
+      imageDataUrl,
+      imageWidth,
+      imageHeight,
+      Z_m,
+      distanceSource,
+      fx_pixels,
+      fy_pixels,
+      intrinsicsSource,
+      cameraPose,
+      planePosition,
+      planeNormal,
+      projectionMatrix: null,  // Not available without WebXR
+      capturedAt,
+      trackingValid: true,
+      reliabilityNote,
+    };
+
+    this.callbacks.onCapture?.(result);
+    return result;
   }
 
   undoLastPoint(): void {

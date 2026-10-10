@@ -14,6 +14,7 @@ import {
 } from '../utils/units';
 import type { LineOrientation } from '../utils/distance';
 import type { GarmentMetrics } from '../ar/garmentMeasure';
+import type { CaptureResult } from '../ar/captureTypes';
 
 export type MeasurementMode = 'manual' | 'garment';
 
@@ -42,7 +43,11 @@ interface Props {
   history: SavedMeasurement[];
   garmentMetrics: GarmentMetrics | null;
   isScanningGarment: boolean;
+  captureResult: CaptureResult | null;
+  isCapturing: boolean;
   onScanGarment: () => void;
+  onCapture: () => void;
+  onRetake: () => void;
   onToggleSound: () => void;
   onUnitChange: (u: Unit) => void;
   onReset: () => void;
@@ -92,7 +97,11 @@ export const HUD: React.FC<Props> = ({
   history,
   garmentMetrics,
   isScanningGarment,
+  captureResult,
+  isCapturing,
   onScanGarment,
+  onCapture,
+  onRetake,
   onToggleSound,
   onUnitChange,
   onReset,
@@ -381,6 +390,88 @@ export const HUD: React.FC<Props> = ({
         </div>
       )}
 
+      {/* ── Capture Result Panel ──────────────────────────────────────── */}
+      {captureResult && (
+        <div className="capture-panel">
+          <div className="capture-panel-header">
+            <span className="capture-badge">
+              {captureResult.distanceSource === 'simulator' ? '🎮 Simulator Capture' : '📷 Captured Frame'}
+            </span>
+            <button className="capture-retake-btn" onClick={onRetake}>🔄 Retake</button>
+          </div>
+
+          {/* Image preview */}
+          {captureResult.imageDataUrl ? (
+            <img
+              className="capture-preview"
+              src={captureResult.imageDataUrl}
+              alt="Captured trouser frame"
+            />
+          ) : (
+            <div className="capture-no-image">⚠️ No image available</div>
+          )}
+
+          {/* Distance */}
+          <div className="capture-meta-row">
+            <span className="capture-meta-label">Z (camera → plane)</span>
+            <span className={`capture-meta-value ${captureResult.Z_m === null ? 'meta-warn' : ''}`}>
+              {captureResult.Z_m !== null
+                ? `${captureResult.Z_m.toFixed(3)} m`
+                : 'N/A — no plane detected'}
+            </span>
+          </div>
+          <div className="capture-meta-row">
+            <span className="capture-meta-label">Distance source</span>
+            <span className="capture-meta-value capture-source-tag">
+              {captureResult.distanceSource ?? 'none'}
+            </span>
+          </div>
+
+          {/* Focal lengths */}
+          <div className="capture-meta-row">
+            <span className="capture-meta-label">fx (pixels)</span>
+            <span className={`capture-meta-value ${captureResult.fx_pixels === null ? 'meta-warn' : ''}`}>
+              {captureResult.fx_pixels !== null ? captureResult.fx_pixels.toFixed(1) : 'N/A'}
+            </span>
+          </div>
+          <div className="capture-meta-row">
+            <span className="capture-meta-label">fy (pixels)</span>
+            <span className={`capture-meta-value ${captureResult.fy_pixels === null ? 'meta-warn' : ''}`}>
+              {captureResult.fy_pixels !== null ? captureResult.fy_pixels.toFixed(1) : 'N/A'}
+            </span>
+          </div>
+          <div className="capture-meta-row">
+            <span className="capture-meta-label">Intrinsics source</span>
+            <span className="capture-meta-value capture-source-tag">
+              {captureResult.intrinsicsSource ?? 'none'}
+            </span>
+          </div>
+
+          {/* Image dimensions */}
+          <div className="capture-meta-row">
+            <span className="capture-meta-label">Image size</span>
+            <span className="capture-meta-value">
+              {captureResult.imageWidth > 0
+                ? `${captureResult.imageWidth} × ${captureResult.imageHeight} px`
+                : 'N/A'}
+            </span>
+          </div>
+
+          {/* Timestamp */}
+          <div className="capture-meta-row">
+            <span className="capture-meta-label">Captured at</span>
+            <span className="capture-meta-value" style={{ fontSize: '0.7rem' }}>
+              {new Date(captureResult.capturedAt).toLocaleTimeString()}
+            </span>
+          </div>
+
+          {/* Reliability note */}
+          <div className="capture-reliability-note">
+            {captureResult.reliabilityNote}
+          </div>
+        </div>
+      )}
+
       {/* ── Bottom controls ─────────────────────────────────────────────── */}
       <div className="hud-bottom">
         {mode === 'garment' && !garmentMetrics && (
@@ -424,6 +515,18 @@ export const HUD: React.FC<Props> = ({
         {mode === 'manual' && step === 'place-a' && pointsCount > 0 && (
           <button className="hud-btn hud-btn-danger" onClick={onReset}>
             Reset
+          </button>
+        )}
+
+        {/* Capture Image button — visible in both modes when no capture in progress */}
+        {!captureResult && (
+          <button
+            className="hud-btn hud-btn-capture"
+            onClick={onCapture}
+            disabled={isCapturing}
+            title="Capture the current camera frame with distance and calibration data"
+          >
+            {isCapturing ? '⏳ Capturing…' : '📷 Capture Image'}
           </button>
         )}
 
