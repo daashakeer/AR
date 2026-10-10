@@ -57,6 +57,7 @@ export const ArView: React.FC<Props> = ({
   // Image capture state
   const [captureResult, setCaptureResult] = useState<CaptureResult | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [sessionKey, setSessionKey] = useState(0);
 
   // Start AR session or Simulator once canvas and overlay are mounted
   useEffect(() => {
@@ -127,7 +128,7 @@ export const ArView: React.FC<Props> = ({
       sessionRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSimulator, mode, capabilities.arSupported]);
+  }, [isSimulator, mode, capabilities.arSupported, sessionKey]);
 
   const handleReset = useCallback(() => {
     sessionRef.current?.reset();
@@ -180,6 +181,7 @@ export const ArView: React.FC<Props> = ({
 
   const handleRetake = useCallback(() => {
     setCaptureResult(null);
+    setSessionKey((prev) => prev + 1);
   }, []);
 
   const handleClearHistory = useCallback(() => {
