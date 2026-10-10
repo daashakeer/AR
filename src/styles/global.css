@@ -154,6 +154,24 @@ button {
   box-shadow: 0 4px 16px rgba(0, 150, 255, 0.3);
 }
 
+.home-garment-btn {
+  width: 100%;
+  padding: 16px 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #fff;
+  background: linear-gradient(135deg, #10b981, #059669);
+  border-radius: 50px;
+  box-shadow: 0 8px 24px rgba(16, 185, 129, 0.4);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.home-garment-btn:active {
+  transform: scale(0.97);
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+}
+
 .home-sim-btn {
   width: 100%;
   padding: 14px 0;
@@ -1061,3 +1079,253 @@ button {
 .debug-value.ok  { color: #00ff88; }
 .debug-value.bad { color: #ff6666; }
 .debug-value.mono { font-family: var(--mono); font-size: 11px; }
+
+/* ── HUD Mode Switcher Pill ─────────────────────────────────── */
+.hud-mode-pill {
+  display: flex;
+  background: rgba(10, 14, 24, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 30px;
+  padding: 3px;
+  gap: 4px;
+}
+
+.hud-mode-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 20px;
+  transition: all 0.2s ease;
+}
+
+.hud-mode-btn.active {
+  background: linear-gradient(135deg, #00d2ff, #0066ee);
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 150, 255, 0.4);
+}
+
+.hud-status-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  pointer-events: none;
+}
+
+/* ── Garment Viewfinder Overlay ──────────────────────────────── */
+.garment-viewfinder-wrap {
+  position: absolute;
+  top: 48%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  pointer-events: none;
+  animation: fadeIn 0.3s ease;
+}
+
+.garment-viewfinder {
+  position: relative;
+  width: min(320px, 80vw);
+  height: min(400px, 50vh);
+  border: 2px dashed rgba(0, 229, 255, 0.35);
+  border-radius: 24px;
+  background: rgba(0, 229, 255, 0.02);
+}
+
+.garment-viewfinder .corner {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border-color: #00e5ff;
+  border-style: solid;
+}
+
+.garment-viewfinder .corner.top-left {
+  top: -2px; left: -2px; border-width: 4px 0 0 4px; border-top-left-radius: 12px;
+}
+.garment-viewfinder .corner.top-right {
+  top: -2px; right: -2px; border-width: 4px 4px 0 0; border-top-right-radius: 12px;
+}
+.garment-viewfinder .corner.bottom-left {
+  bottom: -2px; left: -2px; border-width: 0 0 4px 4px; border-bottom-left-radius: 12px;
+}
+.garment-viewfinder .corner.bottom-right {
+  bottom: -2px; right: -2px; border-width: 0 4px 4px 0; border-bottom-right-radius: 12px;
+}
+
+.viewfinder-waist-guide {
+  position: absolute;
+  top: 25%;
+  left: 10%;
+  right: 10%;
+  border-bottom: 2px dashed rgba(0, 255, 136, 0.6);
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #00ff88;
+  padding-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+
+.garment-guide-pill {
+  background: rgba(10, 14, 24, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 229, 255, 0.4);
+  border-radius: 30px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+}
+
+/* ── Garment Scanning Animation ──────────────────────────────── */
+.garment-scanning-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 14, 24, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: none;
+  z-index: 50;
+  animation: fadeIn 0.2s ease;
+}
+
+.scanning-box {
+  position: relative;
+  background: rgba(10, 14, 24, 0.92);
+  border: 1px solid rgba(0, 229, 255, 0.5);
+  box-shadow: 0 0 40px rgba(0, 229, 255, 0.3);
+  border-radius: var(--radius-lg);
+  padding: 32px 28px;
+  text-align: center;
+  max-width: 320px;
+  width: 90%;
+  overflow: hidden;
+}
+
+.scanning-laser {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, transparent, #00e5ff, transparent);
+  box-shadow: 0 0 15px #00e5ff;
+  animation: laserScan 2s ease-in-out infinite;
+}
+
+@keyframes laserScan {
+  0%   { top: 0; }
+  50%  { top: 100%; }
+  100% { top: 0; }
+}
+
+.scanning-spinner {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 16px;
+  border: 3px solid rgba(0, 229, 255, 0.2);
+  border-top-color: #00e5ff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.scanning-box h3 {
+  font-size: 17px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 6px;
+}
+
+.scanning-box p {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Garment Sizing Result Card ──────────────────────────────── */
+.garment-result-card {
+  max-width: 360px;
+  width: 92%;
+}
+
+.garment-primary-size {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 12px 0 16px;
+}
+
+.size-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-muted);
+}
+
+.size-number {
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: -1px;
+  background: linear-gradient(135deg, #ffffff 40%, #00e5ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1.1;
+}
+
+.garment-metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 12px 8px;
+  margin-bottom: 16px;
+}
+
+.garment-metric-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.metric-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.metric-val {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.metric-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.garment-scan-btn {
+  background: linear-gradient(135deg, #10b981, #059669) !important;
+  box-shadow: 0 8px 30px rgba(16, 185, 129, 0.45) !important;
+  font-size: 17px !important;
+}

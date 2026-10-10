@@ -21,6 +21,14 @@ import {
 } from '../utils/distance';
 import { AdaptivePoseFilter } from './filter';
 import { feedback } from '../utils/feedback';
+import { detectGarmentLandmarks } from '../utils/garmentApi';
+import {
+  GarmentMetrics,
+  Garment3DPoints,
+  unprojectLandmarkToPlane,
+  calculateGarmentMetrics,
+  buildGarment3DMeshes,
+} from './garmentMeasure';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -59,6 +67,8 @@ export interface ArSessionCallbacks {
   onDistance: (distanceMeters: number) => void;
   onOrientation: (orientation: LineOrientation | null) => void;
   onGuidance: (guidance: CameraGuidance) => void;
+  onGarmentMeasured?: (metrics: GarmentMetrics) => void;
+  onGarmentScanning?: (isScanning: boolean) => void;
   onError: (error: AppError) => void;
   onEnd: () => void;
 }
@@ -203,6 +213,10 @@ export class ArSession {
   private currentSmoothedPos = new THREE.Vector3();
   private currentSmoothedQuat = new THREE.Quaternion();
   private hasHit = false;
+
+  // Garment Auto-Measure State
+  private garmentMeshGroup: THREE.Group | null = null;
+  private isScanningGarment = false;
 
   // App State
   private step: MeasurementStep = 'idle';
@@ -743,8 +757,79 @@ export class ArSession {
     }
   }
 
+  // ─── Garment Auto-Measure with HRNet ────────────────────────────────────
+
+  async scanGarment(): Promise<GarmentMetrics | null> {
+    if (this.isScanningGarment) return null;
+    this.isScanningGarment = true;
+    this.callbacks.onGarmentScanning?.(true);
+
+    try {
+      // 1. Capture snapshot from current WebGL canvas
+      const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85);
+
+      // 2. Query Hugging Face Space (SAM3 + HRNet + Gemini)
+      const scanResult = await detectGarmentLandmarks(dataUrl);
+      if (!scanResult.success || !scanResult.landmarks) {
+        throw new Error(scanResult.error || 'Failed to detect garment landmarks');
+      }
+
+      // 3. Derive physical ground / table surface plane from smoothed pose
+      const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(this.currentSmoothedQuat);
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, this.currentSmoothedPos);
+
+      // 4. Unproject 2D landmarks onto 3D surface plane
+      const pWL = unprojectLandmarkToPlane(scanResult.landmarks.waist_left, this.camera, plane);
+      const pWR = unprojectLandmarkToPlane(scanResult.landmarks.waist_right, this.camera, plane);
+      if (!pWL || !pWR) {
+        throw new Error('Could not project waist points onto surface plane');
+      }
+
+      const pInseam = scanResult.landmarks.inseam ? unprojectLandmarkToPlane(scanResult.landmarks.inseam, this.camera, plane) || undefined : undefined;
+      const pAnkleL = scanResult.landmarks.outer_ankle_left ? unprojectLandmarkToPlane(scanResult.landmarks.outer_ankle_left, this.camera, plane) || undefined : undefined;
+      const pAnkleR = scanResult.landmarks.outer_ankle_right ? unprojectLandmarkToPlane(scanResult.landmarks.outer_ankle_right, this.camera, plane) || undefined : undefined;
+
+      const garment3D: Garment3DPoints = {
+        waistLeft: pWL,
+        waistRight: pWR,
+        inseam: pInseam,
+        outerAnkleLeft: pAnkleL,
+        outerAnkleRight: pAnkleR,
+      };
+
+      // 5. Compute metric measurements
+      const metrics = calculateGarmentMetrics(garment3D, scanResult.pantType);
+
+      // 6. Build and render 3D holographic garment meshes in AR
+      if (this.garmentMeshGroup) {
+        disposeGroup(this.garmentMeshGroup, this.scene);
+      }
+      this.garmentMeshGroup = buildGarment3DMeshes(garment3D, metrics);
+      this.scene.add(this.garmentMeshGroup);
+
+      feedback.triggerMeasurementComplete();
+      this.callbacks.onGarmentMeasured?.(metrics);
+
+      // Also set distance callback for waist width
+      this.callbacks.onDistance(metrics.waistWidthMeters);
+
+      return metrics;
+    } catch (err) {
+      console.error('[ArSession] Garment scan failed:', err);
+      return null;
+    } finally {
+      this.isScanningGarment = false;
+      this.callbacks.onGarmentScanning?.(false);
+    }
+  }
+
   reset(): void {
     this.clearLivePreview();
+
+    if (this.garmentMeshGroup) {
+      disposeGroup(this.garmentMeshGroup, this.scene);
+      this.garmentMeshGroup = null;
+    }
 
     this.markers.forEach((m) => disposeGroup(m.group, this.scene));
     this.markers = [];

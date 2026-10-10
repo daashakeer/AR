@@ -13,15 +13,21 @@ import {
   UNIT_DISPLAY,
 } from '../utils/units';
 import type { LineOrientation } from '../utils/distance';
+import type { GarmentMetrics } from '../ar/garmentMeasure';
+
+export type MeasurementMode = 'manual' | 'garment';
 
 export interface SavedMeasurement {
   id: string;
   timestamp: string;
   meters: number;
   orientation?: LineOrientation | null;
+  garmentInfo?: string;
 }
 
 interface Props {
+  mode: MeasurementMode;
+  onModeChange: (m: MeasurementMode) => void;
   step: MeasurementStep;
   trackingStatus: TrackingStatus;
   distanceMeters: number | null;
@@ -34,6 +40,9 @@ interface Props {
   isSimulator?: boolean;
   soundEnabled: boolean;
   history: SavedMeasurement[];
+  garmentMetrics: GarmentMetrics | null;
+  isScanningGarment: boolean;
+  onScanGarment: () => void;
   onToggleSound: () => void;
   onUnitChange: (u: Unit) => void;
   onReset: () => void;
@@ -67,6 +76,8 @@ const ERROR_MESSAGES: Record<string, string> = {
 };
 
 export const HUD: React.FC<Props> = ({
+  mode,
+  onModeChange,
   step,
   trackingStatus,
   distanceMeters,
@@ -79,6 +90,9 @@ export const HUD: React.FC<Props> = ({
   isSimulator,
   soundEnabled,
   history,
+  garmentMetrics,
+  isScanningGarment,
+  onScanGarment,
   onToggleSound,
   onUnitChange,
   onReset,
@@ -94,8 +108,12 @@ export const HUD: React.FC<Props> = ({
   const isDetecting = step === 'detecting' || step === 'idle';
 
   const handleCopy = () => {
-    if (distanceMeters === null) return;
-    const text = formatPrimary(distanceMeters, unit);
+    let text = '';
+    if (garmentMetrics) {
+      text = `👖 Pant Sizing (${garmentMetrics.pantType}):\nRecommended Size: ${garmentMetrics.recommendedSize}\nWaist Width: ${garmentMetrics.waistWidthCm.toFixed(1)} cm (${garmentMetrics.waistWidthInches.toFixed(1)} in)\nInseam: ${garmentMetrics.inseamInches.toFixed(1)} in\nOutseam: ${garmentMetrics.outseamInches.toFixed(1)} in`;
+    } else if (distanceMeters !== null) {
+      text = formatPrimary(distanceMeters, unit);
+    }
     navigator.clipboard?.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -110,18 +128,20 @@ export const HUD: React.FC<Props> = ({
           ✕
         </button>
 
-        <div className="hud-status-group">
-          <div className={`hud-tracking ${trackingStatus}`}>
-            <span className="tracking-dot" />
-            {TRACKING_LABEL[trackingStatus]}
-          </div>
-
-          {/* Accuracy & distance guidance */}
-          {guidance && trackingStatus === 'good' && !error && (
-            <div className={`hud-guidance ${guidance.status}`}>
-              {guidance.message}
-            </div>
-          )}
+        {/* Mode Switcher */}
+        <div className="hud-mode-pill">
+          <button
+            className={`hud-mode-btn ${mode === 'manual' ? 'active' : ''}`}
+            onClick={() => onModeChange('manual')}
+          >
+            📏 Manual
+          </button>
+          <button
+            className={`hud-mode-btn ${mode === 'garment' ? 'active' : ''}`}
+            onClick={() => onModeChange('garment')}
+          >
+            👖 AI Pant
+          </button>
         </div>
 
         <div className="hud-top-right">
@@ -148,11 +168,25 @@ export const HUD: React.FC<Props> = ({
         </div>
       </div>
 
+      {/* ── Tracking status badge ─────────────────────────────────────── */}
+      <div className="hud-status-row">
+        <div className={`hud-tracking ${trackingStatus}`}>
+          <span className="tracking-dot" />
+          {TRACKING_LABEL[trackingStatus]}
+        </div>
+
+        {guidance && trackingStatus === 'good' && !error && (
+          <div className={`hud-guidance ${guidance.status}`}>
+            {guidance.message}
+          </div>
+        )}
+      </div>
+
       {/* ── Simulator Banner (if in simulator mode) ────────────────────── */}
       {isSimulator && (
         <div className="hud-simulator-banner">
           <span>🎮 3D AR Simulator Mode</span>
-          <span className="simulator-help">Drag mouse to look • WASD to move • Click to measure</span>
+          <span className="simulator-help">Drag to look • WASD to move</span>
         </div>
       )}
 
@@ -163,21 +197,48 @@ export const HUD: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── Surface detection tips (shown while scanning) ────────────────── */}
-      {!error && isDetecting && (
+      {/* ── AI Garment Viewfinder & Instruction Overlay ─────────────────── */}
+      {mode === 'garment' && !error && !garmentMetrics && !isScanningGarment && (
+        <div className="garment-viewfinder-wrap">
+          <div className="garment-viewfinder">
+            <span className="corner top-left" />
+            <span className="corner top-right" />
+            <span className="corner bottom-left" />
+            <span className="corner bottom-right" />
+            <div className="viewfinder-waist-guide">Waistband Line</div>
+          </div>
+          <div className="garment-guide-pill">
+            👖 Frame flat-laid pant inside the box
+          </div>
+        </div>
+      )}
+
+      {/* ── AI Scanning In-Progress Animation ───────────────────────────── */}
+      {isScanningGarment && (
+        <div className="garment-scanning-overlay">
+          <div className="scanning-box">
+            <div className="scanning-laser" />
+            <div className="scanning-spinner" />
+            <h3>Analyzing Garment with AI…</h3>
+            <p>SAM3 Segmentation + HRNet Landmark Detection</p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Surface detection tips (shown while scanning surface) ───────── */}
+      {!error && isDetecting && mode === 'manual' && (
         <div className="hud-tips-card">
           <p className="hud-tips-title">📡 Looking for a surface</p>
           <ul className="hud-tips-list">
             <li>Point at a <strong>textured, flat surface</strong> (floor, desk, table)</li>
             <li>Make sure the area is <strong>well-lit</strong></li>
             <li><strong>Move slowly</strong> side to side</li>
-            <li>Avoid <strong>featureless white walls or glass</strong></li>
           </ul>
         </div>
       )}
 
-      {/* ── Live Distance & Level Pill (while stretching measuring tape) ── */}
-      {!error && step === 'place-b' && liveDistanceMeters !== null && (
+      {/* ── Live Distance & Level Pill (Manual Mode) ────────────────────── */}
+      {!error && mode === 'manual' && step === 'place-b' && liveDistanceMeters !== null && (
         <div className="hud-live-wrap">
           <div className="hud-live-pill">
             <span className="live-dot" />
@@ -189,8 +250,8 @@ export const HUD: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── Instruction pill ────────────────────────────────────────────── */}
-      {!error && step !== 'measured' && !isDetecting && (
+      {/* ── Manual Instruction pill ─────────────────────────────────────── */}
+      {!error && mode === 'manual' && step !== 'measured' && !isDetecting && (
         <div className="hud-instruction-wrap">
           <div className="hud-instruction">
             {STEP_INSTRUCTIONS[step]}
@@ -198,8 +259,56 @@ export const HUD: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── Result card ─────────────────────────────────────────────────── */}
-      {step === 'measured' && allUnits && !error && (
+      {/* ── AI Garment Sizing Result Card ───────────────────────────────── */}
+      {mode === 'garment' && garmentMetrics && !isScanningGarment && (
+        <div className="hud-result-wrap">
+          <div className="hud-result-card garment-result-card">
+            <div className="result-header">
+              <span className="result-badge">✓ AI Measured</span>
+              <span className="result-orientation-badge">👖 {garmentMetrics.pantType}</span>
+            </div>
+
+            <div className="garment-primary-size">
+              <span className="size-label">Recommended Size</span>
+              <span className="size-number">Size {garmentMetrics.recommendedSize}</span>
+            </div>
+
+            <div className="garment-metrics-grid">
+              <div className="garment-metric-item">
+                <span className="metric-title">Waist Width</span>
+                <span className="metric-val">{garmentMetrics.waistWidthCm.toFixed(1)} cm</span>
+                <span className="metric-sub">({garmentMetrics.waistWidthInches.toFixed(1)} in)</span>
+              </div>
+              <div className="garment-metric-item">
+                <span className="metric-title">Inseam</span>
+                <span className="metric-val">{garmentMetrics.inseamInches.toFixed(1)} in</span>
+                <span className="metric-sub">({(garmentMetrics.inseamMeters * 100).toFixed(1)} cm)</span>
+              </div>
+              <div className="garment-metric-item">
+                <span className="metric-title">Outseam</span>
+                <span className="metric-val">{garmentMetrics.outseamInches.toFixed(1)} in</span>
+                <span className="metric-sub">({(garmentMetrics.outseamMeters * 100).toFixed(1)} cm)</span>
+              </div>
+            </div>
+
+            <div className="result-actions">
+              <button className="result-copy-btn" onClick={handleCopy}>
+                {copied ? '✓ Copied!' : '📋 Copy Sizing'}
+              </button>
+              <button className="result-unit-cycle" onClick={onReset}>
+                Scan Another ⟳
+              </button>
+            </div>
+
+            <p className="result-disclaimer">
+              3D AR planar unprojection from Hugging Face HRNet landmarks.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Manual Result Card ──────────────────────────────────────────── */}
+      {mode === 'manual' && step === 'measured' && allUnits && !error && (
         <div className="hud-result-wrap">
           <div className="hud-result-card">
             <div className="result-header">
@@ -224,10 +333,7 @@ export const HUD: React.FC<Props> = ({
             </div>
 
             <div className="result-actions">
-              <button
-                className="result-copy-btn"
-                onClick={handleCopy}
-              >
+              <button className="result-copy-btn" onClick={handleCopy}>
                 {copied ? '✓ Copied!' : '📋 Copy'}
               </button>
               <button
@@ -241,7 +347,7 @@ export const HUD: React.FC<Props> = ({
             <p className="result-disclaimer">
               {isSimulator
                 ? 'Computed via virtual 3D room raycasting.'
-                : 'Measurements are calibrated estimates via WebXR world tracking.'}
+                : 'Measurements calibrated via WebXR world tracking.'}
             </p>
           </div>
         </div>
@@ -269,7 +375,9 @@ export const HUD: React.FC<Props> = ({
                     <span className="history-index">#{history.length - idx}</span>
                     <div>
                       <div className="history-value">{formatPrimary(item.meters, unit)}</div>
-                      <div className="history-time">{item.timestamp} {item.orientation?.label ? `· ${item.orientation.label}` : ''}</div>
+                      <div className="history-time">
+                        {item.timestamp} {item.garmentInfo ? `· ${item.garmentInfo}` : item.orientation?.label ? `· ${item.orientation.label}` : ''}
+                      </div>
                     </div>
                   </div>
                   <button
@@ -290,7 +398,23 @@ export const HUD: React.FC<Props> = ({
 
       {/* ── Bottom controls ─────────────────────────────────────────────── */}
       <div className="hud-bottom">
-        {step === 'measured' && (
+        {mode === 'garment' && !garmentMetrics && (
+          <button
+            className="hud-btn hud-btn-primary garment-scan-btn"
+            onClick={onScanGarment}
+            disabled={isScanningGarment}
+          >
+            {isScanningGarment ? '⏳ AI Scanning…' : '📸 Scan Pant with AI'}
+          </button>
+        )}
+
+        {mode === 'garment' && garmentMetrics && (
+          <button className="hud-btn hud-btn-secondary" onClick={onReset}>
+            Measure Another
+          </button>
+        )}
+
+        {mode === 'manual' && step === 'measured' && (
           <div className="hud-button-row">
             <button className="hud-btn hud-btn-secondary" onClick={onUndo}>
               ↶ Undo
@@ -301,7 +425,7 @@ export const HUD: React.FC<Props> = ({
           </div>
         )}
 
-        {step === 'place-b' && (
+        {mode === 'manual' && step === 'place-b' && (
           <div className="hud-button-row">
             <button className="hud-btn hud-btn-secondary" onClick={onUndo}>
               ↶ Undo Point A
@@ -312,14 +436,16 @@ export const HUD: React.FC<Props> = ({
           </div>
         )}
 
-        {step === 'place-a' && pointsCount > 0 && (
+        {mode === 'manual' && step === 'place-a' && pointsCount > 0 && (
           <button className="hud-btn hud-btn-danger" onClick={onReset}>
             Reset
           </button>
         )}
 
         <p className="hud-privacy">
-          {isSimulator ? '🕹 Simulator running locally' : '🔒 Camera feed processed on-device'}
+          {mode === 'garment'
+            ? '🤖 HRNet & SAM3 running via Hugging Face API'
+            : isSimulator ? '🕹 Simulator running locally' : '🔒 Camera feed processed on-device'}
         </p>
       </div>
     </div>

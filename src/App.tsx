@@ -3,6 +3,7 @@ import { HomePage } from './components/HomePage';
 import { ArView } from './components/ArView';
 import { UnsupportedScreen } from './components/UnsupportedScreen';
 import { useDeviceCapabilities } from './hooks/useDeviceCapabilities';
+import type { MeasurementMode } from './components/HUD';
 import './styles/global.css';
 
 type AppScreen = 'home' | 'ar' | 'simulator';
@@ -10,6 +11,7 @@ type AppScreen = 'home' | 'ar' | 'simulator';
 export default function App() {
   const caps = useDeviceCapabilities();
   const [screen, setScreen] = useState<AppScreen>('home');
+  const [initialMode, setInitialMode] = useState<MeasurementMode>('manual');
 
   // Still detecting capabilities
   if (caps.checking) {
@@ -27,6 +29,7 @@ export default function App() {
       <ArView
         capabilities={caps}
         isSimulator={true}
+        initialMode={initialMode}
         onExit={() => setScreen('home')}
       />
     );
@@ -34,7 +37,6 @@ export default function App() {
 
   // Active Real WebXR AR screen
   if (screen === 'ar') {
-    // If somehow entered AR screen without mobile/WebXR, route gracefully
     if (!caps.isMobile) {
       return (
         <UnsupportedScreen
@@ -76,25 +78,41 @@ export default function App() {
       <ArView
         capabilities={caps}
         isSimulator={false}
+        initialMode={initialMode}
         onExit={() => setScreen('home')}
       />
     );
   }
 
-  // Home Screen
-  const handleStart = () => {
+  // Home Screen Handlers
+  const handleStartManual = () => {
+    setInitialMode('manual');
     if (caps.isMobile && caps.arSupported) {
       setScreen('ar');
     } else {
-      // Desktop or device without WebXR AR: automatically launch or prompt simulator
       setScreen('simulator');
     }
   };
 
+  const handleStartGarment = () => {
+    setInitialMode('garment');
+    if (caps.isMobile && caps.arSupported) {
+      setScreen('ar');
+    } else {
+      setScreen('simulator');
+    }
+  };
+
+  const handleStartSimulator = () => {
+    setInitialMode('manual');
+    setScreen('simulator');
+  };
+
   return (
     <HomePage
-      onStart={handleStart}
-      onStartSimulator={() => setScreen('simulator')}
+      onStart={handleStartManual}
+      onStartGarment={handleStartGarment}
+      onStartSimulator={handleStartSimulator}
       isArSupported={caps.arSupported}
     />
   );

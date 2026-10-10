@@ -21,6 +21,14 @@ import {
 } from './ArSession';
 import { AdaptivePoseFilter } from './filter';
 import { feedback } from '../utils/feedback';
+import { detectGarmentLandmarks } from '../utils/garmentApi';
+import {
+  GarmentMetrics,
+  Garment3DPoints,
+  unprojectLandmarkToPlane,
+  calculateGarmentMetrics,
+  buildGarment3DMeshes,
+} from './garmentMeasure';
 
 interface MarkerItem {
   point: Point3D;
@@ -36,6 +44,10 @@ export class ArSimulator {
   // Reticle
   private reticleGroup: THREE.Group;
   private reticleRingMat: THREE.MeshBasicMaterial;
+
+  // Garment Auto-Measure State
+  private garmentMeshGroup: THREE.Group | null = null;
+  private isScanningGarment = false;
 
   // Smoothing
   private poseFilter = new AdaptivePoseFilter({
@@ -714,8 +726,68 @@ export class ArSimulator {
     }
   }
 
+  // ─── Garment Auto-Measure with HRNet ────────────────────────────────────
+
+  async scanGarment(): Promise<GarmentMetrics | null> {
+    if (this.isScanningGarment) return null;
+    this.isScanningGarment = true;
+    this.callbacks.onGarmentScanning?.(true);
+
+    try {
+      const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85);
+      const scanResult = await detectGarmentLandmarks(dataUrl);
+
+      // In the 3D room, study table top is at Y = 0.775
+      const isLookingAtTable = this.camera.position.y > 0.5 && this.camera.position.z > -1.2;
+      const planeY = isLookingAtTable ? 0.775 : 0.0;
+      const tablePlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
+
+      const pWL = unprojectLandmarkToPlane(scanResult.landmarks.waist_left, this.camera, tablePlane);
+      const pWR = unprojectLandmarkToPlane(scanResult.landmarks.waist_right, this.camera, tablePlane);
+      if (!pWL || !pWR) throw new Error('Unprojection failed');
+
+      const pInseam = scanResult.landmarks.inseam ? unprojectLandmarkToPlane(scanResult.landmarks.inseam, this.camera, tablePlane) || undefined : undefined;
+      const pAnkleL = scanResult.landmarks.outer_ankle_left ? unprojectLandmarkToPlane(scanResult.landmarks.outer_ankle_left, this.camera, tablePlane) || undefined : undefined;
+      const pAnkleR = scanResult.landmarks.outer_ankle_right ? unprojectLandmarkToPlane(scanResult.landmarks.outer_ankle_right, this.camera, tablePlane) || undefined : undefined;
+
+      const garment3D: Garment3DPoints = {
+        waistLeft: pWL,
+        waistRight: pWR,
+        inseam: pInseam,
+        outerAnkleLeft: pAnkleL,
+        outerAnkleRight: pAnkleR,
+      };
+
+      const metrics = calculateGarmentMetrics(garment3D, scanResult.pantType);
+
+      if (this.garmentMeshGroup) {
+        this.scene.remove(this.garmentMeshGroup);
+      }
+      this.garmentMeshGroup = buildGarment3DMeshes(garment3D, metrics);
+      this.scene.add(this.garmentMeshGroup);
+
+      feedback.triggerMeasurementComplete();
+      this.callbacks.onGarmentMeasured?.(metrics);
+      this.callbacks.onDistance(metrics.waistWidthMeters);
+
+      return metrics;
+    } catch (err) {
+      console.error('[ArSimulator] Garment scan failed:', err);
+      return null;
+    } finally {
+      this.isScanningGarment = false;
+      this.callbacks.onGarmentScanning?.(false);
+    }
+  }
+
   reset(): void {
     this.clearLivePreview();
+
+    if (this.garmentMeshGroup) {
+      this.scene.remove(this.garmentMeshGroup);
+      this.garmentMeshGroup = null;
+    }
+
     this.markers.forEach((m) => this.scene.remove(m.group));
     this.markers = [];
     this.measurementLines.forEach((l) => this.scene.remove(l));

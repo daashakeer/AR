@@ -2,11 +2,17 @@ import React from 'react';
 
 interface Props {
   onStart: () => void;
+  onStartGarment: () => void;
   onStartSimulator: () => void;
   isArSupported: boolean;
 }
 
-export const HomePage: React.FC<Props> = ({ onStart, onStartSimulator, isArSupported }) => {
+export const HomePage: React.FC<Props> = ({
+  onStart,
+  onStartGarment,
+  onStartSimulator,
+  isArSupported,
+}) => {
   return (
     <div className="home-page">
       <div className="home-content">
@@ -30,13 +36,17 @@ export const HomePage: React.FC<Props> = ({ onStart, onStartSimulator, isArSuppo
 
         <h1 className="home-title">AR Measure Pro</h1>
         <p className="home-subtitle">
-          Precision real-world distance measurement with instant surface tracking and live visual feedback.
+          Precision real-world distance & AI garment sizing with instant surface tracking and 3D visual feedback.
         </p>
 
         {/* Action Buttons */}
         <div className="home-buttons">
           <button className="home-start-btn" onClick={onStart}>
-            {isArSupported ? '⚡ Start AR Camera' : 'Start Measuring'}
+            {isArSupported ? '⚡ Start Tape Measure' : 'Start Measuring'}
+          </button>
+
+          <button className="home-garment-btn" onClick={onStartGarment}>
+            👖 AI Pant Sizing (Auto HRNet)
           </button>
 
           <button className="home-sim-btn" onClick={onStartSimulator}>
@@ -47,17 +57,17 @@ export const HomePage: React.FC<Props> = ({ onStart, onStartSimulator, isArSuppo
         {/* Feature Badges */}
         <div className="home-features-grid">
           <div className="home-feature-pill">
+            <span className="feat-icon">🤖</span>
+            <div>
+              <strong>AI Garment Landmarks</strong>
+              <p>Hugging Face HRNet + SAM3 waist detector</p>
+            </div>
+          </div>
+          <div className="home-feature-pill">
             <span className="feat-icon">🎯</span>
             <div>
               <strong>Filtered Stability</strong>
               <p>Jitter-free adaptive smoothing</p>
-            </div>
-          </div>
-          <div className="home-feature-pill">
-            <span className="feat-icon">📏</span>
-            <div>
-              <strong>Live Tape Preview</strong>
-              <p>Real-time distance badge</p>
             </div>
           </div>
           <div className="home-feature-pill">
@@ -69,19 +79,18 @@ export const HomePage: React.FC<Props> = ({ onStart, onStartSimulator, isArSuppo
           </div>
         </div>
 
-        {/* How it works */}
+        {/* Quick Guide */}
         <div className="how-it-works">
           <h2>Quick Guide</h2>
           <ol className="how-steps">
-            <li><span className="step-num">1</span> Point camera at a textured surface.</li>
-            <li><span className="step-num">2</span> Tap when the reticle turns cyan to place <strong>Point A</strong>.</li>
-            <li><span className="step-num">3</span> Watch the live measuring tape stretch as you move to <strong>Point B</strong>.</li>
-            <li><span className="step-num">4</span> Tap to finalize. Use <strong>Undo</strong> anytime if needed.</li>
+            <li><span className="step-num">1</span> <strong>Pant Sizing:</strong> Lay pants flat, point camera, tap "Scan Pant with AI".</li>
+            <li><span className="step-num">2</span> <strong>Tape Measure:</strong> Tap Point A, move camera, tap Point B.</li>
+            <li><span className="step-num">3</span> <strong>Real Scale:</strong> AR computes millimeter physical distances in 3D.</li>
           </ol>
         </div>
 
         <p className="home-privacy">
-          🔒 Camera stream is processed on-device. No images are uploaded.
+          🔒 Camera stream is processed on-device. Images sent to AI only when you tap scan.
         </p>
       </div>
     </div>

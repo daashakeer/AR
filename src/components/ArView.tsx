@@ -7,24 +7,32 @@ import {
   CameraGuidance,
 } from '../ar/ArSession';
 import { ArSimulator } from '../ar/ArSimulator';
-import { HUD, SavedMeasurement } from './HUD';
+import { HUD, SavedMeasurement, MeasurementMode } from './HUD';
 import { DebugPanel } from './DebugPanel';
 import type { DeviceCapabilities } from '../hooks/useDeviceCapabilities';
 import type { Point3D, LineOrientation } from '../utils/distance';
 import type { Unit } from '../utils/units';
+import type { GarmentMetrics } from '../ar/garmentMeasure';
 import { feedback } from '../utils/feedback';
 
 interface Props {
   capabilities: DeviceCapabilities;
   isSimulator?: boolean;
+  initialMode?: MeasurementMode;
   onExit: () => void;
 }
 
-export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onExit }) => {
+export const ArView: React.FC<Props> = ({
+  capabilities,
+  isSimulator = false,
+  initialMode = 'manual',
+  onExit,
+}) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<ArSession | ArSimulator | null>(null);
 
+  const [mode, setMode] = useState<MeasurementMode>(initialMode);
   const [step, setStep] = useState<MeasurementStep>('idle');
   const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>('detecting');
   const [pointA, setPointA] = useState<Point3D | null>(null);
@@ -39,6 +47,10 @@ export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onE
   const [showDebug, setShowDebug] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [history, setHistory] = useState<SavedMeasurement[]>([]);
+
+  // Garment Auto-Measure State
+  const [garmentMetrics, setGarmentMetrics] = useState<GarmentMetrics | null>(null);
+  const [isScanningGarment, setIsScanningGarment] = useState<boolean>(false);
 
   // Start AR session or Simulator once canvas and overlay are mounted
   useEffect(() => {
@@ -57,7 +69,6 @@ export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onE
       onLiveDistance: (d: number | null) => setLiveDistanceMeters(d),
       onDistance: (d: number) => {
         setDistanceMeters(d);
-        // Automatically save to measurement history
         const now = new Date();
         const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         setHistory((prev) => [
@@ -72,6 +83,23 @@ export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onE
       },
       onOrientation: (ori: LineOrientation | null) => setOrientation(ori),
       onGuidance: (g: CameraGuidance) => setGuidance(g),
+      onGarmentMeasured: (metrics: GarmentMetrics) => {
+        setGarmentMetrics(metrics);
+        setDistanceMeters(metrics.waistWidthMeters);
+
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        setHistory((prev) => [
+          {
+            id: Math.random().toString(36).substring(2, 9),
+            timestamp: timeStr,
+            meters: metrics.waistWidthMeters,
+            garmentInfo: `Size ${metrics.recommendedSize} (${metrics.pantType})`,
+          },
+          ...prev,
+        ]);
+      },
+      onGarmentScanning: (scanning: boolean) => setIsScanningGarment(scanning),
       onError: (e: AppError) => setError(e),
       onEnd: () => onExit(),
     };
@@ -100,6 +128,7 @@ export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onE
     setDistanceMeters(null);
     setLiveDistanceMeters(null);
     setOrientation(null);
+    setGarmentMetrics(null);
     setError(null);
   }, []);
 
@@ -121,6 +150,11 @@ export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onE
     });
   }, []);
 
+  const handleScanGarment = useCallback(async () => {
+    if (!sessionRef.current) return;
+    await sessionRef.current.scanGarment();
+  }, []);
+
   const handleClearHistory = useCallback(() => {
     setHistory([]);
   }, []);
@@ -133,6 +167,8 @@ export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onE
       {/* DOM Overlay on top of AR Canvas */}
       <div ref={overlayRef} className="ar-overlay">
         <HUD
+          mode={mode}
+          onModeChange={setMode}
           step={step}
           trackingStatus={trackingStatus}
           distanceMeters={distanceMeters}
@@ -145,6 +181,9 @@ export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onE
           isSimulator={isSimulator}
           soundEnabled={soundEnabled}
           history={history}
+          garmentMetrics={garmentMetrics}
+          isScanningGarment={isScanningGarment}
+          onScanGarment={handleScanGarment}
           onToggleSound={handleToggleSound}
           onUnitChange={setUnit}
           onReset={handleReset}
