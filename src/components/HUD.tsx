@@ -130,47 +130,71 @@ export const HUD: React.FC<Props> = ({
     });
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!captureResult?.imageDataUrl) return;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filename = `trouser_image_${timestamp}.jpg`;
 
-    // 1. Download captured trouser image
-    const imgLink = document.createElement('a');
-    imgLink.download = `trouser_image_${timestamp}.jpg`;
-    imgLink.href = captureResult.imageDataUrl;
-    document.body.appendChild(imgLink);
-    imgLink.click();
-    document.body.removeChild(imgLink);
+    try {
+      // 1. Convert base64 dataUrl to binary Blob (required for Android Chrome download)
+      const parts = captureResult.imageDataUrl.split(',');
+      const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
+      const bstr = atob(parts[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      const imgBlob = new Blob([u8arr], { type: mime });
 
-    // 2. Download camera calibration & measurement metadata JSON
-    const metaData = {
-      capturedAt: captureResult.capturedAt,
-      imageWidth: captureResult.imageWidth,
-      imageHeight: captureResult.imageHeight,
-      Z_m: captureResult.Z_m,
-      distanceSource: captureResult.distanceSource,
-      fx_pixels: captureResult.fx_pixels,
-      fy_pixels: captureResult.fy_pixels,
-      intrinsicsSource: captureResult.intrinsicsSource,
-      cameraPose: captureResult.cameraPose,
-      planePosition: captureResult.planePosition,
-      planeNormal: captureResult.planeNormal,
-      projectionMatrix: captureResult.projectionMatrix,
-      trackingValid: captureResult.trackingValid,
-      reliabilityNote: captureResult.reliabilityNote,
-    };
-    const jsonBlob = new Blob([JSON.stringify(metaData, null, 2)], { type: 'application/json' });
-    const jsonUrl = URL.createObjectURL(jsonBlob);
-    const jsonLink = document.createElement('a');
-    jsonLink.download = `trouser_metadata_${timestamp}.json`;
-    jsonLink.href = jsonUrl;
-    document.body.appendChild(jsonLink);
-    jsonLink.click();
-    document.body.removeChild(jsonLink);
-    URL.revokeObjectURL(jsonUrl);
+      // 2. Try native Web Share API (opens Android "Save to Device", "Photos", or share)
+      const nav = navigator as unknown as {
+        canShare?: (data: unknown) => boolean;
+        share?: (data: unknown) => Promise<void>;
+      };
+      if (typeof File !== 'undefined' && typeof nav.share === 'function') {
+        const file = new File([imgBlob], filename, { type: mime });
+        if (typeof nav.canShare === 'function' && nav.canShare({ files: [file] })) {
+          try {
+            await nav.share({
+              files: [file],
+              title: 'Trouser Photo & AR Measurement',
+              text: `Camera Distance Z: ${captureResult.Z_m !== null ? captureResult.Z_m.toFixed(3) + 'm' : 'N/A'} | fx: ${captureResult.fx_pixels !== null ? captureResult.fx_pixels.toFixed(1) + 'px' : 'N/A'}`,
+            });
+            setDownloaded(true);
+            setTimeout(() => setDownloaded(false), 2500);
+            return;
+          } catch (e: unknown) {
+            if ((e as Error)?.name === 'AbortError') {
+              return; // User dismissed share sheet
+            }
+          }
+        }
+      }
 
-    setDownloaded(true);
-    setTimeout(() => setDownloaded(false), 2500);
+      // 3. Fallback: Standard Blob URL anchor download
+      const imgUrl = URL.createObjectURL(imgBlob);
+      const link = document.createElement('a');
+      link.href = imgUrl;
+      link.download = filename;
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        if (link.parentElement) document.body.removeChild(link);
+        URL.revokeObjectURL(imgUrl);
+      }, 5000);
+
+      setDownloaded(true);
+      setTimeout(() => setDownloaded(false), 2500);
+    } catch (err) {
+      console.error('[HUD] Download error:', err);
+      // Fallback: open image in a new tab so user can long-press to save
+      const win = window.open();
+      if (win) {
+        win.document.write(`<img src="${captureResult.imageDataUrl}" style="max-width:100%;height:auto;"/>`);
+      }
+    }
   };
 
   return (

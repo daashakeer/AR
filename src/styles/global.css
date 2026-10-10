@@ -1363,9 +1363,11 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  z-index: 60;
+  z-index: 100;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+  pointer-events: auto !important;
+  touch-action: pan-y;
 }
 
 .capture-panel-header {
@@ -1373,6 +1375,7 @@ button {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 4px;
+  pointer-events: auto !important;
 }
 
 .capture-badge {
@@ -1386,6 +1389,7 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
+  pointer-events: auto !important;
 }
 
 .capture-download-btn {
@@ -1393,11 +1397,18 @@ button {
   color: #fff;
   font-size: 13px;
   font-weight: 600;
-  padding: 6px 14px;
+  padding: 8px 16px;
   border-radius: 20px;
   border: 1px solid rgba(16, 185, 129, 0.4);
   box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
   transition: all 0.15s;
+  cursor: pointer;
+  pointer-events: auto !important;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.capture-download-btn:active {
+  transform: scale(0.96);
 }
 .capture-download-btn:hover {
   filter: brightness(1.1);
@@ -1408,10 +1419,17 @@ button {
   color: #fff;
   font-size: 13px;
   font-weight: 600;
-  padding: 6px 14px;
+  padding: 8px 16px;
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   transition: background 0.15s;
+  cursor: pointer;
+  pointer-events: auto !important;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.capture-retake-btn:active {
+  transform: scale(0.96);
 }
 .capture-retake-btn:hover {
   background: rgba(255, 255, 255, 0.18);
