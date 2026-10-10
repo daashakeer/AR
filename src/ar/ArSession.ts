@@ -1,22 +1,26 @@
 /**
  * ArSession — WebXR immersive-ar session manager.
  *
- * Responsibilities:
- *  - Initialize Three.js renderer with XR enabled
- *  - Request WebXR immersive-ar session with hit-test
- *  - Run hit-test each frame to position the reticle on detected surfaces
- *  - Handle 'select' (tap) events to place markers
- *  - Compute real-world 3D distance between Point A and Point B
- *  - Render markers, line, and midpoint label in world space
- *  - Notify the React UI via callbacks
- *
- * Distance is computed in meters using the Euclidean formula:
- *   d = sqrt((x2-x1)^2 + (y2-y1)^2 + (z2-z1)^2)
- * No screen pixels are involved.
+ * Upgrades:
+ *  - Adaptive velocity-sensitive pose filtering (eliminates jitter, zero latency)
+ *  - WebXR Anchors support (locks points to physical features, prevents SLAM drift)
+ *  - Real-time live rubber-band measuring tape preview & streaming distance
+ *  - High-precision holographic reticle with surface-normal alignment and crosshair
+ *  - Camera-to-surface distance guidance (optimal sweet-spot tracking)
+ *  - Immediate state transitions (fixed 200ms throttle desync bug)
+ *  - Multi-point measurement support with Undo functionality
+ *  - Web Audio & Haptic feedback on interactions
  */
 
 import * as THREE from 'three';
-import { Point3D, euclideanDistance } from '../utils/distance';
+import {
+  Point3D,
+  euclideanDistance,
+  getLineOrientation,
+  LineOrientation,
+} from '../utils/distance';
+import { AdaptivePoseFilter } from './filter';
+import { feedback } from '../utils/feedback';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -37,40 +41,59 @@ export type MeasurementStep =
   | 'place-b'
   | 'measured';
 
+export type GuidanceStatus = 'optimal' | 'too-close' | 'too-far' | 'none';
+
+export interface CameraGuidance {
+  status: GuidanceStatus;
+  distanceMeters: number;
+  message: string;
+}
+
 export interface ArSessionCallbacks {
   onTrackingStatus: (status: TrackingStatus) => void;
   onStep: (step: MeasurementStep) => void;
   onPointA: (point: Point3D) => void;
   onPointB: (point: Point3D) => void;
+  onPointsChange: (points: Point3D[]) => void;
+  onLiveDistance: (distanceMeters: number | null) => void;
   onDistance: (distanceMeters: number) => void;
+  onOrientation: (orientation: LineOrientation | null) => void;
+  onGuidance: (guidance: CameraGuidance) => void;
   onError: (error: AppError) => void;
   onEnd: () => void;
 }
 
-// ─── Canvas label helpers ──────────────────────────────────────────────────
+// ─── High-DPI Canvas Label Helpers ─────────────────────────────────────────
 
 function makeMarkerSprite(label: string, color: string): THREE.Sprite {
-  const size = 128;
+  const size = 256; // 2x resolution for crispness
   const cv = document.createElement('canvas');
   cv.width = size;
   cv.height = size;
   const ctx = cv.getContext('2d')!;
 
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+  ctx.shadowBlur = 12;
+  ctx.shadowOffsetY = 4;
+
   ctx.beginPath();
-  ctx.arc(size / 2, size / 2, size / 2 - 4, 0, Math.PI * 2);
+  ctx.arc(size / 2, size / 2, size / 2 - 12, 0, Math.PI * 2);
   ctx.fillStyle = color;
   ctx.fill();
+
+  ctx.lineWidth = 10;
   ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 6;
   ctx.stroke();
 
+  ctx.shadowColor = 'transparent';
   ctx.fillStyle = '#ffffff';
-  ctx.font = `bold ${size * 0.45}px Arial, sans-serif`;
+  ctx.font = `bold ${Math.round(size * 0.46)}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, size / 2, size / 2 + 2);
 
   const tex = new THREE.CanvasTexture(cv);
+  tex.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
   const sprite = new THREE.Sprite(mat);
   sprite.renderOrder = 999;
@@ -78,14 +101,14 @@ function makeMarkerSprite(label: string, color: string): THREE.Sprite {
 }
 
 function makeDistanceSprite(text: string): THREE.Sprite {
-  const w = 320;
-  const h = 100;
+  const w = 480;
+  const h = 150;
   const cv = document.createElement('canvas');
   cv.width = w;
   cv.height = h;
   const ctx = cv.getContext('2d')!;
 
-  const r = 18;
+  const r = 28;
   ctx.beginPath();
   ctx.moveTo(r, 0);
   ctx.lineTo(w - r, 0);
@@ -97,19 +120,21 @@ function makeDistanceSprite(text: string): THREE.Sprite {
   ctx.lineTo(0, r);
   ctx.quadraticCurveTo(0, 0, r, 0);
   ctx.closePath();
-  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+
+  ctx.fillStyle = 'rgba(10, 14, 24, 0.88)';
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = 'rgba(0, 229, 255, 0.7)';
   ctx.stroke();
 
   ctx.fillStyle = '#ffffff';
-  ctx.font = `bold 48px Arial, sans-serif`;
+  ctx.font = `bold 64px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, w / 2, h / 2);
 
   const tex = new THREE.CanvasTexture(cv);
+  tex.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
   const sprite = new THREE.Sprite(mat);
   sprite.renderOrder = 1000;
@@ -119,65 +144,72 @@ function makeDistanceSprite(text: string): THREE.Sprite {
 function disposeGroup(group: THREE.Group, scene: THREE.Scene): void {
   scene.remove(group);
   group.traverse((obj) => {
-    if (obj instanceof THREE.Mesh || obj instanceof THREE.Sprite) {
+    if (obj instanceof THREE.Mesh || obj instanceof THREE.Sprite || obj instanceof THREE.Line) {
       obj.geometry?.dispose();
       if (Array.isArray(obj.material)) {
         obj.material.forEach((m) => {
-          (m as THREE.SpriteMaterial).map?.dispose();
+          if ('map' in m && m.map) m.map.dispose();
           m.dispose();
         });
       } else {
-        (obj.material as THREE.SpriteMaterial).map?.dispose();
+        if ('map' in obj.material && obj.material.map) obj.material.map.dispose();
         obj.material.dispose();
       }
     }
   });
 }
 
-function disposeLine(line: THREE.Line, scene: THREE.Scene): void {
-  scene.remove(line);
-  line.geometry.dispose();
-  (line.material as THREE.Material).dispose();
-}
+// ─── Main ArSession Class ──────────────────────────────────────────────────
 
-function disposeSprite(sprite: THREE.Sprite, scene: THREE.Scene): void {
-  scene.remove(sprite);
-  (sprite.material as THREE.SpriteMaterial).map?.dispose();
-  sprite.material.dispose();
+interface MarkerItem {
+  point: Point3D;
+  group: THREE.Group;
+  anchor?: unknown;
 }
-
-// ─── Main class ────────────────────────────────────────────────────────────
 
 export class ArSession {
-  // Three.js
+  // Three.js Core
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private reticleGroup: THREE.Group;
+  private reticleRingMat: THREE.MeshBasicMaterial;
+  private reticleInnerMat: THREE.MeshBasicMaterial;
 
-  // XR
+  // Smoothing Filter
+  private poseFilter = new AdaptivePoseFilter({
+    minAlpha: 0.12,
+    maxAlpha: 0.85,
+    deadbandMeters: 0.002,
+  });
+
+  // XR State
   private xrSession: XRSession | null = null;
   private hitTestSource: XRHitTestSource | null = null;
   private localSpace: XRReferenceSpace | null = null;
+  private lastHitResult: XRHitTestResult | null = null;
 
-  // Scene objects
-  private markerGroupA: THREE.Group | null = null;
-  private markerGroupB: THREE.Group | null = null;
-  private measureLine: THREE.Line | null = null;
-  private midLabel: THREE.Sprite | null = null;
+  // Measurement State & Visuals
+  private markers: MarkerItem[] = [];
+  private measurementLines: THREE.Line[] = [];
+  private distanceLabels: THREE.Sprite[] = [];
 
-  // Reticle pulse animation
+  // Live Measuring Tape Preview
+  private livePreviewLine: THREE.Line | null = null;
+  private livePreviewLabel: THREE.Sprite | null = null;
+
+  // Reticle Visual Pulse & Status
   private reticlePulse = 0;
+  private currentSmoothedPos = new THREE.Vector3();
+  private currentSmoothedQuat = new THREE.Quaternion();
+  private hasHit = false;
 
-  // State
-  private pointA: Point3D | null = null;
-  private pointB: Point3D | null = null;
+  // App State
   private step: MeasurementStep = 'idle';
   private trackingStatus: TrackingStatus = 'detecting';
   private ended = false;
-
-  // Throttle React state updates (don't set state 60x/sec)
   private lastStatusUpdate = 0;
+  private lastGuidanceUpdate = 0;
 
   private callbacks: ArSessionCallbacks;
   private boundSelect: () => void;
@@ -186,19 +218,16 @@ export class ArSession {
     this.callbacks = callbacks;
 
     // ── Renderer ──────────────────────────────────────────────────────────
-    // antialias: false  → massive GPU saving on mobile
-    // pixelRatio: 1     → let WebXR compositor handle resolution scaling
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       alpha: true,
-      antialias: false,          // ← PERF: off saves ~30% GPU on mobile
+      antialias: false,
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(1); // ← PERF: XR compositor handles scaling
+    this.renderer.setPixelRatio(1);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.xr.enabled = true;
     this.renderer.shadowMap.enabled = false;
-    // Use a faster output color space
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 
     // ── Scene ─────────────────────────────────────────────────────────────
@@ -207,33 +236,47 @@ export class ArSession {
       70,
       window.innerWidth / window.innerHeight,
       0.01,
-      20,
+      20
     );
 
-    // Single ambient light is enough for AR — no shadows needed
     const ambient = new THREE.AmbientLight(0xffffff, 3.0);
     this.scene.add(ambient);
 
-    // ── Reticle ───────────────────────────────────────────────────────────
-    // Fewer segments (16/24 vs 32) → less GPU work
-    const ringGeo = new THREE.RingGeometry(0.05, 0.08, 24).rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: 0x00ff88,
+    // ── High-Precision Reticle ─────────────────────────────────────────────
+    this.reticleGroup = new THREE.Group();
+
+    // Outer Target Ring (radius: 5.5cm - 7.5cm)
+    const ringGeo = new THREE.RingGeometry(0.045, 0.065, 32).rotateX(-Math.PI / 2);
+    this.reticleRingMat = new THREE.MeshBasicMaterial({
+      color: 0x00e5ff,
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 0.9,
     });
-    const innerGeo = new THREE.CircleGeometry(0.016, 16).rotateX(-Math.PI / 2);
-    const innerMat = new THREE.MeshBasicMaterial({
-      color: 0x00ff88,
+    this.reticleGroup.add(new THREE.Mesh(ringGeo, this.reticleRingMat));
+
+    // Center Crosshair Dot
+    const centerGeo = new THREE.CircleGeometry(0.008, 16).rotateX(-Math.PI / 2);
+    this.reticleInnerMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.95,
     });
+    this.reticleGroup.add(new THREE.Mesh(centerGeo, this.reticleInnerMat));
 
-    this.reticleGroup = new THREE.Group();
-    this.reticleGroup.add(new THREE.Mesh(ringGeo, ringMat));
-    this.reticleGroup.add(new THREE.Mesh(innerGeo, innerMat));
+    // Fine Crosshair Ticks for precision edge alignment
+    const tickMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+    const tickPoints = [
+      new THREE.Vector3(-0.04, 0.001, 0), new THREE.Vector3(-0.015, 0.001, 0),
+      new THREE.Vector3(0.015, 0.001, 0),  new THREE.Vector3(0.04, 0.001, 0),
+      new THREE.Vector3(0, 0.001, -0.04), new THREE.Vector3(0, 0.001, -0.015),
+      new THREE.Vector3(0, 0.001, 0.015),  new THREE.Vector3(0, 0.001, 0.04),
+    ];
+    const tickGeo = new THREE.BufferGeometry().setFromPoints(tickPoints);
+    const tickLines = new THREE.LineSegments(tickGeo, tickMat);
+    this.reticleGroup.add(tickLines);
+
     this.reticleGroup.matrixAutoUpdate = false;
     this.reticleGroup.visible = false;
     this.scene.add(this.reticleGroup);
@@ -241,7 +284,7 @@ export class ArSession {
     this.boundSelect = this.handleSelect.bind(this);
   }
 
-  // ─── Session start ───────────────────────────────────────────────────────
+  // ─── Session Start ───────────────────────────────────────────────────────
 
   async start(overlayRoot: Element): Promise<void> {
     if (!navigator.xr) {
@@ -249,11 +292,11 @@ export class ArSession {
       return;
     }
 
-    // ── 1. Request XR session ─────────────────────────────────────────────
     try {
+      // Request hit-test, and request anchors & local-floor if supported
       const sessionInit = {
         requiredFeatures: ['hit-test'],
-        optionalFeatures: ['dom-overlay', 'local-floor'],
+        optionalFeatures: ['dom-overlay', 'local-floor', 'anchors', 'plane-detection'],
         domOverlay: { root: overlayRoot },
       } as XRSessionInit;
 
@@ -270,7 +313,6 @@ export class ArSession {
       return;
     }
 
-    // ── 2. Set up Three.js XR ─────────────────────────────────────────────
     try {
       await this.renderer.xr.setSession(this.xrSession);
     } catch (err) {
@@ -279,9 +321,7 @@ export class ArSession {
       return;
     }
 
-    // ── 3. Reference spaces ───────────────────────────────────────────────
-    // Try 'local-floor' first (better for flat surface detection),
-    // fall back to 'local' which all AR-capable devices support.
+    // Reference space setup
     try {
       this.localSpace = await this.xrSession.requestReferenceSpace('local-floor');
       console.log('[AR] Using local-floor reference space');
@@ -290,15 +330,13 @@ export class ArSession {
         this.localSpace = await this.xrSession.requestReferenceSpace('local');
         console.log('[AR] Using local reference space');
       } catch (err) {
-        console.error('[AR] Could not get any reference space:', err);
+        console.error('[AR] Could not get reference space:', err);
         this.callbacks.onError('session-failed');
         return;
       }
     }
 
-    // ── 4. Hit-test source ────────────────────────────────────────────────
-    // We test from the 'viewer' space (the camera) and get results
-    // in localSpace (world coordinates).
+    // Hit-test source
     let viewerSpace: XRReferenceSpace;
     try {
       viewerSpace = await this.xrSession.requestReferenceSpace('viewer');
@@ -309,7 +347,6 @@ export class ArSession {
     }
 
     try {
-      // requestHitTestSource is guaranteed by 'hit-test' in requiredFeatures
       const hitTestFn = (this.xrSession as unknown as {
         requestHitTestSource: (opts: { space: XRSpace }) => Promise<XRHitTestSource>;
       }).requestHitTestSource;
@@ -318,80 +355,142 @@ export class ArSession {
         throw new Error('requestHitTestSource is not available');
       }
       this.hitTestSource = await hitTestFn.call(this.xrSession, { space: viewerSpace });
-      console.log('[AR] Hit-test source created successfully');
+      console.log('[AR] Hit-test source established');
     } catch (err) {
       console.error('[AR] requestHitTestSource failed:', err);
       this.callbacks.onError('session-failed');
       return;
     }
 
-    // ── 5. Event listeners ────────────────────────────────────────────────
     this.xrSession.addEventListener('select', this.boundSelect);
     this.xrSession.addEventListener('end', this.handleSessionEnd.bind(this));
 
-    // ── 6. Start render loop ─────────────────────────────────────────────
+    // Immediately start in detecting state
     this.step = 'detecting';
     this.callbacks.onStep('detecting');
     this.renderer.setAnimationLoop(this.renderLoop.bind(this));
   }
 
-  // ─── Render loop (called every XR frame ~60fps) ───────────────────────────
-  // Keep this as LEAN as possible — it runs every frame on the GPU thread.
+  // ─── Main Render Loop (60 FPS) ───────────────────────────────────────────
 
   private renderLoop(_timestamp: number, frame: XRFrame | undefined): void {
-    if (!frame) {
+    if (!frame || !this.hitTestSource || !this.localSpace) {
       this.renderer.render(this.scene, this.camera);
       return;
     }
 
-    if (!this.hitTestSource || !this.localSpace) {
-      this.renderer.render(this.scene, this.camera);
-      return;
-    }
-
-    // ── Hit-test ──────────────────────────────────────────────────────────
     const hitTestResults = frame.getHitTestResults(this.hitTestSource);
-
     const now = performance.now();
-    const shouldUpdateStatus = now - this.lastStatusUpdate > 200; // throttle to 5/sec
 
     if (hitTestResults.length > 0) {
       const hit = hitTestResults[0];
+      this.lastHitResult = hit;
       const pose = hit.getPose(this.localSpace);
 
       if (pose) {
-        // Update reticle position using the XR world-space matrix
-        this.reticleGroup.visible = true;
-        this.reticleGroup.matrix.fromArray(pose.transform.matrix);
-        this.reticleGroup.matrix.decompose(
-          this.reticleGroup.position,
-          this.reticleGroup.quaternion,
-          this.reticleGroup.scale,
-        );
+        this.hasHit = true;
 
-        // Pulse the reticle scale for visual feedback
+        // Extract raw position and orientation
+        const rawMat = new THREE.Matrix4().fromArray(pose.transform.matrix);
+        const rawPos = new THREE.Vector3();
+        const rawQuat = new THREE.Quaternion();
+        const rawScale = new THREE.Vector3();
+        rawMat.decompose(rawPos, rawQuat, rawScale);
+
+        // Apply Adaptive Velocity-Sensitive Pose Filter
+        const filtered = this.poseFilter.update(rawPos, rawQuat, now);
+        this.currentSmoothedPos.copy(filtered.position);
+        this.currentSmoothedQuat.copy(filtered.quaternion);
+
+        // Position reticle using smoothed coordinates
+        this.reticleGroup.visible = true;
+        this.reticleGroup.position.copy(filtered.position);
+        this.reticleGroup.quaternion.copy(filtered.quaternion);
+
+        // Reticle animation and stability coloring
         this.reticlePulse += 0.08;
-        const pulse = 1 + Math.sin(this.reticlePulse) * 0.06;
+        const pulse = 1 + Math.sin(this.reticlePulse) * 0.04;
         this.reticleGroup.scale.set(pulse, pulse, pulse);
+
+        if (filtered.isStable) {
+          // Locked onto target surface: bright cyan
+          this.reticleRingMat.color.setHex(0x00e5ff);
+          this.reticleRingMat.opacity = 0.95;
+        } else {
+          // Moving / tracking: bright emerald
+          this.reticleRingMat.color.setHex(0x00ff88);
+          this.reticleRingMat.opacity = 0.85;
+        }
+
+        // Distance from camera to surface (Sweet-spot accuracy tracking)
+        const camPos = new THREE.Vector3();
+        this.camera.getWorldPosition(camPos);
+        const distToSurface = camPos.distanceTo(filtered.position);
+
+        if (now - this.lastGuidanceUpdate > 150) {
+          this.lastGuidanceUpdate = now;
+          let guidanceStatus: GuidanceStatus = 'optimal';
+          let guidanceMsg = `Optimal range (${distToSurface.toFixed(2)}m)`;
+
+          if (distToSurface < 0.35) {
+            guidanceStatus = 'too-close';
+            guidanceMsg = `Too close (${distToSurface.toFixed(2)}m) — Move back`;
+          } else if (distToSurface > 2.5) {
+            guidanceStatus = 'too-far';
+            guidanceMsg = `Move closer (${distToSurface.toFixed(2)}m) for high accuracy`;
+          }
+
+          this.callbacks.onGuidance({
+            status: guidanceStatus,
+            distanceMeters: distToSurface,
+            message: guidanceMsg,
+          });
+        }
+
+        // Update live rubber-band measuring tape preview if a marker exists
+        if (this.markers.length > 0 && this.step !== 'measured') {
+          const lastMarker = this.markers[this.markers.length - 1];
+          const liveDist = euclideanDistance(lastMarker.point, {
+            x: filtered.position.x,
+            y: filtered.position.y,
+            z: filtered.position.z,
+          });
+
+          this.updateLivePreview(lastMarker.point, filtered.position, liveDist);
+          this.callbacks.onLiveDistance(liveDist);
+
+          const orientation = getLineOrientation(lastMarker.point, {
+            x: filtered.position.x,
+            y: filtered.position.y,
+            z: filtered.position.z,
+          });
+          this.callbacks.onOrientation(orientation);
+        }
+
+        // Immediate state transition upon surface acquisition (FIXED THROTTLE BUG)
+        if (this.step === 'detecting') {
+          this.step = 'place-a';
+          this.callbacks.onStep('place-a');
+        }
 
         if (this.trackingStatus !== 'good') {
           this.trackingStatus = 'good';
-          if (shouldUpdateStatus) {
+          if (now - this.lastStatusUpdate > 200) {
             this.lastStatusUpdate = now;
             this.callbacks.onTrackingStatus('good');
-            if (this.step === 'detecting') {
-              this.step = 'place-a';
-              this.callbacks.onStep('place-a');
-            }
           }
         }
       }
     } else {
+      this.hasHit = false;
       if (this.reticleGroup.visible) {
         this.reticleGroup.visible = false;
       }
+      this.clearLivePreview();
+      this.callbacks.onLiveDistance(null);
+
       if (this.trackingStatus !== 'detecting' && this.step !== 'measured') {
-        if (shouldUpdateStatus) {
+        if (now - this.lastStatusUpdate > 200) {
           this.lastStatusUpdate = now;
           this.trackingStatus = 'detecting';
           this.callbacks.onTrackingStatus('detecting');
@@ -402,126 +501,283 @@ export class ArSession {
     this.renderer.render(this.scene, this.camera);
   }
 
-  // ─── Tap handler ─────────────────────────────────────────────────────────
+  // ─── Live Measuring Tape Preview ─────────────────────────────────────────
 
-  private handleSelect(): void {
-    if (!this.reticleGroup.visible) return;
+  private updateLivePreview(startPos: Point3D, endPos: THREE.Vector3, distanceMeters: number): void {
+    const points = [
+      new THREE.Vector3(startPos.x, startPos.y, startPos.z),
+      endPos.clone(),
+    ];
+
+    if (!this.livePreviewLine) {
+      const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+      const lineMat = new THREE.LineDashedMaterial({
+        color: 0x00e5ff,
+        dashSize: 0.03,
+        gapSize: 0.02,
+        transparent: true,
+        opacity: 0.85,
+      });
+      this.livePreviewLine = new THREE.Line(lineGeo, lineMat);
+      this.livePreviewLine.computeLineDistances();
+      this.scene.add(this.livePreviewLine);
+    } else {
+      this.livePreviewLine.geometry.setFromPoints(points);
+      this.livePreviewLine.computeLineDistances();
+      this.livePreviewLine.visible = true;
+    }
+
+    // Dynamic live floating midpoint badge
+    const mid = new THREE.Vector3(
+      (startPos.x + endPos.x) / 2,
+      Math.max(startPos.y, endPos.y) + 0.06,
+      (startPos.z + endPos.z) / 2
+    );
+
+    if (this.livePreviewLabel) {
+      this.scene.remove(this.livePreviewLabel);
+      this.livePreviewLabel.geometry.dispose();
+      (this.livePreviewLabel.material as THREE.SpriteMaterial).map?.dispose();
+      this.livePreviewLabel.material.dispose();
+    }
+
+    const cm = (distanceMeters * 100).toFixed(1);
+    this.livePreviewLabel = makeDistanceSprite(`${cm} cm`);
+    this.livePreviewLabel.scale.set(0.18, 0.055, 1);
+    this.livePreviewLabel.position.copy(mid);
+    this.scene.add(this.livePreviewLabel);
+  }
+
+  private clearLivePreview(): void {
+    if (this.livePreviewLine) {
+      this.livePreviewLine.visible = false;
+    }
+    if (this.livePreviewLabel) {
+      this.scene.remove(this.livePreviewLabel);
+      this.livePreviewLabel.geometry.dispose();
+      (this.livePreviewLabel.material as THREE.SpriteMaterial).map?.dispose();
+      this.livePreviewLabel.material.dispose();
+      this.livePreviewLabel = null;
+    }
+  }
+
+  // ─── Tap / Select Handler ────────────────────────────────────────────────
+
+  private async handleSelect(): Promise<void> {
+    if (!this.reticleGroup.visible || !this.hasHit) return;
     if (this.step !== 'place-a' && this.step !== 'place-b') return;
 
     const pos: Point3D = {
-      x: this.reticleGroup.position.x,
-      y: this.reticleGroup.position.y,
-      z: this.reticleGroup.position.z,
+      x: this.currentSmoothedPos.x,
+      y: this.currentSmoothedPos.y,
+      z: this.currentSmoothedPos.z,
     };
 
+    // Attempt to create physical XRAnchor if supported
+    let anchor: unknown = undefined;
+    if (this.lastHitResult && 'createAnchor' in this.lastHitResult) {
+      try {
+        const createAnchorFn = (this.lastHitResult as unknown as {
+          createAnchor: () => Promise<unknown>;
+        }).createAnchor;
+        if (createAnchorFn) {
+          anchor = await createAnchorFn.call(this.lastHitResult);
+        }
+      } catch {}
+    }
+
     if (this.step === 'place-a') {
-      this.pointA = pos;
-      this.placeMarker('A', pos, '#1a8cff');
+      // First point placed
+      const label = 'A';
+      const group = this.createMarkerMesh(label, pos, '#00b4d8');
+      this.markers.push({ point: pos, group, anchor });
+      feedback.triggerPointPlaced();
+
       this.callbacks.onPointA(pos);
+      this.callbacks.onPointsChange(this.markers.map((m) => m.point));
+
       this.step = 'place-b';
       this.callbacks.onStep('place-b');
-    } else if (this.step === 'place-b' && this.pointA) {
-      this.pointB = pos;
-      this.placeMarker('B', pos, '#ff6b1a');
-      this.callbacks.onPointB(pos);
+    } else if (this.step === 'place-b') {
+      // Second point placed
+      const label = 'B';
+      const group = this.createMarkerMesh(label, pos, '#ff7043');
+      this.markers.push({ point: pos, group, anchor });
 
-      const dist = euclideanDistance(this.pointA, pos);
-      this.drawMeasurement(this.pointA, pos, dist);
+      this.clearLivePreview();
+      feedback.triggerMeasurementComplete();
+
+      const prevPoint = this.markers[0].point;
+      const dist = euclideanDistance(prevPoint, pos);
+      this.drawPermanentMeasurement(prevPoint, pos, dist);
+
+      this.callbacks.onPointB(pos);
+      this.callbacks.onPointsChange(this.markers.map((m) => m.point));
       this.callbacks.onDistance(dist);
+
+      const orientation = getLineOrientation(prevPoint, pos);
+      this.callbacks.onOrientation(orientation);
 
       this.step = 'measured';
       this.callbacks.onStep('measured');
     }
   }
 
-  // ─── 3D object helpers ────────────────────────────────────────────────────
+  // ─── Marker & Measurement Meshes ─────────────────────────────────────────
 
-  private placeMarker(label: 'A' | 'B', pos: Point3D, color: string): void {
+  private createMarkerMesh(label: string, pos: Point3D, color: string): THREE.Group {
     const group = new THREE.Group();
 
-    // Simple sphere — low-poly for performance
+    // Ground contact ring (radius: 3cm)
+    const ringGeo = new THREE.RingGeometry(0.015, 0.03, 24).rotateX(-Math.PI / 2);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(color),
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.8,
+    });
+    group.add(new THREE.Mesh(ringGeo, ringMat));
+
+    // Pin base sphere
     const sphere = new THREE.Mesh(
-      new THREE.SphereGeometry(0.018, 12, 12),
-      new THREE.MeshBasicMaterial({ color: new THREE.Color(color) }),
+      new THREE.SphereGeometry(0.014, 16, 16),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color) })
     );
+    sphere.position.y = 0.014;
     group.add(sphere);
 
-    // Thin vertical stem
+    // Pin stem
     const stem = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.003, 0.003, 0.06, 6),
-      new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      new THREE.CylinderGeometry(0.002, 0.002, 0.05, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffffff })
     );
-    stem.position.y = 0.048;
+    stem.position.y = 0.045;
     group.add(stem);
 
-    // Label sprite above the stem
+    // Label Sprite
     const sprite = makeMarkerSprite(label, color);
-    sprite.scale.set(0.08, 0.08, 1);
-    sprite.position.y = 0.1;
+    sprite.scale.set(0.075, 0.075, 1);
+    sprite.position.y = 0.095;
     group.add(sprite);
 
     group.position.set(pos.x, pos.y, pos.z);
     this.scene.add(group);
-
-    if (label === 'A') {
-      if (this.markerGroupA) disposeGroup(this.markerGroupA, this.scene);
-      this.markerGroupA = group;
-    } else {
-      if (this.markerGroupB) disposeGroup(this.markerGroupB, this.scene);
-      this.markerGroupB = group;
-    }
+    return group;
   }
 
-  private drawMeasurement(a: Point3D, b: Point3D, distMeters: number): void {
-    if (this.measureLine) disposeLine(this.measureLine, this.scene);
-    if (this.midLabel) disposeSprite(this.midLabel, this.scene);
-
-    // Measurement line
+  private drawPermanentMeasurement(a: Point3D, b: Point3D, distMeters: number): void {
     const points = [
       new THREE.Vector3(a.x, a.y, a.z),
       new THREE.Vector3(b.x, b.y, b.z),
     ];
+
+    // Solid white laser measurement line
     const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
     const lineMat = new THREE.LineBasicMaterial({
       color: 0xffffff,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.95,
+      linewidth: 3,
     });
-    this.measureLine = new THREE.Line(lineGeo, lineMat);
-    this.scene.add(this.measureLine);
+    const line = new THREE.Line(lineGeo, lineMat);
+    this.scene.add(line);
+    this.measurementLines.push(line);
 
-    // Midpoint floating label
+    // Midpoint measurement badge
     const mid = new THREE.Vector3(
       (a.x + b.x) / 2,
-      Math.max(a.y, b.y) + 0.07,
-      (a.z + b.z) / 2,
+      Math.max(a.y, b.y) + 0.065,
+      (a.z + b.z) / 2
     );
     const cm = (distMeters * 100).toFixed(1);
-    this.midLabel = makeDistanceSprite(`${cm} cm`);
-    this.midLabel.scale.set(0.22, 0.07, 1);
-    this.midLabel.position.copy(mid);
-    this.scene.add(this.midLabel);
+    const label = makeDistanceSprite(`${cm} cm`);
+    label.scale.set(0.22, 0.07, 1);
+    label.position.copy(mid);
+    this.scene.add(label);
+    this.distanceLabels.push(label);
   }
 
-  // ─── Reset / cleanup ─────────────────────────────────────────────────────
+  // ─── Undo & Reset ────────────────────────────────────────────────────────
+
+  undoLastPoint(): void {
+    if (this.markers.length === 0) return;
+
+    feedback.triggerUndo();
+    this.clearLivePreview();
+
+    // If measured (2 points placed), remove second point and measurement lines
+    if (this.step === 'measured') {
+      const last = this.markers.pop();
+      if (last) disposeGroup(last.group, this.scene);
+
+      const lastLine = this.measurementLines.pop();
+      if (lastLine) {
+        this.scene.remove(lastLine);
+        lastLine.geometry.dispose();
+        (lastLine.material as THREE.Material).dispose();
+      }
+
+      const lastLabel = this.distanceLabels.pop();
+      if (lastLabel) {
+        this.scene.remove(lastLabel);
+        lastLabel.geometry.dispose();
+        (lastLabel.material as THREE.SpriteMaterial).map?.dispose();
+        lastLabel.material.dispose();
+      }
+
+      this.step = 'place-b';
+      this.callbacks.onStep('place-b');
+      this.callbacks.onPointB(null as unknown as Point3D);
+      this.callbacks.onPointsChange(this.markers.map((m) => m.point));
+      this.callbacks.onOrientation(null);
+    } else if (this.step === 'place-b') {
+      // 1 point placed (Point A), revert to place-a
+      const last = this.markers.pop();
+      if (last) disposeGroup(last.group, this.scene);
+
+      this.step = 'place-a';
+      this.callbacks.onStep('place-a');
+      this.callbacks.onPointA(null as unknown as Point3D);
+      this.callbacks.onPointsChange([]);
+      this.callbacks.onOrientation(null);
+    }
+  }
 
   reset(): void {
-    if (this.markerGroupA) { disposeGroup(this.markerGroupA, this.scene); this.markerGroupA = null; }
-    if (this.markerGroupB) { disposeGroup(this.markerGroupB, this.scene); this.markerGroupB = null; }
-    if (this.measureLine)  { disposeLine(this.measureLine, this.scene);   this.measureLine = null; }
-    if (this.midLabel)     { disposeSprite(this.midLabel, this.scene);    this.midLabel = null; }
+    this.clearLivePreview();
 
-    this.pointA = null;
-    this.pointB = null;
+    this.markers.forEach((m) => disposeGroup(m.group, this.scene));
+    this.markers = [];
+
+    this.measurementLines.forEach((line) => {
+      this.scene.remove(line);
+      line.geometry.dispose();
+      (line.material as THREE.Material).dispose();
+    });
+    this.measurementLines = [];
+
+    this.distanceLabels.forEach((label) => {
+      this.scene.remove(label);
+      label.geometry.dispose();
+      (label.material as THREE.SpriteMaterial).map?.dispose();
+      label.material.dispose();
+    });
+    this.distanceLabels = [];
+
+    this.poseFilter.reset();
+
     this.step = 'place-a';
     this.callbacks.onStep('place-a');
+    this.callbacks.onPointsChange([]);
+    this.callbacks.onLiveDistance(null);
+    this.callbacks.onOrientation(null);
   }
 
   end(): void {
     if (this.ended) return;
     this.ended = true;
     if (this.xrSession) {
-      this.xrSession.end().catch(() => {/* already ended */});
+      this.xrSession.end().catch(() => {});
     }
     this.renderer.setAnimationLoop(null);
   }

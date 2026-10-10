@@ -4,64 +4,108 @@ import {
   MeasurementStep,
   TrackingStatus,
   AppError,
+  CameraGuidance,
 } from '../ar/ArSession';
-import { HUD } from './HUD';
+import { ArSimulator } from '../ar/ArSimulator';
+import { HUD, SavedMeasurement } from './HUD';
 import { DebugPanel } from './DebugPanel';
 import type { DeviceCapabilities } from '../hooks/useDeviceCapabilities';
-import type { Point3D } from '../utils/distance';
+import type { Point3D, LineOrientation } from '../utils/distance';
 import type { Unit } from '../utils/units';
+import { feedback } from '../utils/feedback';
 
 interface Props {
   capabilities: DeviceCapabilities;
+  isSimulator?: boolean;
   onExit: () => void;
 }
 
-export const ArView: React.FC<Props> = ({ capabilities, onExit }) => {
+export const ArView: React.FC<Props> = ({ capabilities, isSimulator = false, onExit }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  const sessionRef = useRef<ArSession | null>(null);
+  const sessionRef = useRef<ArSession | ArSimulator | null>(null);
 
   const [step, setStep] = useState<MeasurementStep>('idle');
   const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>('detecting');
   const [pointA, setPointA] = useState<Point3D | null>(null);
   const [pointB, setPointB] = useState<Point3D | null>(null);
+  const [pointsCount, setPointsCount] = useState<number>(0);
   const [distanceMeters, setDistanceMeters] = useState<number | null>(null);
+  const [liveDistanceMeters, setLiveDistanceMeters] = useState<number | null>(null);
+  const [orientation, setOrientation] = useState<LineOrientation | null>(null);
+  const [guidance, setGuidance] = useState<CameraGuidance | null>(null);
   const [error, setError] = useState<AppError | null>(null);
   const [unit, setUnit] = useState<Unit>('cm');
   const [showDebug, setShowDebug] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [history, setHistory] = useState<SavedMeasurement[]>([]);
 
-  // Start AR session once canvas and overlay are mounted
+  // Start AR session or Simulator once canvas and overlay are mounted
   useEffect(() => {
     const canvas = canvasRef.current;
     const overlay = overlayRef.current;
     if (!canvas || !overlay) return;
 
-    const arSession = new ArSession(canvas, {
-      onTrackingStatus: setTrackingStatus,
-      onStep: setStep,
-      onPointA: (p) => setPointA(p),
-      onPointB: (p) => setPointB(p),
-      onDistance: (d) => setDistanceMeters(d),
-      onError: (e) => setError(e),
-      onEnd: () => onExit(),
-    });
+    let activeSession: ArSession | ArSimulator;
 
-    sessionRef.current = arSession;
-    arSession.start(overlay);
+    const callbacks = {
+      onTrackingStatus: (s: TrackingStatus) => setTrackingStatus(s),
+      onStep: (st: MeasurementStep) => setStep(st),
+      onPointA: (p: Point3D) => setPointA(p),
+      onPointB: (p: Point3D) => setPointB(p),
+      onPointsChange: (pts: Point3D[]) => setPointsCount(pts.length),
+      onLiveDistance: (d: number | null) => setLiveDistanceMeters(d),
+      onDistance: (d: number) => {
+        setDistanceMeters(d);
+        // Automatically save to measurement history
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        setHistory((prev) => [
+          {
+            id: Math.random().toString(36).substring(2, 9),
+            timestamp: timeStr,
+            meters: d,
+            orientation,
+          },
+          ...prev,
+        ]);
+      },
+      onOrientation: (ori: LineOrientation | null) => setOrientation(ori),
+      onGuidance: (g: CameraGuidance) => setGuidance(g),
+      onError: (e: AppError) => setError(e),
+      onEnd: () => onExit(),
+    };
+
+    if (isSimulator) {
+      activeSession = new ArSimulator(canvas, callbacks);
+    } else {
+      activeSession = new ArSession(canvas, callbacks);
+    }
+
+    sessionRef.current = activeSession;
+    activeSession.start(overlay);
 
     return () => {
-      arSession.end();
+      activeSession.end();
       sessionRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isSimulator]);
 
   const handleReset = useCallback(() => {
     sessionRef.current?.reset();
     setPointA(null);
     setPointB(null);
+    setPointsCount(0);
     setDistanceMeters(null);
+    setLiveDistanceMeters(null);
+    setOrientation(null);
     setError(null);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    sessionRef.current?.undoLastPoint();
+    setDistanceMeters(null);
   }, []);
 
   const handleExit = useCallback(() => {
@@ -69,31 +113,45 @@ export const ArView: React.FC<Props> = ({ capabilities, onExit }) => {
     onExit();
   }, [onExit]);
 
+  const handleToggleSound = useCallback(() => {
+    setSoundEnabled((prev) => {
+      const next = !prev;
+      feedback.setSoundEnabled(next);
+      return next;
+    });
+  }, []);
+
+  const handleClearHistory = useCallback(() => {
+    setHistory([]);
+  }, []);
+
   return (
     <div className="ar-root">
-      {/*
-        The canvas fills the entire viewport.
-        Three.js / WebXR renders directly into it.
-        In AR mode, the browser composites this over the camera feed.
-      */}
+      {/* 3D AR or Simulator Canvas */}
       <canvas ref={canvasRef} className="ar-canvas" />
 
-      {/*
-        The overlay div is registered as the dom-overlay root.
-        It floats on top of the AR canvas, receiving pointer events.
-        All HUD controls live here so they appear in the AR experience.
-      */}
+      {/* DOM Overlay on top of AR Canvas */}
       <div ref={overlayRef} className="ar-overlay">
         <HUD
           step={step}
           trackingStatus={trackingStatus}
           distanceMeters={distanceMeters}
+          liveDistanceMeters={liveDistanceMeters}
+          orientation={orientation}
+          guidance={guidance}
           unit={unit}
           error={error}
+          pointsCount={pointsCount}
+          isSimulator={isSimulator}
+          soundEnabled={soundEnabled}
+          history={history}
+          onToggleSound={handleToggleSound}
           onUnitChange={setUnit}
           onReset={handleReset}
+          onUndo={handleUndo}
           onExit={handleExit}
           onDebug={() => setShowDebug((v) => !v)}
+          onClearHistory={handleClearHistory}
         />
 
         {showDebug && (
@@ -104,6 +162,10 @@ export const ArView: React.FC<Props> = ({ capabilities, onExit }) => {
             pointA={pointA}
             pointB={pointB}
             distanceMeters={distanceMeters}
+            liveDistanceMeters={liveDistanceMeters}
+            orientation={orientation}
+            guidance={guidance}
+            isSimulator={isSimulator}
             onClose={() => setShowDebug(false)}
           />
         )}

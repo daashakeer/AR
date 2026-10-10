@@ -4,22 +4,23 @@ import type { DeviceCapabilities } from '../hooks/useDeviceCapabilities';
 interface Props {
   reason: 'desktop' | 'no-webxr' | 'no-ar' | 'no-camera';
   caps: DeviceCapabilities;
+  onLaunchSimulator?: () => void;
 }
 
-export const UnsupportedScreen: React.FC<Props> = ({ reason, caps }) => {
+export const UnsupportedScreen: React.FC<Props> = ({ reason, caps, onLaunchSimulator }) => {
   const messages: Record<Props['reason'], { title: string; body: string; tips: string[] }> = {
     desktop: {
-      title: '📱 Open on Mobile',
-      body: 'AR measurement requires a smartphone with a rear camera and ARCore (Android) support.',
+      title: '📱 Open on Mobile (or Try Simulator)',
+      body: 'Real AR measurement requires a smartphone with a rear camera and ARCore support. You can also test right now using our built-in 3D AR Simulator!',
       tips: [
-        'Open this page on an Android phone using Chrome.',
+        'To use real AR, open this site on an Android phone using Chrome.',
         'Make sure your device supports Google ARCore.',
-        'Grant camera permission when prompted.',
+        'Or click below to launch the interactive 3D Simulator on your desktop.',
       ],
     },
     'no-webxr': {
       title: '⚠️ WebXR Not Available',
-      body: 'Your browser does not support the WebXR Device API required for AR.',
+      body: 'Your browser does not support the WebXR Device API required for native AR. You can still test using the 3D Simulator.',
       tips: [
         'Use Google Chrome (latest) on Android.',
         'Update your browser to the latest version.',
@@ -52,6 +53,12 @@ export const UnsupportedScreen: React.FC<Props> = ({ reason, caps }) => {
       <div className="unsupported-card">
         <h1 className="unsupported-title">{title}</h1>
         <p className="unsupported-body">{body}</p>
+
+        {onLaunchSimulator && (
+          <button className="unsupported-sim-btn" onClick={onLaunchSimulator}>
+            🎮 Launch 3D AR Simulator
+          </button>
+        )}
 
         <ul className="unsupported-tips">
           {tips.map((tip, i) => (
