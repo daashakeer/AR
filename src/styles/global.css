@@ -515,6 +515,13 @@ button {
   border-color: rgba(255,80,80,0.25);
 }
 
+.hud-tracking.calculating {
+  background: rgba(0, 229, 255, 0.2);
+  color: #00e5ff;
+  border-color: rgba(0, 229, 255, 0.4);
+  box-shadow: 0 0 15px rgba(0, 229, 255, 0.25);
+}
+
 .tracking-dot {
   width: 8px;
   height: 8px;
@@ -522,9 +529,10 @@ button {
   flex-shrink: 0;
 }
 
-.hud-tracking.good      .tracking-dot { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
-.hud-tracking.detecting .tracking-dot { background: #ffc800; animation: pulse 1.2s infinite; }
-.hud-tracking.lost      .tracking-dot { background: #ff6666; }
+.hud-tracking.good        .tracking-dot { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
+.hud-tracking.detecting   .tracking-dot { background: #ffc800; animation: pulse 1.2s infinite; }
+.hud-tracking.lost        .tracking-dot { background: #ff6666; }
+.hud-tracking.calculating .tracking-dot { background: #00e5ff; box-shadow: 0 0 8px #00e5ff; animation: pulse 0.8s infinite; }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }

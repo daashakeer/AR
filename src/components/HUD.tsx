@@ -329,12 +329,12 @@ export const HUD: React.FC<Props> = ({
 
       {/* ── Tracking status badge ─────────────────────────────────────── */}
       <div className="hud-status-row">
-        <div className={`hud-tracking ${trackingStatus}`}>
+        <div className={`hud-tracking ${isCapturing ? 'calculating' : trackingStatus}`}>
           <span className="tracking-dot" />
-          {TRACKING_LABEL[trackingStatus]}
+          {isCapturing ? 'Calculating Measurement… ⏳' : TRACKING_LABEL[trackingStatus]}
         </div>
 
-        {guidance && trackingStatus === 'good' && !error && (
+        {guidance && trackingStatus === 'good' && !error && !isCapturing && (
           <div className={`hud-guidance ${guidance.status}`}>
             {guidance.message}
           </div>
@@ -372,14 +372,14 @@ export const HUD: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── AI Scanning In-Progress Animation ───────────────────────────── */}
-      {isScanningGarment && (
+      {/* ── AI Scanning / Measurement In-Progress Animation ────────────── */}
+      {(isScanningGarment || isCapturing) && (
         <div className="garment-scanning-overlay">
           <div className="scanning-box">
             <div className="scanning-laser" />
             <div className="scanning-spinner" />
-            <h3>Measuring Waistband…</h3>
-            <p>HRNet Predicting Left & Right Waist Points</p>
+            <h3>{isCapturing ? 'Capturing & Measuring…' : 'Measuring Waistband…'}</h3>
+            <p>{isCapturing ? 'Taking photo and computing 3D waistband measurement' : 'HRNet Predicting Left & Right Waist Points'}</p>
           </div>
         </div>
       )}

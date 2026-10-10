@@ -29,6 +29,7 @@ import {
 } from './garmentMeasure';
 import { feedback } from '../utils/feedback';
 import type { CaptureResult } from './captureTypes';
+import { calculateTiltCorrectedWaistWidth } from './waistbandGeometry';
 
 export class MobileCameraSession {
   private canvas: HTMLCanvasElement;
@@ -484,6 +485,61 @@ export class MobileCameraSession {
     }
     const reliabilityNote = parts.join(' | ');
 
+    // Automatically detect waistband landmarks from captured photo and compute measurement
+    let waistbandLandmarks: CaptureResult['waistbandLandmarks'] = null;
+    let waistbandWidthResult: CaptureResult['waistbandWidthResult'] = null;
+
+    if (imageDataUrl && imageWidth > 0 && imageHeight > 0) {
+      try {
+        const detection = await detectGarmentLandmarks(imageDataUrl);
+        if (detection.success && detection.landmarks?.waist_left && detection.landmarks?.waist_right) {
+          const uLeft = detection.landmarks.waist_left.x * imageWidth;
+          const vLeft = detection.landmarks.waist_left.y * imageHeight;
+          const uRight = detection.landmarks.waist_right.x * imageWidth;
+          const vRight = detection.landmarks.waist_right.y * imageHeight;
+
+          waistbandLandmarks = {
+            waistLeft: { u: uLeft, v: vLeft },
+            waistRight: { u: uRight, v: vRight },
+            landmarkSource: 'hrnet-ai',
+            landmarksValid: true,
+          };
+
+          const planeBundle = {
+            planePosition,
+            planeNormal,
+            planeQuaternion,
+            planeTransform,
+            planeSource: 'floor-estimate' as const,
+            planeTrackingValid: true,
+          };
+
+          waistbandWidthResult = calculateTiltCorrectedWaistWidth({
+            pose: cameraPose,
+            intrinsics: {
+              fx_pixels,
+              fy_pixels,
+              cx_pixels,
+              cy_pixels,
+              imageWidth,
+              imageHeight,
+              projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
+              intrinsicsSource: 'fov-derived',
+            },
+            plane: planeBundle,
+            landmarks: waistbandLandmarks,
+          });
+
+          if (waistbandWidthResult.waistWidthMeters !== null) {
+            this.callbacks.onDistance(waistbandWidthResult.waistWidthMeters);
+            feedback.triggerMeasurementComplete();
+          }
+        }
+      } catch (err) {
+        console.warn('[MobileCameraSession] Automated waistband landmark detection failed:', err);
+      }
+    }
+
     const result: CaptureResult = {
       imageDataUrl,
       imageWidth,
@@ -523,8 +579,8 @@ export class MobileCameraSession {
         planeTrackingValid: true,
       },
       projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
-      waistbandLandmarks: null,
-      waistbandWidthResult: null,
+      waistbandLandmarks,
+      waistbandWidthResult,
       capturedAt,
       trackingValid: true,
       reliabilityNote,

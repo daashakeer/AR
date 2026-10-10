@@ -1150,7 +1150,45 @@ export class ArSession {
       planeTrackingValid: true,
     } : null;
 
-    // ── 6. Build reliability note ─────────────────────────────────────────────
+    // ── 6. Automatically detect waistband landmarks from captured photo and calculate measurement ──
+    let waistbandLandmarks: CaptureResult['waistbandLandmarks'] = null;
+    let waistbandWidthResult: CaptureResult['waistbandWidthResult'] = null;
+
+    if (imageDataUrl && imageWidth > 0 && imageHeight > 0) {
+      try {
+        console.log('[ArSession] Running waistband landmark detection on captured photo…');
+        const detection = await detectGarmentLandmarks(imageDataUrl);
+        if (detection.success && detection.landmarks?.waist_left && detection.landmarks?.waist_right) {
+          const uLeft = detection.landmarks.waist_left.x * imageWidth;
+          const vLeft = detection.landmarks.waist_left.y * imageHeight;
+          const uRight = detection.landmarks.waist_right.x * imageWidth;
+          const vRight = detection.landmarks.waist_right.y * imageHeight;
+
+          waistbandLandmarks = {
+            waistLeft: { u: uLeft, v: vLeft },
+            waistRight: { u: uRight, v: vRight },
+            landmarkSource: 'hrnet-ai',
+            landmarksValid: true,
+          };
+
+          waistbandWidthResult = calculateTiltCorrectedWaistWidth({
+            pose: cameraPose,
+            intrinsics: intrinsicsBundle,
+            plane: planeBundle,
+            landmarks: waistbandLandmarks,
+          });
+
+          if (waistbandWidthResult.waistWidthMeters !== null) {
+            this.callbacks.onDistance(waistbandWidthResult.waistWidthMeters);
+            feedback.triggerMeasurementComplete();
+          }
+        }
+      } catch (err) {
+        console.warn('[ArSession] Automated waistband landmark detection on image failed:', err);
+      }
+    }
+
+    // ── 7. Build reliability note ─────────────────────────────────────────────
     const parts: string[] = [];
     if (imageDataUrl) parts.push('Image: Real high-resolution camera photograph');
     else parts.push('Image: Camera capture failed');
@@ -1160,6 +1198,9 @@ export class ArSession {
       parts.push(`fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels.toFixed(1)} px, cx=${cx_pixels?.toFixed(1) ?? 'N/A'}, cy=${cy_pixels?.toFixed(1) ?? 'N/A'} (WebXR projection)`);
     } else {
       parts.push('fx/fy: unavailable');
+    }
+    if (waistbandWidthResult?.waistWidthCm !== null && waistbandWidthResult?.waistWidthCm !== undefined) {
+      parts.push(`Waistband: ${waistbandWidthResult.waistWidthCm.toFixed(1)} cm (${waistbandWidthResult.measurementStatus})`);
     }
     const reliabilityNote = parts.join(' | ');
 
@@ -1186,8 +1227,8 @@ export class ArSession {
       planeTrackingValid: trackingValid,
       plane: planeBundle,
       projectionMatrix,
-      waistbandLandmarks: null,
-      waistbandWidthResult: null,
+      waistbandLandmarks,
+      waistbandWidthResult,
       capturedAt,
       trackingValid,
       reliabilityNote,
