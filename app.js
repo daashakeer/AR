@@ -375,7 +375,7 @@ function onXRFrame(time, frame) {
     }
   }
 
-  // 2. Continuous Fast Surface Point Collection & Planar Extension
+  // 2. Instantaneous Coplanar Surface Point Generation
   let activePoints = [];
 
   if (state.lastHitPose && (time - state.lastHitPose.timestamp < 3500)) {
@@ -385,75 +385,65 @@ function onXRFrame(time, frame) {
     // Camera world position C from view transform
     const camMatrix = view.transform.matrix;
     const camPos = { x: camMatrix[12], y: camMatrix[13], z: camMatrix[14] };
-    const invView = view.transform.matrix;
 
     // Cache current camera matrices for synchronized capture
     state.lastViewMatrix = new Float32Array(view.transform.inverse.matrix);
     state.lastProjMatrix = new Float32Array(view.projectionMatrix);
 
-    // CRITICAL FIX: Ensure normal vector points TOWARD camera
-    // If dot(N, C - P0) < 0, N is pointing away from camera. Invert N so ray intersections have positive t!
-    let Nx = N.x, Ny = N.y, Nz = N.z;
-    const toCamX = camPos.x - P0.x;
-    const toCamY = camPos.y - P0.y;
-    const toCamZ = camPos.z - P0.z;
-    const dotCam = Nx * toCamX + Ny * toCamY + Nz * toCamZ;
-    if (dotCam < 0) {
-      Nx = -Nx;
-      Ny = -Ny;
-      Nz = -Nz;
-    }
+    // View vector from camera to the physical hit point
+    const vViewX = P0.x - camPos.x;
+    const vViewY = P0.y - camPos.y;
+    const vViewZ = P0.z - camPos.z;
+    const distToPlane = Math.hypot(vViewX, vViewY, vViewZ);
 
-    // Always include the real physical anchor hit point
-    activePoints.push({ x: P0.x, y: P0.y, z: P0.z });
+    if (distToPlane > 0.1 && distToPlane < 6.0) {
+      // Ensure unit normal
+      const nLen = Math.hypot(N.x, N.y, N.z) || 1;
+      const nx = N.x / nLen;
+      const ny = N.y / nLen;
+      const nz = N.z / nLen;
 
-    // Include accumulated real hit points that are coplanar within 5cm
-    for (const p of state.detectedSurfacePoints) {
-      const distToPlane = Math.abs(Nx * (p.x - P0.x) + Ny * (p.y - P0.y) + Nz * (p.z - P0.z));
-      if (distToPlane < 0.05) {
-        activePoints.push(p);
+      // Primary Tangent Vector U (horizontal across camera view, strictly on plane: U · N = 0)
+      // U = N × vView
+      let ux = ny * vViewZ - nz * vViewY;
+      let uy = nz * vViewX - nx * vViewZ;
+      let uz = nx * vViewY - ny * vViewX;
+      let uLen = Math.hypot(ux, uy, uz);
+
+      if (uLen < 1e-3) {
+        // Fallback cross product if viewing directly along normal
+        ux = ny * 1.0;
+        uy = -nx * 1.0;
+        uz = 0.0;
+        uLen = Math.hypot(ux, uy, uz) || 1;
       }
-    }
+      ux /= uLen; uy /= uLen; uz /= uLen;
 
-    // Intersect directional camera frustum rays across the field of view with this surface plane
-    const rayGrid = [
-      { u: -0.38, v: -0.25 }, // Bottom-Left
-      { u:  0.38, v: -0.25 }, // Bottom-Right
-      { u: -0.38, v:  0.25 }, // Top-Left
-      { u:  0.38, v:  0.25 }, // Top-Right
-      { u: -0.42, v:  0.00 }, // Far-Left
-      { u:  0.42, v:  0.00 }, // Far-Right
-      { u:  0.00, v: -0.30 }, // Far-Bottom
-      { u:  0.00, v:  0.30 }, // Far-Top
-      { u: -0.20, v:  0.00 }, // Mid-Left
-      { u:  0.20, v:  0.00 }  // Mid-Right
-    ];
+      // Secondary Tangent Vector V (depth on plane perpendicular to U: V · N = 0)
+      // V = N × U
+      let vx = ny * uz - nz * uy;
+      let vy = nz * ux - nx * uz;
+      let vz = nx * uy - ny * ux;
+      const vLen = Math.hypot(vx, vy, vz) || 1;
+      vx /= vLen; vy /= vLen; vz /= vLen;
 
-    for (const rg of rayGrid) {
-      const lx = rg.u;
-      const ly = rg.v;
-      const lz = -1.0;
-      const lLen = Math.hypot(lx, ly, lz);
+      // Surface radius spanning comfortably across the camera field of view
+      const r = 0.35 * distToPlane;
 
-      const wx = (invView[0] * lx + invView[4] * ly + invView[8]  * lz) / lLen;
-      const wy = (invView[1] * lx + invView[5] * ly + invView[9]  * lz) / lLen;
-      const wz = (invView[2] * lx + invView[6] * ly + invView[10] * lz) / lLen;
+      // Instantaneous coplanar points on the detected flat surface
+      activePoints.push({ x: P0.x, y: P0.y, z: P0.z }); // Center anchor
+      activePoints.push({ x: P0.x - r * ux, y: P0.y - r * uy, z: P0.z - r * uz }); // Left extreme
+      activePoints.push({ x: P0.x + r * ux, y: P0.y + r * uy, z: P0.z + r * uz }); // Right extreme
+      activePoints.push({ x: P0.x - 0.7 * r * ux - 0.5 * r * vx, y: P0.y - 0.7 * r * uy - 0.5 * r * vy, z: P0.z - 0.7 * r * uz - 0.5 * r * vz });
+      activePoints.push({ x: P0.x + 0.7 * r * ux - 0.5 * r * vx, y: P0.y + 0.7 * r * uy - 0.5 * r * vy, z: P0.z + 0.7 * r * uz - 0.5 * r * vz });
+      activePoints.push({ x: P0.x - 0.7 * r * ux + 0.5 * r * vx, y: P0.y - 0.7 * r * uy + 0.5 * r * vy, z: P0.z - 0.7 * r * uz + 0.5 * r * vz });
+      activePoints.push({ x: P0.x + 0.7 * r * ux + 0.5 * r * vx, y: P0.y + 0.7 * r * uy + 0.5 * r * vy, z: P0.z + 0.7 * r * uz + 0.5 * r * vz });
 
-      // denom = n · w
-      const denom = Nx * wx + Ny * wy + Nz * wz;
-
-      // Because N points towards camera, denom must be negative for rays facing the plane
-      if (denom < -0.01) {
-        const numer = -(Nx * toCamX + Ny * toCamY + Nz * toCamZ);
-        const t = numer / denom;
-
-        // Valid physical distance between 15cm and 5m
-        if (t > 0.15 && t < 5.0) {
-          activePoints.push({
-            x: camPos.x + t * wx,
-            y: camPos.y + t * wy,
-            z: camPos.z + t * wz
-          });
+      // Include accumulated real hit points as the user scans across the surface
+      for (const p of state.detectedSurfacePoints) {
+        const dPlane = Math.abs(nx * (p.x - P0.x) + ny * (p.y - P0.y) + nz * (p.z - P0.z));
+        if (dPlane < 0.05) {
+          activePoints.push(p);
         }
       }
     }
