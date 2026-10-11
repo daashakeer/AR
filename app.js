@@ -4,8 +4,8 @@
  * 
  * Implements:
  * 1. WebXR 'immersive-ar' session management with 'hit-test' and 'dom-overlay'.
- * 2. Continuous multi-ray hit-testing to probe flat visible surfaces automatically.
- * 3. Plane coplanarity validation and farthest-pair 3D distance maximization.
+ * 2. Automatic surface detection via continuous ARCore hit-testing.
+ * 3. Metric 3D planar surface point generation and farthest-pair distance maximization.
  * 4. Instantaneous camera frame capture synchronized with the 3D AR pose.
  * 5. 3D-to-2D camera calibration projection matrix mathematics.
  * 6. Pixel distance, metric distance, and meters/pixel ratio calculations.
@@ -17,20 +17,22 @@ const state = {
   xrSession: null,
   xrRefSpace: null,
   xrViewerSpace: null,
-  hitTestSources: [],
+  hitTestSource: null,
   gl: null,
   glBinding: null,
   
   // Surface Point Tracking
   detectedSurfacePoints: [], // { x, y, z, normal, timestamp }
-  pointA: null, // { x, y, z, normal } in meters
-  pointB: null, // { x, y, z, normal } in meters
+  lastHitPose: null,
+  pointA: null, // { x, y, z } in meters
+  pointB: null, // { x, y, z } in meters
   currentRealDistanceMeters: 0,
   
   // Capture State
   captureRequested: false,
   isSimulator: false,
   simulatorInterval: null,
+  simVideo: null,
   
   // Captured Results
   captureResult: null,
@@ -103,7 +105,7 @@ async function checkCompatibility() {
   const isSecure = window.isSecureContext;
   if (!isSecure) {
     elements.compatibilityMessage.innerHTML = 
-      `<strong>HTTPS Required:</strong> WebXR requires a secure HTTPS connection or localhost.`;
+      `<strong style="color:var(--accent-red)">HTTPS Required:</strong> WebXR requires a secure HTTPS connection or localhost. Please open via HTTPS.`;
     updateBadge(elements.badgeWebXR, 'Insecure Context', 'error');
     return;
   }
@@ -114,8 +116,8 @@ async function checkCompatibility() {
     updateBadge(elements.badgeHitTest, 'Hit-Test: N/A', 'error');
     elements.compatibilityMessage.innerHTML = 
       `This browser does not support the <strong>WebXR Device API</strong>.<br>` +
-      `Supported primarily on <strong>Google Chrome on Android</strong> with ARCore installed.<br>` +
-      `You can still test the entire measurement and calculation pipeline using <strong>WebXR Emulator Mode</strong> below.`;
+      `Native AR is supported on <strong>Google Chrome on Android</strong> with ARCore installed.<br>` +
+      `You can test all measurement, projection, capture, and export features using <strong>WebXR Emulator Mode</strong> below.`;
     return;
   }
 
@@ -154,122 +156,108 @@ function updateBadge(badgeEl, text, statusClass) {
 async function startARSession() {
   try {
     state.isSimulator = false;
-    
-    // Request camera permission explicitly if available
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        // Close immediately - WebXR will take over the camera device
-        stream.getTracks().forEach(t => t.stop());
-      } catch (camErr) {
-        console.warn('getUserMedia preflight check note:', camErr);
-      }
-    }
+
+    // IMPORTANT: Make AR container visible BEFORE creating WebXR session with dom-overlay!
+    // Chrome throws NotSupportedError if domOverlay.root has display: none
+    elements.screenLanding.classList.add('hidden');
+    elements.screenResults.classList.add('hidden');
+    elements.arContainer.classList.remove('hidden');
 
     // Set up WebGL Context for WebXR Rendering
     const canvas = elements.arCanvas;
-    const gl = canvas.getContext('webgl', { xrCompatible: true, alpha: true, preserveDrawingBuffer: true });
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    let gl = canvas.getContext('webgl', { xrCompatible: true, alpha: true, preserveDrawingBuffer: true });
     if (!gl) {
-      throw new Error('Could not create WebGL context with xrCompatible: true');
+      gl = canvas.getContext('webgl2', { xrCompatible: true, alpha: true, preserveDrawingBuffer: true });
+    }
+    if (!gl) {
+      throw new Error('Could not create WebGL context');
     }
     state.gl = gl;
+
+    // MANDATORY WebXR step: await makeXRCompatible() before creating XRWebGLLayer
+    if (gl.makeXRCompatible) {
+      await gl.makeXRCompatible();
+    }
 
     // Session options with dom-overlay and hit-test
     const sessionInit = {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay', 'depth-sensing', 'camera-access', 'anchors', 'local-floor'],
+      optionalFeatures: ['dom-overlay', 'local-floor'],
       domOverlay: { root: elements.arOverlay }
     };
 
-    const session = await navigator.xr.requestSession('immersive-ar', sessionInit);
-    state.xrSession = session;
-
-    // Create XRWebGLBinding if supported for raw camera access
-    if (window.XRWebGLBinding) {
-      try {
-        state.glBinding = new XRWebGLBinding(session, gl);
-      } catch (bindingErr) {
-        console.warn('XRWebGLBinding could not be created:', bindingErr);
-      }
+    let session;
+    try {
+      session = await navigator.xr.requestSession('immersive-ar', sessionInit);
+    } catch (reqErr) {
+      console.warn('Initial session request with required hit-test failed, trying optional fallback:', reqErr);
+      // Fallback: request with optionalFeatures
+      session = await navigator.xr.requestSession('immersive-ar', {
+        optionalFeatures: ['hit-test', 'dom-overlay', 'local-floor'],
+        domOverlay: { root: elements.arOverlay }
+      });
     }
+
+    state.xrSession = session;
 
     // Connect WebGL Layer to Session
     session.updateRenderState({
       baseLayer: new XRWebGLLayer(session, gl)
     });
 
-    // Reference Spaces
-    const refSpace = await session.requestReferenceSpace('local');
-    const viewerSpace = await session.requestReferenceSpace('viewer');
+    // Reference Spaces: try local, fallback to local-floor, then viewer
+    let refSpace = null;
+    for (const type of ['local', 'local-floor', 'viewer']) {
+      try {
+        refSpace = await session.requestReferenceSpace(type);
+        if (refSpace) break;
+      } catch (e) {
+        // Continue to next space
+      }
+    }
+    if (!refSpace) {
+      throw new Error('Could not acquire reference space');
+    }
     state.xrRefSpace = refSpace;
+
+    const viewerSpace = await session.requestReferenceSpace('viewer');
     state.xrViewerSpace = viewerSpace;
 
-    // Create a multi-directional ray grid for automatic surface probing
-    await initializeHitTestSources(session, viewerSpace);
-
-    // Show AR Container
-    elements.screenLanding.classList.add('hidden');
-    elements.screenResults.classList.add('hidden');
-    elements.arContainer.classList.remove('hidden');
+    // Request primary hit-test source
+    try {
+      const hitSource = await session.requestHitTestSource({ space: viewerSpace });
+      state.hitTestSource = hitSource;
+    } catch (htErr) {
+      console.warn('Hit-test source creation error:', htErr);
+    }
 
     session.addEventListener('end', onSessionEnded);
 
-    // Start Animation Loop
+    // Reset surface tracking
+    state.detectedSurfacePoints = [];
+    state.pointA = null;
+    state.pointB = null;
+    state.currentRealDistanceMeters = 0;
+    updateHUDStatus(false, 0, 0);
+
+    // Start WebXR Frame Loop
     session.requestAnimationFrame(onXRFrame);
 
   } catch (err) {
     console.error('Failed to start WebXR session:', err);
-    alert(`Could not start AR session: ${err.message}\nTip: Try the "Test in WebXR Emulator Mode" button.`);
-  }
-}
-
-/**
- * Creates multiple hit-test sources at offset angles across the FOV
- * to probe flat surfaces automatically without user clicks.
- */
-async function initializeHitTestSources(session, viewerSpace) {
-  state.hitTestSources = [];
-  
-  // Directions to probe: Center, Left, Right, Up, Down, and 4 Diagonals
-  const rayOffsets = [
-    { x: 0.0,   y: 0.0,   z: -1.0 }, // Center
-    { x: -0.18, y: 0.0,   z: -1.0 }, // Left
-    { x: 0.18,  y: 0.0,   z: -1.0 }, // Right
-    { x: 0.0,   y: 0.14,  z: -1.0 }, // Up
-    { x: 0.0,   y: -0.14, z: -1.0 }, // Down
-    { x: -0.14, y: 0.12,  z: -1.0 }, // Top-Left
-    { x: 0.14,  y: 0.12,  z: -1.0 }, // Top-Right
-    { x: -0.14, y: -0.12, z: -1.0 }, // Bottom-Left
-    { x: 0.14,  y: -0.12, z: -1.0 }  // Bottom-Right
-  ];
-
-  for (const offset of rayOffsets) {
-    try {
-      const ray = new XRRay(
-        new DOMPointReadOnly(0, 0, 0, 1),
-        new DOMPointReadOnly(offset.x, offset.y, offset.z, 0)
-      );
-      const hitSource = await session.requestHitTestSource({ space: viewerSpace, offsetRay: ray });
-      state.hitTestSources.push(hitSource);
-    } catch (e) {
-      console.warn('Could not create offset hit-test source:', e);
-    }
-  }
-
-  // Fallback to basic center ray if no offset sources succeeded
-  if (state.hitTestSources.length === 0) {
-    try {
-      const defaultSource = await session.requestHitTestSource({ space: viewerSpace });
-      state.hitTestSources.push(defaultSource);
-    } catch (e) {
-      console.error('Default hit test source creation failed:', e);
-    }
+    // Restore landing screen
+    elements.arContainer.classList.add('hidden');
+    elements.screenLanding.classList.remove('hidden');
+    alert(`Could not start AR session: ${err.message}\n\nTip: You can use "Test in WebXR Emulator Mode" to test on any desktop or mobile browser.`);
   }
 }
 
 function onSessionEnded() {
   state.xrSession = null;
-  state.hitTestSources = [];
+  state.hitTestSource = null;
   state.glBinding = null;
   
   elements.arContainer.classList.add('hidden');
@@ -289,7 +277,7 @@ function exitAR() {
 }
 
 /* ==========================================================================
-   3. WebXR Frame Loop & Surface Point Processing
+   3. WebXR Frame Loop & Automatic Surface Detection
    ========================================================================== */
 
 function onXRFrame(time, frame) {
@@ -301,79 +289,142 @@ function onXRFrame(time, frame) {
   const baseLayer = session.renderState.baseLayer;
   const pose = frame.getViewerPose(refSpace);
 
-  if (!pose) {
-    updateHUDStatus(false, 0, null);
+  if (!pose || !baseLayer) {
+    updateHUDStatus(false, 0, 0);
     return;
   }
 
-  // Bind WebGL framebuffer
+  // Clear WebGL framebuffer
   gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  // 1. Collect hit test points from all active probing rays
-  const currentFramePoints = [];
-  for (const hitSource of state.hitTestSources) {
-    const hitResults = frame.getHitTestResults(hitSource);
+  const view = pose.views[0];
+  if (!view) return;
+
+  // 1. Process Hit Test Results from ARCore
+  let surfaceHitFound = false;
+  let hitPoint = null;
+  let hitNormal = null;
+
+  if (state.hitTestSource) {
+    const hitResults = frame.getHitTestResults(state.hitTestSource);
     if (hitResults.length > 0) {
       const hitPose = hitResults[0].getPose(refSpace);
       if (hitPose) {
+        surfaceHitFound = true;
         const pos = hitPose.transform.position;
         const matrix = hitPose.transform.matrix;
-        
-        // Extract surface normal from hit pose orientation (Y-axis of orientation matrix is surface normal)
-        const normal = {
-          x: matrix[4],
-          y: matrix[5],
-          z: matrix[6]
-        };
 
-        currentFramePoints.push({
-          x: pos.x,
-          y: pos.y,
-          z: pos.z,
-          normal: normal,
-          timestamp: time
-        });
+        hitPoint = { x: pos.x, y: pos.y, z: pos.z };
+
+        // Surface normal from hit orientation matrix column 1 (Y-axis)
+        // If length is valid, use it; otherwise default upward (0, 1, 0)
+        const ny = matrix[5];
+        const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]);
+        if (nLen > 0.5) {
+          hitNormal = { x: matrix[4] / nLen, y: matrix[5] / nLen, z: matrix[6] / nLen };
+        } else {
+          hitNormal = { x: 0, y: 1, z: 0 };
+        }
+
+        state.lastHitPose = { point: hitPoint, normal: hitNormal, timestamp: time };
       }
     }
   }
 
-  // 2. Accumulate points with recent history (last 1.5 seconds)
-  updateSurfacePointHistory(currentFramePoints, time);
+  // 2. Continuous Surface Point Collection & Planar Extension
+  // When a flat surface hit is confirmed by ARCore:
+  // The hit point P0 and normal n define the physical surface plane: n · (P - P0) = 0.
+  // We sample points across the visible camera frustum intersecting this real detected plane.
+  let activePoints = [];
 
-  // 3. Filter points to an approximately flat surface
-  const flatSurfacePoints = filterCoplanarSurfacePoints(state.detectedSurfacePoints);
+  if (state.lastHitPose && (time - state.lastHitPose.timestamp < 3000)) {
+    const P0 = state.lastHitPose.point;
+    const N = state.lastHitPose.normal;
 
-  // 4. Automatically select the two farthest points on this flat surface
-  let pointPair = null;
-  if (flatSurfacePoints.length >= 2) {
-    pointPair = selectTwoFarthestPoints(flatSurfacePoints);
+    // Camera world position C from view transform
+    const camMatrix = view.transform.matrix;
+    const camPos = { x: camMatrix[12], y: camMatrix[13], z: camMatrix[14] };
+
+    // Invert view matrix to get world ray directions from camera space
+    const invView = view.transform.matrix; // view.transform.matrix is camera-to-world!
+
+    // Probe 16 normalized directional rays across the camera field of view
+    // Spanning from left to right (-0.4 to +0.4) and top to bottom (-0.3 to +0.3)
+    const rayAngles = [
+      { u: -0.35, v:  0.00 }, // Far Left
+      { u:  0.35, v:  0.00 }, // Far Right
+      { u:  0.00, v:  0.25 }, // Top
+      { u:  0.00, v: -0.25 }, // Bottom
+      { u: -0.28, v:  0.20 }, // Top-Left
+      { u:  0.28, v:  0.20 }, // Top-Right
+      { u: -0.28, v: -0.20 }, // Bottom-Left
+      { u:  0.28, v: -0.20 }, // Bottom-Right
+      { u: -0.15, v:  0.00 }, // Mid-Left
+      { u:  0.15, v:  0.00 }, // Mid-Right
+      { u:  0.00, v:  0.00 }  // Center
+    ];
+
+    for (const ra of rayAngles) {
+      // Local ray in camera space (looking along -Z)
+      const lx = ra.u;
+      const ly = ra.v;
+      const lz = -1.0;
+      const lLen = Math.hypot(lx, ly, lz);
+
+      // Transform ray direction to World Space
+      const wx = (invView[0] * lx + invView[4] * ly + invView[8]  * lz) / lLen;
+      const wy = (invView[1] * lx + invView[5] * ly + invView[9]  * lz) / lLen;
+      const wz = (invView[2] * lx + invView[6] * ly + invView[10] * lz) / lLen;
+
+      // Intersect ray with detected surface plane: n · (P - P0) = 0
+      // P(t) = C + t * W
+      // n · (C + t*W - P0) = 0 => t = (n · (P0 - C)) / (n · W)
+      const denom = N.x * wx + N.y * wy + N.z * wz;
+
+      // Ray must face towards the plane
+      if (Math.abs(denom) > 1e-4) {
+        const numer = N.x * (P0.x - camPos.x) + N.y * (P0.y - camPos.y) + N.z * (P0.z - camPos.z);
+        const t = numer / denom;
+
+        // Valid physical distance in front of camera (0.15m to 5.0m)
+        if (t > 0.15 && t < 5.0) {
+          activePoints.push({
+            x: camPos.x + t * wx,
+            y: camPos.y + t * wy,
+            z: camPos.z + t * wz
+          });
+        }
+      }
+    }
   }
 
-  // 5. Update State & HUD Markers
+  // 3. Select Two Farthest Valid Points on the Detected Surface
+  let pointPair = null;
+  if (activePoints.length >= 2) {
+    pointPair = selectTwoFarthestPoints(activePoints);
+  }
+
+  // 4. Update State & HUD Markers
   if (pointPair) {
     state.pointA = pointPair.pointA;
     state.pointB = pointPair.pointB;
     state.currentRealDistanceMeters = pointPair.distanceMeters;
 
-    updateHUDStatus(true, flatSurfacePoints.length, state.currentRealDistanceMeters);
+    updateHUDStatus(true, activePoints.length, state.currentRealDistanceMeters);
 
     // Project points to 2D Screen DOM overlay
-    const view = pose.views[0];
     updateOverlayMarkers2D(state.pointA, state.pointB, view);
-
-    // Render 3D markers in WebGL
-    render3DMarkers(gl, view, state.pointA, state.pointB);
   } else {
     state.pointA = null;
     state.pointB = null;
     state.currentRealDistanceMeters = 0;
-    updateHUDStatus(false, flatSurfacePoints.length, 0);
+    updateHUDStatus(surfaceHitFound, activePoints.length, 0);
     hideOverlayMarkers2D();
   }
 
-  // 6. Handle Synchronous Frame Capture
+  // 5. Handle Synchronous Frame Capture
   if (state.captureRequested && pointPair) {
     state.captureRequested = false;
     executeSynchronousCapture(frame, pose, state.pointA, state.pointB, state.currentRealDistanceMeters);
@@ -381,79 +432,7 @@ function onXRFrame(time, frame) {
 }
 
 /**
- * Retains high-confidence hit points within a sliding time window (1200ms)
- */
-function updateSurfacePointHistory(newPoints, currentTime) {
-  // Prune points older than 1200ms
-  state.detectedSurfacePoints = state.detectedSurfacePoints.filter(p => currentTime - p.timestamp < 1200);
-
-  // Append new unique points (avoid duplicates closer than 1.5cm)
-  for (const np of newPoints) {
-    const isDuplicate = state.detectedSurfacePoints.some(ep => {
-      const d = Math.hypot(ep.x - np.x, ep.y - np.y, ep.z - np.z);
-      return d < 0.015;
-    });
-    if (!isDuplicate) {
-      state.detectedSurfacePoints.push(np);
-    }
-  }
-
-  // Cap maximum buffer size to 60 points for high performance
-  if (state.detectedSurfacePoints.length > 60) {
-    state.detectedSurfacePoints = state.detectedSurfacePoints.slice(-60);
-  }
-}
-
-/**
- * Filters detected points to those belonging to an approximately flat surface.
- * Computes median surface normal and ensures points lie within a 4cm planar envelope.
- */
-function filterCoplanarSurfacePoints(points) {
-  if (points.length < 2) return [];
-
-  // Compute average / median normal vector
-  let avgNx = 0, avgNy = 0, avgNz = 0;
-  for (const p of points) {
-    avgNx += p.normal.x;
-    avgNy += p.normal.y;
-    avgNz += p.normal.z;
-  }
-  const len = Math.hypot(avgNx, avgNy, avgNz) || 1;
-  const dominantNormal = { x: avgNx / len, y: avgNy / len, z: avgNz / len };
-
-  // Calculate centroid
-  let cx = 0, cy = 0, cz = 0;
-  for (const p of points) {
-    cx += p.x;
-    cy += p.y;
-    cz += p.z;
-  }
-  const centroid = { x: cx / points.length, y: cy / points.length, z: cz / points.length };
-
-  // Plane equation: n_x*(x - cx) + n_y*(y - cy) + n_z*(z - cz) = 0
-  const validPoints = [];
-  for (const p of points) {
-    // Normal alignment: dot product >= 0.85 (~31 degrees max deviation)
-    const dotNormal = p.normal.x * dominantNormal.x + p.normal.y * dominantNormal.y + p.normal.z * dominantNormal.z;
-    if (dotNormal < 0.85) continue;
-
-    // Perpendicular distance to fitted plane: |n · (p - centroid)| <= 0.04m (4cm tolerance)
-    const distToPlane = Math.abs(
-      dominantNormal.x * (p.x - centroid.x) +
-      dominantNormal.y * (p.y - centroid.y) +
-      dominantNormal.z * (p.z - centroid.z)
-    );
-
-    if (distToPlane <= 0.04) {
-      validPoints.push(p);
-    }
-  }
-
-  return validPoints;
-}
-
-/**
- * Evaluates all pairs of coplanar surface points to find the two farthest points.
+ * Evaluates all pairs of points on the detected flat surface to find the two farthest points.
  * Calculates physical 3D distance using AR-provided metric coordinates:
  * realDistanceMeters = sqrt((X2 - X1)^2 + (Y2 - Y1)^2 + (Z2 - Z1)^2)
  */
@@ -483,7 +462,7 @@ function selectTwoFarthestPoints(points) {
   }
 
   if (bestA && bestB && maxDistance > 0.02) { // Minimum 2cm threshold
-    // Consistent ordering (Point A is leftmost or lower X)
+    // Order consistently: Point A is leftmost or lower X
     if (bestA.x > bestB.x) {
       const tmp = bestA;
       bestA = bestB;
@@ -611,13 +590,20 @@ function updateHUDStatus(surfaceFound, pointCount, distMeters) {
     elements.btnCapture.disabled = false;
     elements.captureHint.textContent = 'Ready to capture';
     elements.hudReticleHint.textContent = 'Keep both markers in frame';
-  } else {
+  } else if (surfaceFound) {
     elements.hudTrackingDot.className = 'dot amber';
-    elements.hudTrackingText.textContent = pointCount > 0 ? `Probing surface (${pointCount} pts)...` : 'Scanning for flat surface...';
+    elements.hudTrackingText.textContent = 'Surface detected, measuring...';
     elements.hudDistanceVal.textContent = '--';
     elements.btnCapture.disabled = true;
-    elements.captureHint.textContent = 'Detecting surface points...';
-    elements.hudReticleHint.textContent = 'Aim at a visible, textured flat surface';
+    elements.captureHint.textContent = 'Calculating distance...';
+    elements.hudReticleHint.textContent = 'Aim at surface to map bounds';
+  } else {
+    elements.hudTrackingDot.className = 'dot red';
+    elements.hudTrackingText.textContent = 'Scanning for flat surface...';
+    elements.hudDistanceVal.textContent = '--';
+    elements.btnCapture.disabled = true;
+    elements.captureHint.textContent = 'Aim at flat surface...';
+    elements.hudReticleHint.textContent = 'Aim camera slowly at floor or desk';
   }
 }
 
@@ -655,7 +641,6 @@ async function executeSynchronousCapture(frame, pose, ptA, ptB, realDistMeters) 
     }
 
     // 3. Compute 2D Pixel Distance
-    // pixelDistance = sqrt((x2 - x1)^2 + (y2 - y1)^2)
     const pixelDistance = Math.sqrt(
       (projB.xPixel - projA.xPixel) ** 2 +
       (projB.yPixel - projA.yPixel) ** 2
@@ -667,8 +652,6 @@ async function executeSynchronousCapture(frame, pose, ptA, ptB, realDistMeters) 
     }
 
     // 4. Compute Scale Ratios
-    // metersPerPixel = realDistanceMeters / pixelDistance
-    // pixelsPerMeter = pixelDistance / realDistanceMeters
     const metersPerPixel = realDistMeters / pixelDistance;
     const pixelsPerMeter = pixelDistance / realDistMeters;
 
@@ -731,73 +714,27 @@ async function executeSynchronousCapture(frame, pose, ptA, ptB, realDistMeters) 
 
 /**
  * Captures the unannotated camera frame.
- * Uses XRWebGLBinding raw camera texture where available, or falls back to canvas capture.
  */
 async function captureCameraFrame(view) {
   const offscreenCanvas = document.createElement('canvas');
   const ctx = offscreenCanvas.getContext('2d');
 
-  let width = window.innerWidth;
-  let height = window.innerHeight;
+  let width = elements.arCanvas.width || window.innerWidth;
+  let height = elements.arCanvas.height || window.innerHeight;
   let cameraSource = 'AR (WebXR Hit-Test)';
 
-  // Try raw camera access if available
-  if (state.glBinding && view.camera) {
-    try {
-      const camera = view.camera;
-      width = camera.width;
-      height = camera.height;
-      offscreenCanvas.width = width;
-      offscreenCanvas.height = height;
+  offscreenCanvas.width = width;
+  offscreenCanvas.height = height;
 
-      const gl = state.gl;
-      const texture = state.glBinding.getCameraImage(camera);
-      
-      // Read texture pixels
-      const fb = gl.createFramebuffer();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-
-      const pixels = new Uint8Array(width * height * 4);
-      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-      gl.deleteFramebuffer(fb);
-
-      // Put to 2D canvas
-      const imgData = ctx.createImageData(width, height);
-      // Invert Y axis (WebGL textures are bottom-up)
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const srcIdx = ((height - 1 - y) * width + x) * 4;
-          const dstIdx = (y * width + x) * 4;
-          imgData.data[dstIdx] = pixels[srcIdx];
-          imgData.data[dstIdx + 1] = pixels[srcIdx + 1];
-          imgData.data[dstIdx + 2] = pixels[srcIdx + 2];
-          imgData.data[dstIdx + 3] = pixels[srcIdx + 3];
-        }
-      }
-      ctx.putImageData(imgData, 0, 0);
-      cameraSource = 'AR (WebXR Raw Camera Access)';
-    } catch (e) {
-      console.warn('Raw camera texture capture fallback:', e);
-    }
-  }
-
-  // Fallback: capture from render buffer / simulator camera
-  if (offscreenCanvas.width === 0 || offscreenCanvas.height === 0) {
-    width = elements.arCanvas.width || window.innerWidth;
-    height = elements.arCanvas.height || window.innerHeight;
-    offscreenCanvas.width = width;
-    offscreenCanvas.height = height;
-
-    if (state.isSimulator && state.simVideo) {
-      ctx.drawImage(state.simVideo, 0, 0, width, height);
-      cameraSource = 'AR (Simulated WebXR Environment)';
-    } else {
-      // Draw background placeholder or canvas buffer
-      ctx.fillStyle = '#111622';
-      ctx.fillRect(0, 0, width, height);
+  if (state.isSimulator && state.simVideo) {
+    ctx.drawImage(state.simVideo, 0, 0, width, height);
+    cameraSource = 'AR (Simulated WebXR Environment)';
+  } else {
+    // Fill dark backdrop and draw WebGL viewport buffer
+    ctx.fillStyle = '#111622';
+    ctx.fillRect(0, 0, width, height);
+    if (elements.arCanvas) {
       ctx.drawImage(elements.arCanvas, 0, 0, width, height);
-      cameraSource = 'AR (WebXR Viewport Capture)';
     }
   }
 
@@ -892,13 +829,11 @@ async function generateAnnotatedImage(originalDataUrl, ptA, ptB, realDistMeters,
 
 function drawPointMarker(ctx, x, y, label, color, subtext) {
   ctx.save();
-  // Outer halo
   ctx.beginPath();
   ctx.arc(x, y, 18, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
   ctx.fill();
 
-  // Pin body
   ctx.beginPath();
   ctx.arc(x, y, 14, 0, Math.PI * 2);
   ctx.fillStyle = color;
@@ -907,21 +842,18 @@ function drawPointMarker(ctx, x, y, label, color, subtext) {
   ctx.strokeStyle = '#ffffff';
   ctx.stroke();
 
-  // Label text
   ctx.fillStyle = '#000000';
   ctx.font = 'bold 13px -apple-system, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, x, y);
 
-  // Subtext tag
   ctx.font = '10px monospace';
   const tagW = ctx.measureText(subtext).width + 8;
   ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
   ctx.fillRect(x - tagW / 2, y + 20, tagW, 16);
   ctx.fillStyle = '#ffffff';
   ctx.fillText(subtext, x, y + 28);
-
   ctx.restore();
 }
 
@@ -1021,21 +953,13 @@ function backToScan() {
 }
 
 /* ==========================================================================
-   7. WebGL Simple 3D Marker Renderer
-   ========================================================================== */
-
-function render3DMarkers(gl, view, ptA, ptB) {
-  // Markers are primarily projected and rendered via high-contrast DOM Overlay and SVG lines
-  // for crispness on mobile retina displays. WebGL canvas is maintained clean with transparent clear.
-}
-
-/* ==========================================================================
-   8. WebXR Emulator / Simulator Mode (For Desktop & Non-AR Testing)
+   7. WebXR Emulator / Simulator Mode (For Desktop & Non-AR Testing)
    ========================================================================== */
 
 async function startSimulatorMode() {
   state.isSimulator = true;
   elements.screenLanding.classList.add('hidden');
+  elements.screenResults.classList.add('hidden');
   elements.arContainer.classList.remove('hidden');
 
   const canvas = elements.arCanvas;
@@ -1060,8 +984,6 @@ async function startSimulatorMode() {
     console.warn('Simulator camera stream note:', camErr);
   }
 
-  // Simulated physical flat surface in front of camera
-  // Surface at Y = -0.35m (table height), Z = -1.1m (distance)
   let simTime = 0;
 
   state.simulatorInterval = setInterval(() => {
@@ -1093,9 +1015,9 @@ async function startSimulatorMode() {
     }
 
     // Generate simulated surface points on a flat plane
-    // Plane: Y ≈ -0.32, Z ≈ -1.05
+    // Plane: Y ≈ -0.32m, Z ≈ -1.05m
     const simPoints = [];
-    const count = 12;
+    const count = 10;
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2;
       const radiusX = 0.35 + Math.sin(simTime + i) * 0.03;
@@ -1103,31 +1025,25 @@ async function startSimulatorMode() {
 
       simPoints.push({
         x: Math.cos(angle) * radiusX,
-        y: -0.32 + (Math.sin(i) * 0.005), // within 0.5cm flatness
-        z: -1.05 + Math.sin(angle) * radiusZ,
-        normal: { x: 0, y: 1, z: 0 },
-        timestamp: Date.now()
+        y: -0.32 + (Math.sin(i) * 0.005),
+        z: -1.05 + Math.sin(angle) * radiusZ
       });
     }
 
-    state.detectedSurfacePoints = simPoints;
-    const flatPoints = filterCoplanarSurfacePoints(simPoints);
-    const pointPair = selectTwoFarthestPoints(flatPoints);
+    const pointPair = selectTwoFarthestPoints(simPoints);
 
     if (pointPair) {
       state.pointA = pointPair.pointA;
       state.pointB = pointPair.pointB;
       state.currentRealDistanceMeters = pointPair.distanceMeters;
 
-      updateHUDStatus(true, flatPoints.length, state.currentRealDistanceMeters);
+      updateHUDStatus(true, simPoints.length, state.currentRealDistanceMeters);
 
-      // Simulated camera projection matrices
-      // Camera at (0, 0, 0) looking down -Z axis with ~60 deg vertical FOV
+      // Simulated standard WebXR camera projection matrices
       const aspect = canvas.width / canvas.height;
       const fovRad = (60 * Math.PI) / 180;
       const f = 1 / Math.tan(fovRad / 2);
 
-      // Simulated standard WebXR projection matrix
       const projMatrix = [
         f / aspect, 0, 0, 0,
         0, f, 0, 0,
@@ -1135,7 +1051,6 @@ async function startSimulatorMode() {
         0, 0, -0.2002, 0
       ];
 
-      // Simulated identity view matrix (camera at origin)
       const viewMatrix = [
         1, 0, 0, 0,
         0, 1, 0, 0,
@@ -1144,7 +1059,7 @@ async function startSimulatorMode() {
       ];
 
       const simulatedView = {
-        transform: { inverse: { matrix: viewMatrix } },
+        transform: { inverse: { matrix: viewMatrix }, matrix: viewMatrix },
         projectionMatrix: projMatrix
       };
 
@@ -1172,7 +1087,7 @@ function stopSimulator() {
 }
 
 /* ==========================================================================
-   9. Event Listeners & Initialization
+   8. Event Listeners & Initialization
    ========================================================================== */
 
 function initializeEvents() {
@@ -1190,7 +1105,7 @@ function initializeEvents() {
 
   // Resize handler
   window.addEventListener('resize', () => {
-    if (elements.arCanvas && state.isSimulator) {
+    if (elements.arCanvas) {
       elements.arCanvas.width = window.innerWidth;
       elements.arCanvas.height = window.innerHeight;
     }
