@@ -1,18 +1,238 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/ruler.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#0a0a0f" />
-    <meta name="description" content="Measure real-world distances using your phone camera and AR." />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <title>Measure – AR Distance</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>AR Measurement MVP</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Main Application Container -->
+  <div id="app">
+
+    <!-- 1. LANDING & CAPABILITY SCREEN -->
+    <section id="screen-landing" class="screen active">
+      <header class="hero-header">
+        <div class="logo-badge">AR METRIC LAB</div>
+        <h1>AR Measurement MVP</h1>
+        <p class="subtitle">Automatic Surface Detection &amp; Metric Distance Calculation</p>
+      </header>
+
+      <main class="card-container">
+        <!-- Compatibility Status Card -->
+        <div class="card status-card">
+          <h2>Device &amp; AR Compatibility</h2>
+          <div id="compatibility-badges" class="badges-row">
+            <span id="badge-webxr" class="badge checking">WebXR: Checking...</span>
+            <span id="badge-ar" class="badge checking">AR Mode: Checking...</span>
+            <span id="badge-hittest" class="badge checking">Hit-Test: Checking...</span>
+          </div>
+          <p id="compatibility-message" class="info-text">
+            Checking device capabilities...
+          </p>
+        </div>
+
+        <!-- Specifications & Rules Card -->
+        <div class="card info-card">
+          <h3>Measurement Pipeline</h3>
+          <ul class="specs-list">
+            <li><strong>Zero AI / No HRNet:</strong> Pure WebXR geometric metric tracking.</li>
+            <li><strong>Automatic Surface Detection:</strong> Continuous multi-ray hit-testing probes visible flat surfaces without manual point tapping.</li>
+            <li><strong>Farthest Two Points:</strong> Real-time 3D Euclidean distance maximization over detected coplanar surface points.</li>
+            <li><strong>Synchronized Capture:</strong> Freezes 3D metric coordinates and exact 2D camera pixel projections simultaneously at the click instant.</li>
+          </ul>
+        </div>
+
+        <!-- Action Area -->
+        <div class="action-card">
+          <button id="btn-start-scan" class="btn btn-primary btn-large" disabled>
+            <span class="btn-icon">📐</span>
+            <span class="btn-text">Start Scan</span>
+          </button>
+          <button id="btn-start-sim" class="btn btn-secondary">
+            <span class="btn-icon">💻</span>
+            <span class="btn-text">Test in WebXR Emulator Mode</span>
+          </button>
+          <p class="footnote">Requires Android Chrome 81+ with Google Play Services for AR (ARCore), or WebXR emulator.</p>
+        </div>
+      </main>
+
+      <footer class="app-footer">
+        <span>Pure HTML5, CSS3 &amp; ES6 JavaScript &bull; Ready for Cloudflare Pages</span>
+      </footer>
+    </section>
+
+    <!-- 2. AR VIEWPORT & DOM OVERLAY -->
+    <!-- The WebGL canvas will be placed here during AR session -->
+    <div id="ar-container" class="hidden">
+      <!-- WebGL Canvas for 3D marker rendering -->
+      <canvas id="ar-canvas"></canvas>
+
+      <!-- WebXR DOM Overlay UI -->
+      <div id="ar-overlay">
+        <!-- Top Status Bar -->
+        <div class="overlay-header">
+          <div class="hud-pill tracking-pill">
+            <span id="hud-tracking-dot" class="dot red"></span>
+            <span id="hud-tracking-text">Scanning for flat surface...</span>
+          </div>
+          <div class="hud-pill distance-pill">
+            <span class="pill-label">3D Distance:</span>
+            <span id="hud-distance-val" class="pill-val">--</span>
+          </div>
+        </div>
+
+        <!-- Center Crosshair & Surface Guidance -->
+        <div id="hud-reticle-container">
+          <div class="hud-reticle"></div>
+          <div id="hud-reticle-hint">Aim at a visible, textured flat surface</div>
+        </div>
+
+        <!-- Dynamic 2D Projected Marker Overlay -->
+        <div id="hud-markers-layer">
+          <div id="marker-a" class="ar-hud-marker hidden">
+            <div class="marker-pin pin-a">A</div>
+            <div class="marker-coords" id="marker-a-coords">--</div>
+          </div>
+          <div id="marker-b" class="ar-hud-marker hidden">
+            <div class="marker-pin pin-b">B</div>
+            <div class="marker-coords" id="marker-b-coords">--</div>
+          </div>
+          <!-- SVG Line connecting A and B in 2D overlay -->
+          <svg id="marker-svg-line" class="marker-line-canvas">
+            <line id="svg-measure-line" x1="0" y1="0" x2="0" y2="0" stroke="#00e5ff" stroke-width="2.5" stroke-dasharray="6,4" />
+          </svg>
+        </div>
+
+        <!-- Bottom Controls Bar -->
+        <div class="overlay-footer">
+          <button id="btn-exit-ar" class="btn btn-icon-round" title="Exit AR">
+            <span>&times;</span>
+          </button>
+
+          <div class="capture-btn-wrapper">
+            <button id="btn-capture" class="btn-shutter" disabled title="Capture Frame &amp; Freeze Measurements">
+              <span class="shutter-inner"></span>
+            </button>
+            <span id="capture-hint" class="shutter-label">Detecting points...</span>
+          </div>
+
+          <div class="overlay-spacer"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. RESULTS & EXPORT SCREEN -->
+    <section id="screen-results" class="screen hidden">
+      <header class="results-header">
+        <div class="header-left">
+          <button id="btn-back-scan" class="btn btn-small btn-secondary">&larr; Scan Again</button>
+        </div>
+        <h2>Measurement Captured</h2>
+        <div class="header-right">
+          <span id="result-status-badge" class="badge success">Verified AR Metric</span>
+        </div>
+      </header>
+
+      <main class="results-layout">
+        <!-- Image Preview Card -->
+        <div class="card preview-card">
+          <div class="card-toolbar">
+            <span class="toolbar-title">Captured Frame</span>
+            <div class="segmented-control">
+              <button id="btn-view-annotated" class="segment active">Annotated</button>
+              <button id="btn-view-original" class="segment">Original Image</button>
+            </div>
+          </div>
+
+          <div class="image-viewport">
+            <canvas id="result-canvas"></canvas>
+          </div>
+          <div class="image-meta-strip">
+            <span id="result-img-dimensions">Resolution: --</span>
+            <span id="result-timestamp">Timestamp: --</span>
+          </div>
+        </div>
+
+        <!-- Calculations & Metrics Card -->
+        <div class="card metrics-card">
+          <h3>Calculated Metric &amp; Pixel Data</h3>
+
+          <div class="metrics-grid">
+            <div class="metric-box primary-box">
+              <div class="metric-label">Real-World Distance (3D)</div>
+              <div id="res-real-dist" class="metric-value">--</div>
+              <div id="res-real-dist-cm" class="metric-sub">--</div>
+            </div>
+
+            <div class="metric-box">
+              <div class="metric-label">2D Pixel Distance</div>
+              <div id="res-pixel-dist" class="metric-value">--</div>
+              <div class="metric-sub">Euclidean pixel length</div>
+            </div>
+
+            <div class="metric-box">
+              <div class="metric-label">Meters Per Pixel</div>
+              <div id="res-m-per-px" class="metric-value">--</div>
+              <div class="metric-sub">realDistance / pixelDistance</div>
+            </div>
+
+            <div class="metric-box">
+              <div class="metric-label">Pixels Per Meter</div>
+              <div id="res-px-per-m" class="metric-value">--</div>
+              <div class="metric-sub">pixelDistance / realDistance</div>
+            </div>
+          </div>
+
+          <!-- Points Breakdown Table -->
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Point</th>
+                  <th>Image Pixel (x, y)</th>
+                  <th>AR 3D Metric (X, Y, Z meters)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="point-tag tag-a">Point A</span></td>
+                  <td id="res-point-a-px">--</td>
+                  <td id="res-point-a-3d">--</td>
+                </tr>
+                <tr>
+                  <td><span class="point-tag tag-b">Point B</span></td>
+                  <td id="res-point-b-px">--</td>
+                  <td id="res-point-b-3d">--</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Accuracy & Limitations Box -->
+          <div id="accuracy-notice" class="notice-box info">
+            <h4>Capture Accuracy &amp; API Status</h4>
+            <p id="accuracy-explanation">Measurements computed directly from AR reference space coordinates.</p>
+          </div>
+
+          <!-- Export Actions -->
+          <div class="export-actions">
+            <button id="btn-download-img" class="btn btn-primary">
+              <span class="btn-icon">💾</span>
+              <span>Download Image (Original)</span>
+            </button>
+            <button id="btn-download-json" class="btn btn-secondary">
+              <span class="btn-icon">{ }</span>
+              <span>Download JSON</span>
+            </button>
+          </div>
+        </div>
+      </main>
+    </section>
+
+  </div>
+
+  <!-- Main Application Script -->
+  <script type="module" src="app.js"></script>
+</body>
 </html>
