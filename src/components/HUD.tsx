@@ -69,6 +69,7 @@ interface Props {
 const STEP_INSTRUCTIONS: Record<MeasurementStep, string> = {
   idle: 'Initialising…',
   detecting: 'Scanning for a surface…',
+  ready: '✦ Surface tracked — Tap to place Point A',
   'place-a': '✦  Tap to place Point A',
   'place-b': '✦  Move to Point B and tap',
   measured: 'Measurement complete',
@@ -239,6 +240,7 @@ export const HUD: React.FC<Props> = ({
         }
 
         const updated: CaptureResult = {
+          captureId: captureResult?.captureId ?? `cap-${Date.now()}`,
           imageDataUrl: dataUrl,
           imageWidth: w,
           imageHeight: h,

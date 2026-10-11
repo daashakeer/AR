@@ -118,6 +118,14 @@ export interface WaistbandWidthResult {
 }
 
 export interface CaptureResult {
+  /** Unique id for pairing JPEG export with JSON metadata. */
+  captureId: string;
+  /** How the JPEG was obtained. */
+  imageCaptureSource?: 'image-capture' | 'video-frame' | 'simulator-render' | 'none';
+  /** WebXR sub-image viewport used to derive intrinsics (may differ from JPEG size). */
+  xrViewportWidth?: number | null;
+  xrViewportHeight?: number | null;
+
   // ── Captured image ─────────────────────────────────────────────────────────
   /** JPEG data URL from the real device camera (not the Three.js overlay). */
   imageDataUrl: string;

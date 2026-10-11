@@ -21,16 +21,8 @@ import {
 } from './ArSession';
 import { AdaptivePoseFilter } from './filter';
 import { feedback } from '../utils/feedback';
-import { detectGarmentLandmarks } from '../utils/garmentApi';
-import {
-  GarmentMetrics,
-  Garment3DPoints,
-  unprojectLandmarkToPlane,
-  calculateGarmentMetrics,
-  buildGarment3DMeshes,
-} from './garmentMeasure';
 import type { CaptureResult } from './captureTypes';
-import { calculateTiltCorrectedWaistWidth } from './waistbandGeometry';
+import { createCaptureId } from './referenceGeometry';
 
 
 interface MarkerItem {
@@ -49,8 +41,6 @@ export class ArSimulator {
   private reticleRingMat: THREE.MeshBasicMaterial;
 
   // Garment Auto-Measure State
-  private garmentMeshGroup: THREE.Group | null = null;
-  private isScanningGarment = false;
 
   // Smoothing
   private poseFilter = new AdaptivePoseFilter({
@@ -282,10 +272,10 @@ export class ArSimulator {
 
     setTimeout(() => {
       if (!this.ended) {
-        this.step = 'place-a';
+        this.step = 'ready';
         this.trackingStatus = 'good';
         this.callbacks.onTrackingStatus('good');
-        this.callbacks.onStep('place-a');
+        this.callbacks.onStep('ready');
       }
     }, 400);
 
@@ -721,68 +711,11 @@ export class ArSimulator {
       const last = this.markers.pop();
       if (last) this.scene.remove(last.group);
 
-      this.step = 'place-a';
-      this.callbacks.onStep('place-a');
+        this.step = 'ready';
+        this.callbacks.onStep('ready');
       this.callbacks.onPointA(null as unknown as Point3D);
       this.callbacks.onPointsChange([]);
       this.callbacks.onOrientation(null);
-    }
-  }
-
-  // ─── Garment Auto-Measure with HRNet ────────────────────────────────────
-
-  async scanGarment(): Promise<GarmentMetrics | null> {
-    if (this.isScanningGarment) return null;
-    this.isScanningGarment = true;
-    this.callbacks.onGarmentScanning?.(true);
-
-    try {
-      const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85);
-      const scanResult = await detectGarmentLandmarks(dataUrl);
-      if (!scanResult.success || !scanResult.landmarks) {
-        throw new Error(scanResult.error || 'Failed to detect garment landmarks');
-      }
-
-      // In the 3D room, study table top is at Y = 0.775
-      const isLookingAtTable = this.camera.position.y > 0.5 && this.camera.position.z > -1.2;
-      const planeY = isLookingAtTable ? 0.775 : 0.0;
-      const tablePlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
-
-      const pWL = unprojectLandmarkToPlane(scanResult.landmarks.waist_left, this.camera, tablePlane);
-      const pWR = unprojectLandmarkToPlane(scanResult.landmarks.waist_right, this.camera, tablePlane);
-      if (!pWL || !pWR) throw new Error('Unprojection failed');
-
-      const pInseam = scanResult.landmarks.inseam ? unprojectLandmarkToPlane(scanResult.landmarks.inseam, this.camera, tablePlane) || undefined : undefined;
-      const pAnkleL = scanResult.landmarks.outer_ankle_left ? unprojectLandmarkToPlane(scanResult.landmarks.outer_ankle_left, this.camera, tablePlane) || undefined : undefined;
-      const pAnkleR = scanResult.landmarks.outer_ankle_right ? unprojectLandmarkToPlane(scanResult.landmarks.outer_ankle_right, this.camera, tablePlane) || undefined : undefined;
-
-      const garment3D: Garment3DPoints = {
-        waistLeft: pWL,
-        waistRight: pWR,
-        inseam: pInseam,
-        outerAnkleLeft: pAnkleL,
-        outerAnkleRight: pAnkleR,
-      };
-
-      const metrics = calculateGarmentMetrics(garment3D, scanResult.pantType || 'Trousers');
-
-      if (this.garmentMeshGroup) {
-        this.scene.remove(this.garmentMeshGroup);
-      }
-      this.garmentMeshGroup = buildGarment3DMeshes(garment3D, metrics);
-      this.scene.add(this.garmentMeshGroup);
-
-      feedback.triggerMeasurementComplete();
-      this.callbacks.onGarmentMeasured?.(metrics);
-      this.callbacks.onDistance(metrics.waistWidthMeters);
-
-      return metrics;
-    } catch (err) {
-      console.error('[ArSimulator] Garment scan failed:', err);
-      return null;
-    } finally {
-      this.isScanningGarment = false;
-      this.callbacks.onGarmentScanning?.(false);
     }
   }
 
@@ -792,6 +725,7 @@ export class ArSimulator {
    */
   async captureImage(): Promise<CaptureResult> {
     const capturedAt = new Date().toISOString();
+    const captureId = createCaptureId();
 
     // Image: Three.js canvas render (synthetic 3D room, not a real camera)
     const imageDataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.92);
@@ -852,54 +786,11 @@ export class ArSimulator {
       `fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels.toFixed(1)} px (synthetic Three.js FOV)`,
     ].join(' | ');
 
-    // Instant on-device geometry calculation without remote Hugging Face API call
-    let waistbandLandmarks: CaptureResult['waistbandLandmarks'] = null;
-    let waistbandWidthResult: CaptureResult['waistbandWidthResult'] = null;
-
-    if (imageWidth > 0 && imageHeight > 0) {
-      const uLeft = imageWidth * 0.35;
-      const uRight = imageWidth * 0.65;
-      const vY = imageHeight * 0.50;
-
-      waistbandLandmarks = {
-        waistLeft: { u: uLeft, v: vY },
-        waistRight: { u: uRight, v: vY },
-        landmarkSource: 'manual-click',
-        landmarksValid: true,
-      };
-
-      const planeBundle = this.hasHit ? {
-        planePosition,
-        planeNormal,
-        planeQuaternion,
-        planeTransform,
-        planeSource: 'simulator' as const,
-        planeTrackingValid: true,
-      } : null;
-
-      waistbandWidthResult = calculateTiltCorrectedWaistWidth({
-        pose: cameraPose,
-        intrinsics: {
-          fx_pixels,
-          fy_pixels,
-          cx_pixels,
-          cy_pixels,
-          imageWidth,
-          imageHeight,
-          projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
-          intrinsicsSource: 'simulator',
-        },
-        plane: planeBundle,
-        landmarks: waistbandLandmarks,
-      });
-
-      if (waistbandWidthResult.waistWidthMeters !== null) {
-        this.callbacks.onDistance(waistbandWidthResult.waistWidthMeters);
-        feedback.triggerMeasurementComplete();
-      }
-    }
-
     const result: CaptureResult = {
+      captureId,
+      imageCaptureSource: 'simulator-render',
+      xrViewportWidth: imageWidth,
+      xrViewportHeight: imageHeight,
       imageDataUrl,
       imageWidth,
       imageHeight,
@@ -937,9 +828,30 @@ export class ArSimulator {
         planeSource: 'simulator',
         planeTrackingValid: true,
       } : null,
+      waistbandLandmarks: this.hasHit ? (() => {
+        // Project a calibrated physical reference object (0.36m width) centered at hit point onto camera viewport
+        // Local horizontal axis perpendicular to normal and camera view
+        const rightVec = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion).normalize();
+        const halfW = 0.18; // 36 cm full width
+        const leftWorld = this.currentSmoothedPos.clone().addScaledVector(rightVec, -halfW);
+        const rightWorld = this.currentSmoothedPos.clone().addScaledVector(rightVec, halfW);
+
+        const pL = leftWorld.clone().project(this.camera);
+        const pR = rightWorld.clone().project(this.camera);
+
+        const uL = ((pL.x + 1) / 2) * imageWidth;
+        const vL = ((-pL.y + 1) / 2) * imageHeight;
+        const uR = ((pR.x + 1) / 2) * imageWidth;
+        const vR = ((-pR.y + 1) / 2) * imageHeight;
+
+        return {
+          waistLeft: { u: Math.min(uL, uR), v: (vL + vR) / 2 },
+          waistRight: { u: Math.max(uL, uR), v: (vL + vR) / 2 },
+          landmarkSource: 'test-synthetic' as const,
+          landmarksValid: true,
+        };
+      })() : null,
       projectionMatrix: Array.from(this.camera.projectionMatrix.elements),
-      waistbandLandmarks,
-      waistbandWidthResult,
       capturedAt,
       trackingValid: this.hasHit,
       reliabilityNote,
@@ -952,11 +864,6 @@ export class ArSimulator {
   reset(): void {
     this.clearLivePreview();
 
-    if (this.garmentMeshGroup) {
-      this.scene.remove(this.garmentMeshGroup);
-      this.garmentMeshGroup = null;
-    }
-
     this.markers.forEach((m) => this.scene.remove(m.group));
     this.markers = [];
     this.measurementLines.forEach((l) => this.scene.remove(l));
@@ -966,8 +873,8 @@ export class ArSimulator {
 
     this.poseFilter.reset();
 
-    this.step = 'place-a';
-    this.callbacks.onStep('place-a');
+        this.step = 'ready';
+        this.callbacks.onStep('ready');
     this.callbacks.onPointsChange([]);
     this.callbacks.onLiveDistance(null);
     this.callbacks.onOrientation(null);

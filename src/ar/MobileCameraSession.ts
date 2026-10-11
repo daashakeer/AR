@@ -368,6 +368,7 @@ export class MobileCameraSession {
       // Video not ready — cannot provide a real image
       const now = new Date().toISOString();
       return {
+        captureId: `cap-${Date.now()}`,
         imageDataUrl: '',
         imageWidth: 0,
         imageHeight: 0,
@@ -533,6 +534,7 @@ export class MobileCameraSession {
     }
 
     const result: CaptureResult = {
+      captureId: `cap-${Date.now()}`,
       imageDataUrl,
       imageWidth,
       imageHeight,

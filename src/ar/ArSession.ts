@@ -21,32 +21,22 @@ import {
 } from '../utils/distance';
 import { AdaptivePoseFilter } from './filter';
 import { feedback } from '../utils/feedback';
-import { detectGarmentLandmarks } from '../utils/garmentApi';
-import {
-  GarmentMetrics,
-  Garment3DPoints,
-  unprojectLandmarkToPlane,
-  calculateGarmentMetrics,
-  buildGarment3DMeshes,
-} from './garmentMeasure';
+import type { GarmentMetrics } from './garmentMeasure';
 import type {
   CaptureResult,
   CameraPoseData,
   CameraIntrinsicsData,
   TrouserPlaneData,
-  WaistbandLandmarks,
-  WaistbandWidthResult,
 } from './captureTypes';
-import { deriveIntrinsicsFromMatrix, calculateTiltCorrectedWaistWidth } from './waistbandGeometry';
+import { intrinsicsFromProjectionForImage } from './referenceGeometry';
+import { createCaptureId } from './referenceGeometry';
+import {
+  captureFrameFallbackGetUserMedia,
+  captureFrameFromTrack,
+  captureFrameFromVideo,
+} from './referenceCapture';
 
-export type {
-  CaptureResult,
-  CameraPoseData,
-  CameraIntrinsicsData,
-  TrouserPlaneData,
-  WaistbandLandmarks,
-  WaistbandWidthResult,
-};
+export type { CaptureResult, CameraPoseData, CameraIntrinsicsData, TrouserPlaneData };
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -63,6 +53,7 @@ export type AppError =
 export type MeasurementStep =
   | 'idle'
   | 'detecting'
+  | 'ready'
   | 'place-a'
   | 'place-b'
   | 'measured';
@@ -245,8 +236,6 @@ export class ArSession {
   private hasHit = false;
 
   // Garment Auto-Measure State
-  private garmentMeshGroup: THREE.Group | null = null;
-  private isScanningGarment = false;
 
   // App State
   private step: MeasurementStep = 'idle';
@@ -407,7 +396,6 @@ export class ArSession {
       return;
     }
 
-    this.xrSession.addEventListener('select', this.boundSelect);
     this.xrSession.addEventListener('end', this.handleSessionEnd.bind(this));
 
     // Acquire rear camera media track for real image capture.
@@ -583,8 +571,8 @@ export class ArSession {
 
         // Immediate state transition upon surface acquisition (FIXED THROTTLE BUG)
         if (this.step === 'detecting') {
-          this.step = 'place-a';
-          this.callbacks.onStep('place-a');
+          this.step = 'ready';
+          this.callbacks.onStep('ready');
         }
 
         if (this.trackingStatus !== 'good') {
@@ -857,79 +845,8 @@ export class ArSession {
     }
   }
 
-  // ─── Garment Auto-Measure with HRNet ────────────────────────────────────
-
-  async scanGarment(): Promise<GarmentMetrics | null> {
-    if (this.isScanningGarment) return null;
-    this.isScanningGarment = true;
-    this.callbacks.onGarmentScanning?.(true);
-
-    try {
-      // 1. Capture snapshot from current WebGL canvas
-      const dataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.85);
-
-      // 2. Query direct HRNet API (AR_hrnet)
-      const scanResult = await detectGarmentLandmarks(dataUrl);
-      if (!scanResult.success || !scanResult.landmarks) {
-        throw new Error(scanResult.error || 'Failed to detect garment landmarks');
-      }
-
-      // 3. Derive physical ground / table surface plane from smoothed pose
-      const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(this.currentSmoothedQuat);
-      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, this.currentSmoothedPos);
-
-      // 4. Unproject 2D landmarks onto 3D surface plane
-      const pWL = unprojectLandmarkToPlane(scanResult.landmarks.waist_left, this.camera, plane);
-      const pWR = unprojectLandmarkToPlane(scanResult.landmarks.waist_right, this.camera, plane);
-      if (!pWL || !pWR) {
-        throw new Error('Could not project waist points onto surface plane');
-      }
-
-      const pInseam = scanResult.landmarks.inseam ? unprojectLandmarkToPlane(scanResult.landmarks.inseam, this.camera, plane) || undefined : undefined;
-      const pAnkleL = scanResult.landmarks.outer_ankle_left ? unprojectLandmarkToPlane(scanResult.landmarks.outer_ankle_left, this.camera, plane) || undefined : undefined;
-      const pAnkleR = scanResult.landmarks.outer_ankle_right ? unprojectLandmarkToPlane(scanResult.landmarks.outer_ankle_right, this.camera, plane) || undefined : undefined;
-
-      const garment3D: Garment3DPoints = {
-        waistLeft: pWL,
-        waistRight: pWR,
-        inseam: pInseam,
-        outerAnkleLeft: pAnkleL,
-        outerAnkleRight: pAnkleR,
-      };
-
-      // 5. Compute metric measurements
-      const metrics = calculateGarmentMetrics(garment3D, scanResult.pantType || 'Trousers');
-
-      // 6. Build and render 3D holographic garment meshes in AR
-      if (this.garmentMeshGroup) {
-        disposeGroup(this.garmentMeshGroup, this.scene);
-      }
-      this.garmentMeshGroup = buildGarment3DMeshes(garment3D, metrics);
-      this.scene.add(this.garmentMeshGroup);
-
-      feedback.triggerMeasurementComplete();
-      this.callbacks.onGarmentMeasured?.(metrics);
-
-      // Also set distance callback for waist width
-      this.callbacks.onDistance(metrics.waistWidthMeters);
-
-      return metrics;
-    } catch (err) {
-      console.error('[ArSession] Garment scan failed:', err);
-      return null;
-    } finally {
-      this.isScanningGarment = false;
-      this.callbacks.onGarmentScanning?.(false);
-    }
-  }
-
   reset(): void {
     this.clearLivePreview();
-
-    if (this.garmentMeshGroup) {
-      disposeGroup(this.garmentMeshGroup, this.scene);
-      this.garmentMeshGroup = null;
-    }
 
     this.markers.forEach((m) => disposeGroup(m.group, this.scene));
     this.markers = [];
@@ -951,8 +868,8 @@ export class ArSession {
 
     this.poseFilter.reset();
 
-    this.step = 'place-a';
-    this.callbacks.onStep('place-a');
+    this.step = this.hasHit ? 'ready' : 'detecting';
+    this.callbacks.onStep(this.step);
     this.callbacks.onPointsChange([]);
     this.callbacks.onLiveDistance(null);
     this.callbacks.onOrientation(null);
@@ -984,6 +901,9 @@ export class ArSession {
    */
   async captureImage(): Promise<CaptureResult> {
     const capturedAt = new Date().toISOString();
+    const captureId = createCaptureId();
+    const vpW = this.lastViewportWidth > 0 ? this.lastViewportWidth : window.innerWidth * (window.devicePixelRatio || 1);
+    const vpH = this.lastViewportHeight > 0 ? this.lastViewportHeight : window.innerHeight * (window.devicePixelRatio || 1);
 
     // ── 1. Calculate Z_m, planePosition, planeNormal, planeTransform BEFORE releasing WebXR ───
     let Z_m: number | null = null;
@@ -1051,67 +971,52 @@ export class ArSession {
     // ── 3. Projection matrix ──────────────────────────────────────────────────
     const projMat = this.lastViewProjectionMatrix || (this.camera?.projectionMatrix ? Array.from(this.camera.projectionMatrix.elements) : null);
 
-    // ── 4. Capture camera frame INSTANTLY at this exact millisecond ──────────
+    // ── 4. Capture camera frame (rear track / ImageCapture — not WebGL overlay) ──
     this.isCapturingImage = true;
     let imageDataUrl = '';
     let imageWidth = 0;
     let imageHeight = 0;
+    let imageCaptureSource: CaptureResult['imageCaptureSource'] = 'none';
 
-    // Grab frame IMMEDIATELY from background camera video if playing
-    if (this.captureVideo && this.captureVideo.readyState >= 2 && this.captureVideo.videoWidth > 0) {
-      const vw = this.captureVideo.videoWidth;
-      const vh = this.captureVideo.videoHeight;
-      const cv = document.createElement('canvas');
-      cv.width = vw;
-      cv.height = vh;
-      const ctx = cv.getContext('2d')!;
-      ctx.drawImage(this.captureVideo, 0, 0, vw, vh);
-      imageDataUrl = cv.toDataURL('image/jpeg', 0.95);
-      imageWidth = vw;
-      imageHeight = vh;
-      console.log(`[ArSession] Frame captured INSTANTLY from active video: ${vw}x${vh}`);
+    try {
+      if (this.rearCameraTrack) {
+        const frame = await captureFrameFromTrack(this.rearCameraTrack);
+        imageDataUrl = frame.imageDataUrl;
+        imageWidth = frame.imageWidth;
+        imageHeight = frame.imageHeight;
+        imageCaptureSource = frame.source;
+      } else if (this.captureVideo && this.captureVideo.readyState >= 2 && this.captureVideo.videoWidth > 0) {
+        const frame = await captureFrameFromVideo(this.captureVideo);
+        imageDataUrl = frame.imageDataUrl;
+        imageWidth = frame.imageWidth;
+        imageHeight = frame.imageHeight;
+        imageCaptureSource = frame.source;
+      }
+    } catch (err) {
+      console.warn('[ArSession] Primary camera capture failed:', err);
     }
 
-    // Now safely end WebXR session so browser unlocks downloads and UI
     if (this.xrSession) {
       try {
         await this.xrSession.end();
-      } catch {}
+      } catch {
+        /* session may already be ending */
+      }
     }
 
-    // Fallback if background video wasn't decoding yet: grab frame immediately with zero wait
     if (!imageDataUrl) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-          audio: false,
-        });
-        const video = document.createElement('video');
-        video.srcObject = stream;
-        video.setAttribute('playsinline', 'true');
-        video.muted = true;
-        await video.play();
-
-        const vw = video.videoWidth || 1920;
-        const vh = video.videoHeight || 1080;
-        const cv = document.createElement('canvas');
-        cv.width = vw;
-        cv.height = vh;
-        const ctx = cv.getContext('2d')!;
-        ctx.drawImage(video, 0, 0, vw, vh);
-
-        imageDataUrl = cv.toDataURL('image/jpeg', 0.95);
-        imageWidth = vw;
-        imageHeight = vh;
-        stream.getTracks().forEach((t) => t.stop());
-      } catch (err) {
-        console.warn('[ArSession] Direct camera fallback error:', err);
+      const fallback = await captureFrameFallbackGetUserMedia();
+      if (fallback) {
+        imageDataUrl = fallback.imageDataUrl;
+        imageWidth = fallback.imageWidth;
+        imageHeight = fallback.imageHeight;
+        imageCaptureSource = fallback.source;
       }
     }
 
     this.isCapturingImage = false;
 
-    // ── 5. Scale focal lengths & principal point to captured image resolution ──
+    // ── 5. Intrinsics: derive from WebXR projection at viewport, scale to JPEG resolution ──
     let fx_pixels: number | null = null;
     let fy_pixels: number | null = null;
     let cx_pixels: number | null = null;
@@ -1119,16 +1024,14 @@ export class ArSession {
     let intrinsicsSource: CaptureResult['intrinsicsSource'] = null;
     let projectionMatrix: number[] | null = null;
 
-    if (projMat && projMat[0] > 0 && projMat[5] > 0) {
-      const targetW = imageWidth > 0 ? imageWidth : (window.innerWidth * (window.devicePixelRatio || 1));
-      const targetH = imageHeight > 0 ? imageHeight : (window.innerHeight * (window.devicePixelRatio || 1));
-      const derived = deriveIntrinsicsFromMatrix(projMat, targetW, targetH);
-      if (derived) {
-        fx_pixels = derived.fx_pixels;
-        fy_pixels = derived.fy_pixels;
-        cx_pixels = derived.cx_pixels;
-        cy_pixels = derived.cy_pixels;
-        intrinsicsSource = 'webxr-projection';
+    if (projMat && projMat[0] > 0 && projMat[5] > 0 && imageWidth > 0 && imageHeight > 0) {
+      const bundle = intrinsicsFromProjectionForImage(projMat, vpW, vpH, imageWidth, imageHeight);
+      if (bundle) {
+        fx_pixels = bundle.fx_pixels;
+        fy_pixels = bundle.fy_pixels;
+        cx_pixels = bundle.cx_pixels;
+        cy_pixels = bundle.cy_pixels;
+        intrinsicsSource = bundle.intrinsicsSource;
         projectionMatrix = projMat;
       }
     }
@@ -1153,53 +1056,29 @@ export class ArSession {
       planeTrackingValid: true,
     } : null;
 
-    // ── 6. Instant on-device geometry calculation (Zero Hugging Face network delay) ──
-    let waistbandLandmarks: CaptureResult['waistbandLandmarks'] = null;
-    let waistbandWidthResult: CaptureResult['waistbandWidthResult'] = null;
-
-    if (imageWidth > 0 && imageHeight > 0 && intrinsicsBundle && planeBundle && cameraPose) {
-      // Default / detected central trouser waistband landmark region (spanning 35% to 65% width)
-      const uLeft = imageWidth * 0.35;
-      const uRight = imageWidth * 0.65;
-      const vY = imageHeight * 0.50;
-
-      waistbandLandmarks = {
-        waistLeft: { u: uLeft, v: vY },
-        waistRight: { u: uRight, v: vY },
-        landmarkSource: 'manual-click',
-        landmarksValid: true,
-      };
-
-      waistbandWidthResult = calculateTiltCorrectedWaistWidth({
-        pose: cameraPose,
-        intrinsics: intrinsicsBundle,
-        plane: planeBundle,
-        landmarks: waistbandLandmarks,
-      });
-
-      if (waistbandWidthResult.waistWidthMeters !== null) {
-        this.callbacks.onDistance(waistbandWidthResult.waistWidthMeters);
-        feedback.triggerMeasurementComplete();
-      }
-    }
-
-    // ── 7. Build reliability note ─────────────────────────────────────────────
+    // ── 6. Build reliability note ─────────────────────────────────────────────
     const parts: string[] = [];
-    if (imageDataUrl) parts.push('Image: Real high-resolution camera photograph');
-    else parts.push('Image: Camera capture failed');
-    if (Z_m !== null) parts.push(`Z: ${Z_m.toFixed(3)} m from WebXR hit-test plane (perpendicular)`);
-    else parts.push('Z: unavailable — no plane detected or tracking lost');
-    if (fx_pixels !== null && fy_pixels !== null) {
-      parts.push(`fx=${fx_pixels.toFixed(1)} px, fy=${fy_pixels.toFixed(1)} px, cx=${cx_pixels?.toFixed(1) ?? 'N/A'}, cy=${cy_pixels?.toFixed(1) ?? 'N/A'} (WebXR projection)`);
+    if (imageDataUrl) {
+      parts.push(`Image: rear camera (${imageCaptureSource})`);
     } else {
-      parts.push('fx/fy: unavailable');
+      parts.push('Image: unavailable — grant camera access and retry');
     }
-    if (waistbandWidthResult?.waistWidthCm !== null && waistbandWidthResult?.waistWidthCm !== undefined) {
-      parts.push(`Waistband: ${waistbandWidthResult.waistWidthCm.toFixed(1)} cm`);
+    if (Z_m !== null) parts.push(`Plane distance (perpendicular): ${Z_m.toFixed(3)} m`);
+    else parts.push('Plane: unavailable at capture — world distance may be unavailable');
+    if (fx_pixels !== null && fy_pixels !== null) {
+      parts.push(
+        `Intrinsics scaled ${vpW}×${vpH} viewport → ${imageWidth}×${imageHeight} px image`
+      );
+    } else {
+      parts.push('Intrinsics: unavailable');
     }
     const reliabilityNote = parts.join(' | ');
 
     const result: CaptureResult = {
+      captureId,
+      imageCaptureSource,
+      xrViewportWidth: vpW,
+      xrViewportHeight: vpH,
       imageDataUrl,
       imageWidth,
       imageHeight,
@@ -1222,8 +1101,6 @@ export class ArSession {
       planeTrackingValid: trackingValid,
       plane: planeBundle,
       projectionMatrix,
-      waistbandLandmarks,
-      waistbandWidthResult,
       capturedAt,
       trackingValid,
       reliabilityNote,

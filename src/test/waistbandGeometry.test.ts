@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {
@@ -7,6 +7,7 @@ import {
   intersectRayWithPlane,
   calculateTiltCorrectedWaistWidth,
 } from '../ar/waistbandGeometry.ts';
+import { euclideanDistance } from '../utils/distance.ts';
 
 test('1. deriveIntrinsicsFromMatrix extracts fx, fy, cx, cy correctly', () => {
   const W = 1920;
@@ -220,4 +221,99 @@ test('6. calculateTiltCorrectedWaistWidth warns on extreme tilt > 75 degrees', (
 
   assert.ok(result.tiltAngleDeg! > 75.0);
   assert.ok(result.measurementWarnings.some(w => w.includes('Extreme camera tilt')));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// euclideanDistance utility
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('7. euclideanDistance — zero distance (same point)', () => {
+  const d = euclideanDistance({ x: 1, y: 2, z: 3 }, { x: 1, y: 2, z: 3 });
+  assert.equal(d, 0);
+});
+
+test('8. euclideanDistance — known 3D Pythagorean result', () => {
+  // (0,0,0) → (3,4,0) = 5
+  const d = euclideanDistance({ x: 0, y: 0, z: 0 }, { x: 3, y: 4, z: 0 });
+  assert.ok(Math.abs(d - 5) < 1e-9, `Expected 5, got ${d}`);
+});
+
+test('9. euclideanDistance — 3D diagonal', () => {
+  // (0,0,0) → (1,1,1) = sqrt(3)
+  const d = euclideanDistance({ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 1 });
+  assert.ok(Math.abs(d - Math.sqrt(3)) < 1e-9);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Additional intersectRayWithPlane edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('10. intersectRayWithPlane — rejects intersection farther than 50m (t > 50)', () => {
+  const ray = {
+    origin: { x: 0, y: 100.5, z: 0 },
+    direction: { x: 0, y: -1, z: 0 },
+  };
+  const planePos = { x: 0, y: 0, z: 0 };
+  const planeNorm = { x: 0, y: 1, z: 0 };
+
+  const result = intersectRayWithPlane(ray, planePos, planeNorm);
+  assert.equal(result.valid, false, 'should reject t > 50m');
+  assert.ok(result.warning?.includes('threshold'), `expected threshold warning, got: ${result.warning}`);
+});
+
+test('11. intersectRayWithPlane — valid near-vertical hit within 50m', () => {
+  const ray = {
+    origin: { x: 0, y: 5, z: 0 },
+    direction: { x: 0, y: -1, z: 0 },
+  };
+  const planePos = { x: 0, y: 0, z: 0 };
+  const planeNorm = { x: 0, y: 1, z: 0 };
+
+  const result = intersectRayWithPlane(ray, planePos, planeNorm);
+  assert.equal(result.valid, true);
+  assert.ok(result.point !== null);
+  assert.ok(Math.abs(result.point!.x) < 1e-9);
+  assert.ok(Math.abs(result.point!.y) < 1e-9);
+  assert.ok(Math.abs(result.point!.z) < 1e-9);
+  assert.ok(Math.abs(result.t! - 5) < 1e-9, `Expected t=5, got ${result.t}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// calculateTiltCorrectedWaistWidth — invalid inputs
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('12. calculateTiltCorrectedWaistWidth — returns unavailable when landmarks null', () => {
+  const result = calculateTiltCorrectedWaistWidth({
+    pose: null,
+    intrinsics: null,
+    plane: null,
+    landmarks: null,
+  });
+  assert.equal(result.measurementValid, false);
+  assert.equal(result.measurementStatus, 'unavailable');
+  assert.equal(result.waistWidthMeters, null);
+  assert.ok(result.measurementWarnings.some(w => w.toLowerCase().includes('landmark')));
+});
+
+test('13. calculateTiltCorrectedWaistWidth — returns unavailable when pose null but landmarks valid', () => {
+  const result = calculateTiltCorrectedWaistWidth({
+    pose: null,
+    intrinsics: {
+      fx_pixels: 1000, fy_pixels: 1000,
+      cx_pixels: 960, cy_pixels: 540,
+      imageWidth: 1920, imageHeight: 1080,
+      projectionMatrix: null,
+      intrinsicsSource: 'webxr-projection',
+    },
+    plane: null,
+    landmarks: {
+      waistLeft: { u: 500, v: 540 },
+      waistRight: { u: 1420, v: 540 },
+      landmarkSource: 'manual-click',
+      landmarksValid: true,
+    },
+  });
+  assert.equal(result.measurementValid, false);
+  assert.equal(result.measurementStatus, 'unavailable');
+  assert.ok(result.measurementWarnings.some(w => w.toLowerCase().includes('pose')));
 });
