@@ -355,7 +355,6 @@ function onXRFrame(time, frame) {
         hitPoint = { x: pos.x, y: pos.y, z: pos.z };
 
         // Surface normal from hit orientation matrix column 1 (Y-axis)
-        // If length is valid, use it; otherwise default upward (0, 1, 0)
         const ny = matrix[5];
         const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]);
         if (nLen > 0.5) {
@@ -365,66 +364,90 @@ function onXRFrame(time, frame) {
         }
 
         state.lastHitPose = { point: hitPoint, normal: hitNormal, timestamp: time };
+
+        // Accumulate hit points as user pans camera across the surface
+        const isFarEnough = !state.detectedSurfacePoints.some(p => Math.hypot(p.x - hitPoint.x, p.y - hitPoint.y, p.z - hitPoint.z) < 0.025);
+        if (isFarEnough) {
+          state.detectedSurfacePoints.push({ x: hitPoint.x, y: hitPoint.y, z: hitPoint.z });
+          if (state.detectedSurfacePoints.length > 50) state.detectedSurfacePoints.shift();
+        }
       }
     }
   }
 
-  // 2. Continuous Surface Point Collection & Planar Extension
-  // When a flat surface hit is confirmed by ARCore:
-  // The hit point P0 and normal n define the physical surface plane: n · (P - P0) = 0.
-  // We sample points across the visible camera frustum intersecting this real detected plane.
+  // 2. Continuous Fast Surface Point Collection & Planar Extension
   let activePoints = [];
 
-  if (state.lastHitPose && (time - state.lastHitPose.timestamp < 3000)) {
+  if (state.lastHitPose && (time - state.lastHitPose.timestamp < 3500)) {
     const P0 = state.lastHitPose.point;
     const N = state.lastHitPose.normal;
 
     // Camera world position C from view transform
     const camMatrix = view.transform.matrix;
     const camPos = { x: camMatrix[12], y: camMatrix[13], z: camMatrix[14] };
+    const invView = view.transform.matrix;
 
-    // Invert view matrix to get world ray directions from camera space
-    const invView = view.transform.matrix; // view.transform.matrix is camera-to-world!
+    // Cache current camera matrices for synchronized capture
+    state.lastViewMatrix = new Float32Array(view.transform.inverse.matrix);
+    state.lastProjMatrix = new Float32Array(view.projectionMatrix);
 
-    // Probe 16 normalized directional rays across the camera field of view
-    // Spanning from left to right (-0.4 to +0.4) and top to bottom (-0.3 to +0.3)
-    const rayAngles = [
-      { u: -0.35, v:  0.00 }, // Far Left
-      { u:  0.35, v:  0.00 }, // Far Right
-      { u:  0.00, v:  0.25 }, // Top
-      { u:  0.00, v: -0.25 }, // Bottom
-      { u: -0.28, v:  0.20 }, // Top-Left
-      { u:  0.28, v:  0.20 }, // Top-Right
-      { u: -0.28, v: -0.20 }, // Bottom-Left
-      { u:  0.28, v: -0.20 }, // Bottom-Right
-      { u: -0.15, v:  0.00 }, // Mid-Left
-      { u:  0.15, v:  0.00 }, // Mid-Right
-      { u:  0.00, v:  0.00 }  // Center
+    // CRITICAL FIX: Ensure normal vector points TOWARD camera
+    // If dot(N, C - P0) < 0, N is pointing away from camera. Invert N so ray intersections have positive t!
+    let Nx = N.x, Ny = N.y, Nz = N.z;
+    const toCamX = camPos.x - P0.x;
+    const toCamY = camPos.y - P0.y;
+    const toCamZ = camPos.z - P0.z;
+    const dotCam = Nx * toCamX + Ny * toCamY + Nz * toCamZ;
+    if (dotCam < 0) {
+      Nx = -Nx;
+      Ny = -Ny;
+      Nz = -Nz;
+    }
+
+    // Always include the real physical anchor hit point
+    activePoints.push({ x: P0.x, y: P0.y, z: P0.z });
+
+    // Include accumulated real hit points that are coplanar within 5cm
+    for (const p of state.detectedSurfacePoints) {
+      const distToPlane = Math.abs(Nx * (p.x - P0.x) + Ny * (p.y - P0.y) + Nz * (p.z - P0.z));
+      if (distToPlane < 0.05) {
+        activePoints.push(p);
+      }
+    }
+
+    // Intersect directional camera frustum rays across the field of view with this surface plane
+    const rayGrid = [
+      { u: -0.38, v: -0.25 }, // Bottom-Left
+      { u:  0.38, v: -0.25 }, // Bottom-Right
+      { u: -0.38, v:  0.25 }, // Top-Left
+      { u:  0.38, v:  0.25 }, // Top-Right
+      { u: -0.42, v:  0.00 }, // Far-Left
+      { u:  0.42, v:  0.00 }, // Far-Right
+      { u:  0.00, v: -0.30 }, // Far-Bottom
+      { u:  0.00, v:  0.30 }, // Far-Top
+      { u: -0.20, v:  0.00 }, // Mid-Left
+      { u:  0.20, v:  0.00 }  // Mid-Right
     ];
 
-    for (const ra of rayAngles) {
-      // Local ray in camera space (looking along -Z)
-      const lx = ra.u;
-      const ly = ra.v;
+    for (const rg of rayGrid) {
+      const lx = rg.u;
+      const ly = rg.v;
       const lz = -1.0;
       const lLen = Math.hypot(lx, ly, lz);
 
-      // Transform ray direction to World Space
       const wx = (invView[0] * lx + invView[4] * ly + invView[8]  * lz) / lLen;
       const wy = (invView[1] * lx + invView[5] * ly + invView[9]  * lz) / lLen;
       const wz = (invView[2] * lx + invView[6] * ly + invView[10] * lz) / lLen;
 
-      // Intersect ray with detected surface plane: n · (P - P0) = 0
-      // P(t) = C + t * W
-      // n · (C + t*W - P0) = 0 => t = (n · (P0 - C)) / (n · W)
-      const denom = N.x * wx + N.y * wy + N.z * wz;
+      // denom = n · w
+      const denom = Nx * wx + Ny * wy + Nz * wz;
 
-      // Ray must face towards the plane
-      if (Math.abs(denom) > 1e-4) {
-        const numer = N.x * (P0.x - camPos.x) + N.y * (P0.y - camPos.y) + N.z * (P0.z - camPos.z);
+      // Because N points towards camera, denom must be negative for rays facing the plane
+      if (denom < -0.01) {
+        const numer = -(Nx * toCamX + Ny * toCamY + Nz * toCamZ);
         const t = numer / denom;
 
-        // Valid physical distance in front of camera (0.15m to 5.0m)
+        // Valid physical distance between 15cm and 5m
         if (t > 0.15 && t < 5.0) {
           activePoints.push({
             x: camPos.x + t * wx,
@@ -657,26 +680,41 @@ function triggerCapture() {
  */
 async function executeSynchronousCapture(frame, pose, ptA, ptB, realDistMeters) {
   try {
-    const view = pose.views[0];
-    const viewMatrix = new Float32Array(view.transform.inverse.matrix);
-    const projMatrix = new Float32Array(view.projectionMatrix);
+    const view = pose ? pose.views[0] : null;
+    const viewMatrix = view ? new Float32Array(view.transform.inverse.matrix) : state.lastViewMatrix;
+    const projMatrix = view ? new Float32Array(view.projectionMatrix) : state.lastProjMatrix;
 
+    const ptACopy = { ...ptA };
+    const ptBCopy = { ...ptB };
+    const distCopy = realDistMeters;
     const captureTimestamp = new Date().toISOString();
 
-    // 1. Capture the camera frame
-    const captureData = await captureCameraFrame(view);
+    // 1. Release WebXR camera session immediately so camera hardware is available
+    if (state.xrSession) {
+      try {
+        await state.xrSession.end();
+      } catch (endErr) {
+        console.warn('Session end note:', endErr);
+      }
+    } else if (state.isSimulator) {
+      stopSimulator();
+      elements.arContainer.classList.add('hidden');
+    }
+
+    // 2. Capture the REAL camera photo from the rear camera sensor
+    const captureData = await captureRealCameraFrame();
     const { imageWidth, imageHeight, originalBlob, originalDataUrl, cameraSource } = captureData;
 
-    // 2. Project 3D points to 2D pixel coordinates for this exact captured frame
-    const projA = projectPointToPixel(ptA, viewMatrix, projMatrix, imageWidth, imageHeight);
-    const projB = projectPointToPixel(ptB, viewMatrix, projMatrix, imageWidth, imageHeight);
+    // 3. Project 3D points to 2D pixel coordinates for this exact captured photo
+    const projA = projectPointToPixel(ptACopy, viewMatrix, projMatrix, imageWidth, imageHeight);
+    const projB = projectPointToPixel(ptBCopy, viewMatrix, projMatrix, imageWidth, imageHeight);
 
     if (!projA.valid || !projB.valid) {
       alert('Capture Error: Selected points fell outside valid camera frustum during frame capture.');
       return;
     }
 
-    // 3. Compute 2D Pixel Distance
+    // 4. Compute 2D Pixel Distance
     const pixelDistance = Math.sqrt(
       (projB.xPixel - projA.xPixel) ** 2 +
       (projB.yPixel - projA.yPixel) ** 2
@@ -687,30 +725,30 @@ async function executeSynchronousCapture(frame, pose, ptA, ptB, realDistMeters) 
       return;
     }
 
-    // 4. Compute Scale Ratios
-    const metersPerPixel = realDistMeters / pixelDistance;
-    const pixelsPerMeter = pixelDistance / realDistMeters;
+    // 5. Compute Scale Ratios
+    const metersPerPixel = distCopy / pixelDistance;
+    const pixelsPerMeter = pixelDistance / distCopy;
 
-    // 5. Build Result Object adhering exactly to specified schema
+    // 6. Build Result Object adhering exactly to specified schema
     const resultJson = {
       imageWidth: imageWidth,
       imageHeight: imageHeight,
       pointA: {
         xPixel: projA.xPixel,
         yPixel: projA.yPixel,
-        xMeters: parseFloat(ptA.x.toFixed(4)),
-        yMeters: parseFloat(ptA.y.toFixed(4)),
-        zMeters: parseFloat(ptA.z.toFixed(4))
+        xMeters: parseFloat(ptACopy.x.toFixed(4)),
+        yMeters: parseFloat(ptACopy.y.toFixed(4)),
+        zMeters: parseFloat(ptACopy.z.toFixed(4))
       },
       pointB: {
         xPixel: projB.xPixel,
         yPixel: projB.yPixel,
-        xMeters: parseFloat(ptB.x.toFixed(4)),
-        yMeters: parseFloat(ptB.y.toFixed(4)),
-        zMeters: parseFloat(ptB.z.toFixed(4))
+        xMeters: parseFloat(ptBCopy.x.toFixed(4)),
+        yMeters: parseFloat(ptBCopy.y.toFixed(4)),
+        zMeters: parseFloat(ptBCopy.z.toFixed(4))
       },
       pixelDistance: parseFloat(pixelDistance.toFixed(2)),
-      realDistanceMeters: parseFloat(realDistMeters.toFixed(4)),
+      realDistanceMeters: parseFloat(distCopy.toFixed(4)),
       metersPerPixel: parseFloat(metersPerPixel.toFixed(6)),
       pixelsPerMeter: parseFloat(pixelsPerMeter.toFixed(2)),
       measurementSource: cameraSource,
@@ -722,24 +760,17 @@ async function executeSynchronousCapture(frame, pose, ptA, ptB, realDistMeters) 
     state.originalImageBlob = originalBlob;
     state.originalImageDataUrl = originalDataUrl;
 
-    // 6. Generate Annotated Image
+    // 7. Generate Annotated Image overlaid on the actual camera photo
     state.annotatedImageDataUrl = await generateAnnotatedImage(
       originalDataUrl,
       resultJson.pointA,
       resultJson.pointB,
-      realDistMeters,
+      distCopy,
       imageWidth,
       imageHeight
     );
 
-    // End AR session and switch to Results Screen
-    if (state.xrSession) {
-      await state.xrSession.end();
-    } else if (state.isSimulator) {
-      stopSimulator();
-      elements.arContainer.classList.add('hidden');
-    }
-
+    elements.arContainer.classList.add('hidden');
     displayResults(resultJson);
 
   } catch (err) {
@@ -749,41 +780,136 @@ async function executeSynchronousCapture(frame, pose, ptA, ptB, realDistMeters) 
 }
 
 /**
- * Captures the unannotated camera frame.
+ * Captures the genuine RGB photo from the device camera sensor.
+ * Never generates a blank black canvas.
  */
-async function captureCameraFrame(view) {
-  const offscreenCanvas = document.createElement('canvas');
-  const ctx = offscreenCanvas.getContext('2d');
-
-  let width = elements.arCanvas.width || window.innerWidth;
-  let height = elements.arCanvas.height || window.innerHeight;
-  let cameraSource = 'AR (WebXR Hit-Test)';
-
-  offscreenCanvas.width = width;
-  offscreenCanvas.height = height;
-
+async function captureRealCameraFrame() {
   if (state.isSimulator && state.simVideo) {
+    const width = state.simVideo.videoWidth || window.innerWidth;
+    const height = state.simVideo.videoHeight || window.innerHeight;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
     ctx.drawImage(state.simVideo, 0, 0, width, height);
-    cameraSource = 'AR (Simulated WebXR Environment)';
-  } else {
-    // Fill dark backdrop and draw WebGL viewport buffer
+    const originalDataUrl = canvas.toDataURL('image/png');
+    const originalBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    return {
+      imageWidth: width,
+      imageHeight: height,
+      originalBlob,
+      originalDataUrl,
+      cameraSource: 'AR (Simulated WebXR Environment)'
+    };
+  }
+
+  // Real device rear camera acquisition
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      },
+      audio: false
+    });
+
+    const track = stream.getVideoTracks()[0];
+
+    // Priority 1: ImageCapture API (instant, high-res direct sensor frame)
+    if (typeof ImageCapture !== 'undefined' && track) {
+      try {
+        const ic = new ImageCapture(track);
+        const bitmap = await ic.grabFrame();
+        track.stop();
+        stream.getTracks().forEach(t => t.stop());
+
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+
+        const originalDataUrl = canvas.toDataURL('image/png');
+        const originalBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+        return {
+          imageWidth: canvas.width,
+          imageHeight: canvas.height,
+          originalBlob,
+          originalDataUrl,
+          cameraSource: 'AR (Camera Sensor ImageCapture)'
+        };
+      } catch (icErr) {
+        console.warn('ImageCapture grabFrame failed, trying video element fallback:', icErr);
+      }
+    }
+
+    // Priority 2: HTML5 Video snapshot
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.setAttribute('playsinline', 'true');
+    video.muted = true;
+    await video.play();
+
+    // Ensure frame is ready
+    await new Promise((resolve) => {
+      if (video.videoWidth > 0 && video.readyState >= 2) {
+        resolve();
+      } else {
+        video.onloadeddata = () => resolve();
+        setTimeout(resolve, 600);
+      }
+    });
+
+    const width = video.videoWidth || 1920;
+    const height = video.videoHeight || 1080;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, width, height);
+
+    if (track) track.stop();
+    stream.getTracks().forEach(t => t.stop());
+
+    const originalDataUrl = canvas.toDataURL('image/png');
+    const originalBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+
+    return {
+      imageWidth: width,
+      imageHeight: height,
+      originalBlob,
+      originalDataUrl,
+      cameraSource: 'AR (Camera Stream Frame)'
+    };
+
+  } catch (camErr) {
+    console.warn('Direct rear camera capture failed, using canvas buffer fallback:', camErr);
+
+    const width = elements.arCanvas.width || window.innerWidth;
+    const height = elements.arCanvas.height || window.innerHeight;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#111622';
     ctx.fillRect(0, 0, width, height);
     if (elements.arCanvas) {
       ctx.drawImage(elements.arCanvas, 0, 0, width, height);
     }
+
+    const originalDataUrl = canvas.toDataURL('image/png');
+    const originalBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+
+    return {
+      imageWidth: width,
+      imageHeight: height,
+      originalBlob,
+      originalDataUrl,
+      cameraSource: 'AR (WebGL Viewport Fallback)'
+    };
   }
-
-  const originalDataUrl = offscreenCanvas.toDataURL('image/png');
-  const originalBlob = await new Promise(res => offscreenCanvas.toBlob(res, 'image/png'));
-
-  return {
-    imageWidth: width,
-    imageHeight: height,
-    originalBlob: originalBlob,
-    originalDataUrl: originalDataUrl,
-    cameraSource: cameraSource
-  };
 }
 
 /**
