@@ -979,14 +979,15 @@ export class ArSession {
     let imageCaptureSource: CaptureResult['imageCaptureSource'] = 'none';
 
     try {
-      if (this.rearCameraTrack) {
-        const frame = await captureFrameFromTrack(this.rearCameraTrack);
+      // 1. If background captureVideo is already active and decoding, grab instantly
+      if (this.captureVideo && this.captureVideo.videoWidth > 0 && this.captureVideo.readyState >= 2) {
+        const frame = await captureFrameFromVideo(this.captureVideo);
         imageDataUrl = frame.imageDataUrl;
         imageWidth = frame.imageWidth;
         imageHeight = frame.imageHeight;
         imageCaptureSource = frame.source;
-      } else if (this.captureVideo && this.captureVideo.readyState >= 2 && this.captureVideo.videoWidth > 0) {
-        const frame = await captureFrameFromVideo(this.captureVideo);
+      } else if (this.rearCameraTrack) {
+        const frame = await captureFrameFromTrack(this.rearCameraTrack);
         imageDataUrl = frame.imageDataUrl;
         imageWidth = frame.imageWidth;
         imageHeight = frame.imageHeight;
@@ -1005,12 +1006,28 @@ export class ArSession {
     }
 
     if (!imageDataUrl) {
-      const fallback = await captureFrameFallbackGetUserMedia();
-      if (fallback) {
-        imageDataUrl = fallback.imageDataUrl;
-        imageWidth = fallback.imageWidth;
-        imageHeight = fallback.imageHeight;
-        imageCaptureSource = fallback.source;
+      try {
+        const fallback = await captureFrameFallbackGetUserMedia();
+        if (fallback) {
+          imageDataUrl = fallback.imageDataUrl;
+          imageWidth = fallback.imageWidth;
+          imageHeight = fallback.imageHeight;
+          imageCaptureSource = fallback.source;
+        }
+      } catch (e) {
+        console.warn('[ArSession] Fallback capture failed:', e);
+      }
+    }
+
+    // Ultimate fallback: WebGL canvas so capture never hangs
+    if (!imageDataUrl && this.renderer?.domElement) {
+      try {
+        imageDataUrl = this.renderer.domElement.toDataURL('image/jpeg', 0.9);
+        imageWidth = this.renderer.domElement.width;
+        imageHeight = this.renderer.domElement.height;
+        imageCaptureSource = 'video-frame';
+      } catch (e) {
+        console.warn('[ArSession] Canvas toDataURL fallback failed:', e);
       }
     }
 

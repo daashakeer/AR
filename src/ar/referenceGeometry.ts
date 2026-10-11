@@ -376,9 +376,9 @@ export async function detectAutomaticBoundaries(
     return null;
   }
 
-  // Attempt real AI boundary detection using HRNet service
+  // Attempt real AI boundary detection using HRNet service with fast 1.5s timeout
   try {
-    const res = await detectGarmentLandmarks(imageDataUrl, { timeoutMs: 4000 });
+    const res = await detectGarmentLandmarks(imageDataUrl, { timeoutMs: 1500 });
     if (res.success && res.landmarks?.waist_left && res.landmarks?.waist_right) {
       const uL = res.landmarks.waist_left.pixel_x ?? res.landmarks.waist_left.x * imageWidth;
       const vL = res.landmarks.waist_left.pixel_y ?? res.landmarks.waist_left.y * imageHeight;

@@ -16,18 +16,6 @@ interface Props {
   onExportReady?: (json: object) => void;
 }
 
-/** Format a 3-component vector for display */
-function fmtVec3(v: { x: number; y: number; z: number } | null, decimals = 4): string {
-  if (!v) return '—';
-  return `(${v.x.toFixed(decimals)}, ${v.y.toFixed(decimals)}, ${v.z.toFixed(decimals)})`;
-}
-
-/** Format a number safely */
-function fmtNum(n: number | null | undefined, decimals = 4, unit = ''): string {
-  if (n == null) return '—';
-  return `${n.toFixed(decimals)}${unit}`;
-}
-
 export const ReferenceMeasurePanel: React.FC<Props> = ({
   capture,
   captureId,
@@ -39,7 +27,6 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
   const [imgBlobUrl, setImgBlobUrl] = useState<string | null>(null);
   const [wrapSize, setWrapSize] = useState({ w: 0, h: 0 });
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [isDetecting, setIsDetecting] = useState(false);
   const [detectedLandmarks, setDetectedLandmarks] = useState<WaistbandLandmarks | null>(
     capture.waistbandLandmarks ?? null
   );
@@ -66,7 +53,7 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
         return;
       }
 
-      setIsDetecting(true);
+      // Fast non-blocking check
       const res = await detectAutomaticBoundaries(
         capture.imageDataUrl,
         capture.imageWidth,
@@ -75,7 +62,6 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
       );
       if (!cancelled) {
         setDetectedLandmarks(res);
-        setIsDetecting(false);
       }
     }
 
@@ -187,22 +173,12 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
     );
   };
 
-  const pose = capture.cameraPose;
-  const plane = capture.plane ?? null;
-  const intrinsics = capture.intrinsics ?? null;
-
   return (
     <div className="reference-panel">
-      {/* ── Header: status + download actions ────────────────────── */}
+      {/* ── Top Bar: Quick Actions ── */}
       <div className="reference-panel-header">
         <span className="capture-badge">
-          {capture.imageCaptureSource === 'simulator-render'
-            ? '🎮 Simulator Boundary Auto-Detection'
-            : isDetecting
-            ? '⏳ Detecting Boundary Extents…'
-            : measurement.valid
-            ? '✓ Automatic Boundary Locked'
-            : '⚠️ Boundary Unidentified'}
+          {measurement.valid ? '✓ Captured & Measured' : '📷 Frame Captured'}
         </span>
         <div className="capture-header-actions">
           {imgBlobUrl && capture.imageDataUrl && (
@@ -212,7 +188,7 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
               download={imageFilename}
               rel="noopener noreferrer"
             >
-              💾 Download Image
+              💾 Image
             </a>
           )}
           {jsonBlobUrl && (
@@ -222,7 +198,7 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
               download={`slyte-reference-${captureId.slice(0, 8)}.json`}
               rel="noopener noreferrer"
             >
-              📄 Download JSON
+              📄 JSON
             </a>
           )}
           <button type="button" className="capture-retake-btn" onClick={onRetake}>
@@ -231,47 +207,46 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* ── Image preview with automatic boundary overlays ────────── */}
-      {!capture.imageDataUrl ? (
-        <div className="capture-no-image">
-          Camera image unavailable. WebXR passthrough cannot be read from the Three.js canvas.
-          Grant rear-camera permissions and retake.
-        </div>
-      ) : (
+      {/* ── Captured image preview ── */}
+      {capture.imageDataUrl ? (
         <div
           ref={imgWrapRef}
           className="reference-image-wrap"
           role="img"
-          aria-label="Captured scene with automatic X-distance boundary overlay"
+          aria-label="Captured scene preview"
         >
           <img
             className="capture-preview reference-image"
             src={capture.imageDataUrl}
-            alt="Captured reference frame"
+            alt="Captured frame"
             draggable={false}
           />
           {measurement.leftmostPixelPoint && markerEl(measurement.leftmostPixelPoint, 'L')}
           {measurement.rightmostPixelPoint && markerEl(measurement.rightmostPixelPoint, 'R')}
         </div>
+      ) : (
+        <div className="capture-no-image">
+          Frame captured from camera.
+        </div>
       )}
 
-      {/* ── Automatic Measurement Output Banner ─────────────────────── */}
-      <div className="reference-metrics">
+      {/* ── Focused Primary Results Card ── */}
+      <div className="reference-metrics" style={{ marginTop: '0.5rem' }}>
         <div className="reference-metric-section-title">
-          📏 Automatic Full-Width X-Distance
+          🎯 Measurement Results
         </div>
 
+        {/* 1. fx-pixels */}
         <div className="reference-metric-row highlight">
-          <span>fullXPixelDistance</span>
-          <strong>
-            {measurement.fullXPixelDistance !== null
-              ? `${measurement.fullXPixelDistance.toFixed(1)} px`
-              : '—'}
+          <span>fx (pixels)</span>
+          <strong className="val-ok">
+            {capture.fx_pixels != null ? `${capture.fx_pixels.toFixed(1)} px` : '—'}
           </strong>
         </div>
 
+        {/* 2. Real world distance between points */}
         <div className="reference-metric-row highlight">
-          <span>fullXDistanceMeters</span>
+          <span>Real-World Distance</span>
           <strong className={measurement.fullXDistanceMeters !== null ? 'val-ok' : 'val-unavail'}>
             {measurement.fullXDistanceMeters !== null
               ? `${measurement.fullXDistanceMeters.toFixed(4)} m (${(measurement.fullXDistanceMeters * 100).toFixed(1)} cm)`
@@ -279,135 +254,25 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
           </strong>
         </div>
 
+        {/* Secondary helper metrics */}
         <div className="reference-metric-row">
-          <span>leftmostPixelX</span>
-          <span>{fmtNum(measurement.leftmostPixelX, 1, ' px')}</span>
+          <span>Pixel span (ΔX)</span>
+          <span>
+            {measurement.fullXPixelDistance !== null
+              ? `${measurement.fullXPixelDistance.toFixed(1)} px`
+              : '—'}
+          </span>
         </div>
 
         <div className="reference-metric-row">
-          <span>rightmostPixelX</span>
-          <span>{fmtNum(measurement.rightmostPixelX, 1, ' px')}</span>
-        </div>
-
-        {/* 3D World Positions */}
-        <div className="reference-metric-row">
-          <span>leftmostWorldPoint</span>
-          <span className="mono">{fmtVec3(measurement.leftmostWorldPoint)}</span>
-        </div>
-
-        <div className="reference-metric-row">
-          <span>rightmostWorldPoint</span>
-          <span className="mono">{fmtVec3(measurement.rightmostWorldPoint)}</span>
-        </div>
-
-        {measurement.displacementWorld && (
-          <div className="reference-metric-row">
-            <span>Δx / Δy / Δz (world)</span>
-            <span className="mono">
-              {fmtNum(measurement.displacementWorld.dx, 4)} /{' '}
-              {fmtNum(measurement.displacementWorld.dy, 4)} /{' '}
-              {fmtNum(measurement.displacementWorld.dz, 4)} m
-            </span>
-          </div>
-        )}
-
-        <div className="reference-metric-section-title" style={{ marginTop: '0.75rem' }}>
-          📷 Image &amp; Camera Intrinsics
-        </div>
-
-        <div className="reference-metric-row">
-          <span>Image size</span>
+          <span>Image resolution</span>
           <span>
             {capture.imageWidth > 0 ? `${capture.imageWidth} × ${capture.imageHeight} px` : '—'}
           </span>
         </div>
-
-        <div className="reference-metric-row">
-          <span>fx / fy (px)</span>
-          <span>
-            {capture.fx_pixels != null && capture.fy_pixels != null
-              ? `${capture.fx_pixels.toFixed(1)} / ${capture.fy_pixels.toFixed(1)}`
-              : '—'}
-          </span>
-        </div>
-
-        <div className="reference-metric-row">
-          <span>cx / cy (px)</span>
-          <span>
-            {capture.cx_pixels != null && capture.cy_pixels != null
-              ? `${capture.cx_pixels.toFixed(1)} / ${capture.cy_pixels.toFixed(1)}`
-              : '—'}
-          </span>
-        </div>
-
-        <div className="reference-metric-row">
-          <span>Intrinsics source</span>
-          <span>{capture.intrinsicsSource ?? '—'}</span>
-        </div>
-
-        <div className="reference-metric-section-title" style={{ marginTop: '0.75rem' }}>
-          🌐 AR Tracking &amp; Plane Extent
-        </div>
-
-        <div className="reference-metric-row">
-          <span>Pose / plane tracking</span>
-          <span>
-            {capture.trackingValid ? '✓ pose' : '✗ pose'} ·{' '}
-            {capture.planeTrackingValid ? '✓ plane' : '✗ plane'}
-          </span>
-        </div>
-
-        {plane?.planePosition && (
-          <div className="reference-metric-row">
-            <span>Plane position (world)</span>
-            <span className="mono">{fmtVec3(plane.planePosition)}</span>
-          </div>
-        )}
-
-        {plane?.planeNormal && (
-          <div className="reference-metric-row">
-            <span>Plane normal</span>
-            <span className="mono">{fmtVec3(plane.planeNormal)}</span>
-          </div>
-        )}
-
-        {pose?.position && (
-          <div className="reference-metric-row">
-            <span>Camera position (world)</span>
-            <span className="mono">{fmtVec3(pose.position)}</span>
-          </div>
-        )}
-
-        <div className="reference-metric-section-title" style={{ marginTop: '0.75rem' }}>
-          🔍 Boundary Detection Details
-        </div>
-
-        <div className="reference-metric-row">
-          <span>Measurement Area</span>
-          <span style={{ fontSize: '0.76rem', maxWidth: '60%', textAlign: 'right' }}>
-            {measurement.measurementAreaDefinition}
-          </span>
-        </div>
-
-        <div className="reference-metric-row">
-          <span>Detection Method</span>
-          <span>{measurement.method}</span>
-        </div>
-
-        <div className="reference-metric-row">
-          <span>Detection Source</span>
-          <span>{measurement.detectionSource ?? 'none'}</span>
-        </div>
-
-        <div className="reference-metric-row">
-          <span>Status</span>
-          <span className={measurement.valid ? 'val-ok' : 'val-unavail'}>
-            {measurement.valid ? '✓ valid' : 'unavailable'}
-          </span>
-        </div>
       </div>
 
-      {/* ── Explanatory Warnings / Error Diagnostics ──────────────────── */}
+      {/* ── Explanatory Warnings if plane or points unavailable ── */}
       {measurement.warnings.length > 0 && (
         <ul className="reference-warnings">
           {measurement.warnings.map((w, i) => (
@@ -416,14 +281,14 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
         </ul>
       )}
 
-      {/* ── Advanced Diagnostics (Collapsible) ───────────────────────── */}
+      {/* ── Optional Collapsible Details ── */}
       <button
         type="button"
         className="ref-point-btn"
-        style={{ marginTop: '0.75rem', width: '100%' }}
+        style={{ marginTop: '0.6rem', width: '100%', fontSize: '11px' }}
         onClick={() => setShowAdvanced((v) => !v)}
       >
-        {showAdvanced ? '▲ Hide Advanced Matrix Diagnostics' : '▼ View 4x4 Matrices & Raw Metadata'}
+        {showAdvanced ? '▲ Hide Technical Details' : '▼ View Technical Details'}
       </button>
 
       {showAdvanced && (
@@ -431,40 +296,26 @@ export const ReferenceMeasurePanel: React.FC<Props> = ({
           className="reference-metrics"
           style={{ marginTop: '0.25rem', background: 'rgba(0,0,0,0.2)' }}
         >
-          <div className="reference-metric-section-title">Projection Matrix (Column-Major)</div>
-          {capture.projectionMatrix ? (
-            <div className="reference-metric-row" style={{ flexDirection: 'column', gap: '0.1rem' }}>
-              {[0, 1, 2, 3].map((row) => (
-                <span key={row} className="mono" style={{ fontSize: '0.7rem' }}>
-                  [{capture.projectionMatrix!.slice(row * 4, row * 4 + 4).map((v) => v.toFixed(5)).join(', ')}]
-                </span>
-              ))}
-            </div>
-          ) : (
-            <div className="reference-metric-row">
-              <span>Projection matrix</span>
-              <span>—</span>
-            </div>
-          )}
-
-          <div className="reference-metric-section-title" style={{ marginTop: '0.5rem' }}>
-            Camera World Matrix
+          <div className="reference-metric-row">
+            <span>fy (pixels)</span>
+            <span>{capture.fy_pixels != null ? `${capture.fy_pixels.toFixed(1)} px` : '—'}</span>
           </div>
-          {pose?.cameraMatrix ? (
-            <div className="reference-metric-row" style={{ flexDirection: 'column', gap: '0.1rem' }}>
-              {[0, 1, 2, 3].map((row) => (
-                <span key={row} className="mono" style={{ fontSize: '0.7rem' }}>
-                  [{pose.cameraMatrix.slice(row * 4, row * 4 + 4).map((v) => v.toFixed(5)).join(', ')}]
-                </span>
-              ))}
-            </div>
-          ) : (
-            <div className="reference-metric-row">
-              <span>Camera world matrix</span>
-              <span>—</span>
-            </div>
-          )}
-
+          <div className="reference-metric-row">
+            <span>cx / cy</span>
+            <span>
+              {capture.cx_pixels != null && capture.cy_pixels != null
+                ? `${capture.cx_pixels.toFixed(1)} / ${capture.cy_pixels.toFixed(1)}`
+                : '—'}
+            </span>
+          </div>
+          <div className="reference-metric-row">
+            <span>Intrinsics source</span>
+            <span>{capture.intrinsicsSource ?? '—'}</span>
+          </div>
+          <div className="reference-metric-row">
+            <span>Plane tracking</span>
+            <span>{capture.planeTrackingValid ? '✓ Locked' : '✗ Unlocked'}</span>
+          </div>
           <div className="reference-metric-row">
             <span>Capture ID</span>
             <span className="mono" style={{ fontSize: '0.68rem', wordBreak: 'break-all' }}>
