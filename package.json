@@ -1,0 +1,19 @@
+{
+  "name": "ar-measurement-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Simple mobile-friendly WebXR AR Measurement MVP",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test_measurements.js"
+  },
+  "keywords": [
+    "webxr",
+    "ar",
+    "measurement",
+    "hit-test"
+  ],
+  "author": "",
+  "license": "MIT"
+}
