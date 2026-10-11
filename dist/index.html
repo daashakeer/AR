@@ -3,8 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>AR Measurement MVP</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
   <!-- Main Application Container -->
@@ -55,6 +58,17 @@
           </button>
           <p class="footnote">Requires Android Chrome 81+ with Google Play Services for AR (ARCore), or WebXR emulator.</p>
         </div>
+
+        <!-- On-Screen Real-Time Diagnostics Log -->
+        <div class="card log-card">
+          <div class="log-header">
+            <span>Diagnostics &amp; Tracking Log</span>
+            <button id="btn-clear-log" class="btn-link">Clear</button>
+          </div>
+          <div id="landing-debug-log" class="debug-terminal">
+            <div class="log-entry info">[System] Initializing AR Measurement MVP...</div>
+          </div>
+        </div>
       </main>
 
       <footer class="app-footer">
@@ -80,6 +94,11 @@
             <span class="pill-label">3D Distance:</span>
             <span id="hud-distance-val" class="pill-val">--</span>
           </div>
+        </div>
+
+        <!-- Real-Time AR Overlay Debug Strip -->
+        <div id="ar-debug-strip" class="ar-debug-strip">
+          <span id="ar-debug-msg">Aim at a textured flat surface (floor/table) and move slowly...</span>
         </div>
 
         <!-- Center Crosshair & Surface Guidance -->
@@ -232,7 +251,7 @@
 
   </div>
 
-  <!-- Main Application Script -->
-  <script type="module" src="app.js"></script>
+  <!-- Main Application Script with cache busting -->
+  <script type="module" src="app.js?v=3"></script>
 </body>
 </html>

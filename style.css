@@ -836,3 +836,78 @@ body, html {
 .export-actions .btn {
   flex: 1;
 }
+
+/* ==========================================================================
+   4. DIAGNOSTICS & DEBUG STRIP
+   ========================================================================== */
+
+.log-card {
+  margin-top: 8px;
+  padding: 14px 16px;
+  background: #0d1017;
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent-cyan);
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.debug-terminal {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.log-entry {
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.log-entry.info { color: #8bb2d9; }
+.log-entry.success { color: var(--accent-green); }
+.log-entry.warn { color: var(--accent-amber); }
+.log-entry.error { color: var(--accent-red); }
+
+.ar-debug-strip {
+  position: absolute;
+  top: 72px;
+  left: 16px;
+  right: 16px;
+  background: rgba(10, 12, 16, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 229, 255, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: #cde6ff;
+  pointer-events: none;
+  z-index: 12;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+

@@ -94,16 +94,37 @@ const elements = {
   accuracyNotice: document.getElementById('accuracy-notice'),
   accuracyExplanation: document.getElementById('accuracy-explanation'),
   btnDownloadImg: document.getElementById('btn-download-img'),
-  btnDownloadJson: document.getElementById('btn-download-json')
+  btnDownloadJson: document.getElementById('btn-download-json'),
+  landingDebugLog: document.getElementById('landing-debug-log'),
+  arDebugStrip: document.getElementById('ar-debug-strip'),
+  arDebugMsg: document.getElementById('ar-debug-msg'),
+  btnClearLog: document.getElementById('btn-clear-log')
 };
+
+function logMsg(msg, type = 'info') {
+  console.log(`[${type.toUpperCase()}] ${msg}`);
+  if (elements.landingDebugLog) {
+    const time = new Date().toLocaleTimeString();
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
+    entry.textContent = `[${time}] ${msg}`;
+    elements.landingDebugLog.appendChild(entry);
+    elements.landingDebugLog.scrollTop = elements.landingDebugLog.scrollHeight;
+  }
+  if (elements.arDebugMsg) {
+    elements.arDebugMsg.textContent = msg;
+  }
+}
 
 /* ==========================================================================
    1. Compatibility & Capability Detection
    ========================================================================== */
 
 async function checkCompatibility() {
+  logMsg('Checking WebXR capabilities and secure context...', 'info');
   const isSecure = window.isSecureContext;
   if (!isSecure) {
+    logMsg('Security check failed: HTTPS or localhost required for WebXR.', 'error');
     elements.compatibilityMessage.innerHTML = 
       `<strong style="color:var(--accent-red)">HTTPS Required:</strong> WebXR requires a secure HTTPS connection or localhost. Please open via HTTPS.`;
     updateBadge(elements.badgeWebXR, 'Insecure Context', 'error');
@@ -111,6 +132,7 @@ async function checkCompatibility() {
   }
 
   if (!('xr' in navigator)) {
+    logMsg('navigator.xr is undefined. WebXR Device API is not supported on this browser engine.', 'error');
     updateBadge(elements.badgeWebXR, 'WebXR: Unsupported', 'error');
     updateBadge(elements.badgeAR, 'AR: Unavailable', 'error');
     updateBadge(elements.badgeHitTest, 'Hit-Test: N/A', 'error');
@@ -121,17 +143,20 @@ async function checkCompatibility() {
     return;
   }
 
+  logMsg('navigator.xr detected. Querying immersive-ar support...', 'info');
   updateBadge(elements.badgeWebXR, 'WebXR: Available', 'success');
 
   try {
     const isArSupported = await navigator.xr.isSessionSupported('immersive-ar');
     if (isArSupported) {
+      logMsg('immersive-ar is supported on this device/hardware.', 'success');
       updateBadge(elements.badgeAR, 'AR: Supported', 'success');
       updateBadge(elements.badgeHitTest, 'Hit-Test: Supported', 'success');
       elements.compatibilityMessage.innerHTML = 
         `AR hardware detected and ready. Click <strong>Start Scan</strong> to begin automatic surface measurement.`;
       elements.btnStartScan.disabled = false;
     } else {
+      logMsg('immersive-ar is not supported by this browser. (Needs ARCore on Android).', 'warn');
       updateBadge(elements.badgeAR, 'AR: Unsupported', 'error');
       updateBadge(elements.badgeHitTest, 'Hit-Test: N/A', 'error');
       elements.compatibilityMessage.innerHTML = 
@@ -139,6 +164,7 @@ async function checkCompatibility() {
         `Ensure Google Play Services for AR (ARCore) is installed, or test with the <strong>WebXR Emulator Mode</strong>.`;
     }
   } catch (err) {
+    logMsg(`Capability query error: ${err.message}`, 'error');
     updateBadge(elements.badgeAR, 'AR: Error', 'error');
     elements.compatibilityMessage.textContent = `Capability check error: ${err.message}`;
   }
@@ -156,6 +182,7 @@ function updateBadge(badgeEl, text, statusClass) {
 async function startARSession() {
   try {
     state.isSimulator = false;
+    logMsg('Starting AR scanning session...', 'info');
 
     // IMPORTANT: Make AR container visible BEFORE creating WebXR session with dom-overlay!
     // Chrome throws NotSupportedError if domOverlay.root has display: none
@@ -168,6 +195,7 @@ async function startARSession() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
 
+    logMsg('Initializing WebGL context with xrCompatible: true...', 'info');
     let gl = canvas.getContext('webgl', { xrCompatible: true, alpha: true, preserveDrawingBuffer: true });
     if (!gl) {
       gl = canvas.getContext('webgl2', { xrCompatible: true, alpha: true, preserveDrawingBuffer: true });
@@ -179,10 +207,11 @@ async function startARSession() {
 
     // MANDATORY WebXR step: await makeXRCompatible() before creating XRWebGLLayer
     if (gl.makeXRCompatible) {
+      logMsg('Executing gl.makeXRCompatible()...', 'info');
       await gl.makeXRCompatible();
     }
 
-    // Session options with dom-overlay and hit-test
+    logMsg('Requesting WebXR immersive-ar session with hit-test and dom-overlay...', 'info');
     const sessionInit = {
       requiredFeatures: ['hit-test'],
       optionalFeatures: ['dom-overlay', 'local-floor'],
@@ -193,8 +222,7 @@ async function startARSession() {
     try {
       session = await navigator.xr.requestSession('immersive-ar', sessionInit);
     } catch (reqErr) {
-      console.warn('Initial session request with required hit-test failed, trying optional fallback:', reqErr);
-      // Fallback: request with optionalFeatures
+      logMsg(`Primary session request failed: ${reqErr.message}. Trying optional hit-test fallback...`, 'warn');
       session = await navigator.xr.requestSession('immersive-ar', {
         optionalFeatures: ['hit-test', 'dom-overlay', 'local-floor'],
         domOverlay: { root: elements.arOverlay }
@@ -202,6 +230,7 @@ async function startARSession() {
     }
 
     state.xrSession = session;
+    logMsg('WebXR session granted! Updating render state...', 'success');
 
     // Connect WebGL Layer to Session
     session.updateRenderState({
@@ -209,11 +238,15 @@ async function startARSession() {
     });
 
     // Reference Spaces: try local, fallback to local-floor, then viewer
+    logMsg('Requesting reference spaces...', 'info');
     let refSpace = null;
     for (const type of ['local', 'local-floor', 'viewer']) {
       try {
         refSpace = await session.requestReferenceSpace(type);
-        if (refSpace) break;
+        if (refSpace) {
+          logMsg(`Reference space "${type}" acquired.`, 'info');
+          break;
+        }
       } catch (e) {
         // Continue to next space
       }
@@ -227,11 +260,13 @@ async function startARSession() {
     state.xrViewerSpace = viewerSpace;
 
     // Request primary hit-test source
+    logMsg('Initializing AR hit-test source...', 'info');
     try {
       const hitSource = await session.requestHitTestSource({ space: viewerSpace });
       state.hitTestSource = hitSource;
+      logMsg('Hit-test source active! Probing camera view...', 'success');
     } catch (htErr) {
-      console.warn('Hit-test source creation error:', htErr);
+      logMsg(`Hit-test source warning: ${htErr.message}`, 'warn');
     }
 
     session.addEventListener('end', onSessionEnded);
@@ -243,10 +278,11 @@ async function startARSession() {
     state.currentRealDistanceMeters = 0;
     updateHUDStatus(false, 0, 0);
 
-    // Start WebXR Frame Loop
+    logMsg('AR loop active. Aim at a textured flat surface (floor/table).', 'info');
     session.requestAnimationFrame(onXRFrame);
 
   } catch (err) {
+    logMsg(`Failed to start AR: ${err.message}`, 'error');
     console.error('Failed to start WebXR session:', err);
     // Restore landing screen
     elements.arContainer.classList.add('hidden');
@@ -1091,7 +1127,13 @@ function stopSimulator() {
    ========================================================================== */
 
 function initializeEvents() {
-  elements.btnStartScan.addEventListener('click', startARSession);
+  elements.btnStartScan.addEventListener('click', () => {
+    if (elements.btnStartScan.disabled) {
+      alert('AR Scan is disabled because this browser does not support WebXR immersive-ar.\n\nTo use AR scanning, please open this URL in Google Chrome on an Android phone with Google Play Services for AR installed.\n\nYou can also click "Test in WebXR Emulator Mode" to test all features now.');
+      return;
+    }
+    startARSession();
+  });
   elements.btnStartSim.addEventListener('click', startSimulatorMode);
   elements.btnCapture.addEventListener('click', triggerCapture);
   elements.btnExitAR.addEventListener('click', exitAR);
@@ -1102,6 +1144,14 @@ function initializeEvents() {
   
   elements.btnDownloadImg.addEventListener('click', downloadOriginalImage);
   elements.btnDownloadJson.addEventListener('click', downloadMeasurementJson);
+
+  if (elements.btnClearLog) {
+    elements.btnClearLog.addEventListener('click', () => {
+      if (elements.landingDebugLog) {
+        elements.landingDebugLog.innerHTML = '<div class="log-entry info">[System] Log cleared.</div>';
+      }
+    });
+  }
 
   // Resize handler
   window.addEventListener('resize', () => {
