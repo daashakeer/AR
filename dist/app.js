@@ -1271,7 +1271,6 @@ function showGarmentResults(backendData, snapshot) {
     renderDebug2DView(snapshot, backendData);
   }
 }
-}
 
 /**
  * Draws the captured JPEG with the returned 2D keypoints and labels for ?debug=1 verification
@@ -1654,8 +1653,14 @@ function setupEventListeners() {
   });
 }
 
-// Initialize on DOM ready
-window.addEventListener('DOMContentLoaded', () => {
+// Initialize on DOM ready or immediately if already loaded
+function init() {
   setupEventListeners();
   checkCompatibility();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
