@@ -561,6 +561,7 @@ function updateUIState() {
     if (elements.btnActionLabel) elements.btnActionLabel.textContent = 'Tap P1';
     if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '--';
     if (elements.btnResetPoints) elements.btnResetPoints.style.opacity = '0.5';
+    if (elements.hudReticleContainer) elements.hudReticleContainer.classList.remove('hidden');
 
   } else if (state.measurementState === STATES.POINT1_SET) {
     // Stage 1
@@ -569,17 +570,20 @@ function updateUIState() {
     if (elements.shutterInnerLabel) elements.shutterInnerLabel.textContent = 'P2';
     if (elements.btnActionLabel) elements.btnActionLabel.textContent = 'Tap P2';
     if (elements.btnResetPoints) elements.btnResetPoints.style.opacity = '1.0';
+    // Clear center reticle so view of Point 2 is completely unblocked
+    if (elements.hudReticleContainer) elements.hudReticleContainer.classList.add('hidden');
 
   } else if (state.measurementState === STATES.LOCKED) {
     // Stage 2
     if (elements.stepIcon) elements.stepIcon.textContent = '✅';
     const distCm = (state.finalDistanceMeters * 100).toFixed(1);
     const distIn = (state.finalDistanceMeters * 39.3701).toFixed(1);
-    if (elements.stepText) elements.stepText.textContent = `Distance: ${distCm} cm (${distIn} in). Tap View Results`;
+    if (elements.stepText) elements.stepText.textContent = `Measured: ${distCm} cm (${distIn} in). Tap View Results`;
     if (elements.shutterInnerLabel) elements.shutterInnerLabel.textContent = '👁️';
     if (elements.btnActionLabel) elements.btnActionLabel.textContent = 'View Results';
-    if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = `${distCm} cm`;
+    if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = `${distCm} cm (${distIn} in)`;
     if (elements.btnResetPoints) elements.btnResetPoints.style.opacity = '1.0';
+    if (elements.hudReticleContainer) elements.hudReticleContainer.classList.add('hidden');
   }
 }
 
@@ -608,7 +612,7 @@ function flashHint(msg) {
 }
 
 /**
- * Updates 2D Overlay Markers, Connecting Line, and Distance Tag on every frame
+ * Updates 2D Overlay Markers, Connecting Line, and Top Distance Bar on every frame
  */
 function renderMeasurementHUD(view, width, height) {
   const viewMatrix = view ? view.transform.inverse.matrix : state.lastViewMatrix;
@@ -645,15 +649,13 @@ function renderMeasurementHUD(view, width, height) {
 
     if (proj1.valid) {
       drawLine(proj1.xPixel, proj1.yPixel, targetX, targetY);
-      const midX = (proj1.xPixel + targetX) / 2;
-      const midY = (proj1.yPixel + targetY) / 2;
-      showFloatingTag(midX, midY, currentDistMeters);
     }
 
-    // Update Top HUD distance
-    if (elements.hudDistanceVal) {
+    // Prominently update Top Distance Bar (Center of screen remains 100% clean and clear!)
+    if (elements.hudDistanceVal && currentDistMeters > 0) {
       const distCm = (currentDistMeters * 100).toFixed(1);
-      elements.hudDistanceVal.textContent = `${distCm} cm`;
+      const distIn = (currentDistMeters * 39.3701).toFixed(1);
+      elements.hudDistanceVal.textContent = `${distCm} cm (${distIn} in)`;
     }
     return;
   }
@@ -677,9 +679,13 @@ function renderMeasurementHUD(view, width, height) {
 
     if (proj1.valid && proj2.valid) {
       drawLine(proj1.xPixel, proj1.yPixel, proj2.xPixel, proj2.yPixel);
-      const midX = (proj1.xPixel + proj2.xPixel) / 2;
-      const midY = (proj1.yPixel + proj2.yPixel) / 2;
-      showFloatingTag(midX, midY, state.finalDistanceMeters);
+    }
+
+    // Prominently update Top Distance Bar
+    if (elements.hudDistanceVal && state.finalDistanceMeters > 0) {
+      const distCm = (state.finalDistanceMeters * 100).toFixed(1);
+      const distIn = (state.finalDistanceMeters * 39.3701).toFixed(1);
+      elements.hudDistanceVal.textContent = `${distCm} cm (${distIn} in)`;
     }
   }
 }
@@ -700,19 +706,9 @@ function drawLine(x1, y1, x2, y2) {
   elements.svgMeasureLine.style.display = 'block';
 }
 
-function showFloatingTag(x, y, distMeters) {
-  if (!elements.markerTag || !elements.markerTagVal) return;
-  elements.markerTag.classList.remove('hidden');
-  elements.markerTag.style.left = `${x}px`;
-  elements.markerTag.style.top = `${y}px`;
-  const cm = (distMeters * 100).toFixed(1);
-  elements.markerTagVal.textContent = `${cm} cm`;
-}
-
 function hideMarkersAndLine() {
   if (elements.markerA) elements.markerA.classList.add('hidden');
   if (elements.markerB) elements.markerB.classList.add('hidden');
-  if (elements.markerTag) elements.markerTag.classList.add('hidden');
   if (elements.svgMeasureLine) elements.svgMeasureLine.style.display = 'none';
 }
 

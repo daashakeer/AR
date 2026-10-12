@@ -83,15 +83,16 @@
 
       <!-- WebXR DOM Overlay UI -->
       <div id="ar-overlay">
-        <!-- Top Status Bar -->
+        <!-- Top Status Bar & Prominent Top Distance Bar -->
         <div class="overlay-header">
           <div class="hud-pill tracking-pill">
             <span id="hud-tracking-dot" class="dot red"></span>
             <span id="hud-tracking-text">Scanning surrounding surface...</span>
           </div>
-          <div class="hud-pill distance-pill" id="hud-dist-pill">
-            <span class="pill-label">Distance:</span>
-            <span id="hud-distance-val" class="pill-val">--</span>
+          <div class="top-distance-bar" id="hud-dist-pill">
+            <span class="dist-icon">📏</span>
+            <span class="dist-label">Distance:</span>
+            <span id="hud-distance-val" class="dist-val">--</span>
           </div>
         </div>
 
@@ -101,7 +102,7 @@
           <span id="step-text">Tap Point 1 directly on the screen</span>
         </div>
 
-        <!-- Center 3D Reticle -->
+        <!-- Center 3D Reticle (Only visible during initial surface scan) -->
         <div id="hud-reticle-container">
           <div class="hud-reticle" id="hud-reticle">
             <div class="reticle-ring"></div>
@@ -120,11 +121,7 @@
             <div class="marker-pin pin-b">P2</div>
             <div class="marker-coords" id="marker-b-coords">Point 2</div>
           </div>
-          <!-- Floating live measurement tag between points -->
-          <div id="marker-tag" class="ar-floating-tag hidden">
-            <span id="marker-tag-val">0.0 cm</span>
-          </div>
-          <!-- SVG Line connecting P1, Reticle, and P2 -->
+          <!-- SVG Line connecting P1 and P2 -->
           <svg id="marker-svg-line" class="marker-line-canvas">
             <line id="svg-measure-line" x1="0" y1="0" x2="0" y2="0" stroke="#00e5ff" stroke-width="3" stroke-dasharray="6,4" />
           </svg>

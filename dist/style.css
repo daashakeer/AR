@@ -334,7 +334,7 @@ body, html {
   align-items: center;
   gap: 10px;
   width: 100%;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .hud-pill {
@@ -350,11 +350,12 @@ body, html {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   font-size: 0.82rem;
   font-weight: 600;
+  pointer-events: none;
 }
 
 .tracking-pill {
   color: var(--text-primary);
-  max-width: 60%;
+  max-width: 55%;
 }
 
 .dot {
@@ -379,19 +380,40 @@ body, html {
   box-shadow: 0 0 8px var(--accent-amber);
 }
 
-.distance-pill {
-  color: var(--accent-cyan);
+/* Dedicated Top Distance Bar (Prominent & Unobtrusive) */
+.top-distance-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 16px;
+  background: rgba(10, 14, 25, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--accent-cyan);
+  box-shadow: 0 4px 22px rgba(0, 0, 0, 0.7), 0 0 16px rgba(0, 229, 255, 0.35);
   font-family: var(--font-mono);
+  color: #fff;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
-.pill-label {
-  color: var(--text-secondary);
-  font-size: 0.75rem;
+.dist-icon {
+  font-size: 0.95rem;
 }
 
-.pill-val {
-  font-weight: 700;
-  font-size: 0.88rem;
+.dist-label {
+  color: var(--accent-cyan);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.dist-val {
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: #ffffff;
 }
 
 /* Step Banner */
@@ -410,29 +432,12 @@ body, html {
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   animation: pulse-border 2s infinite ease-in-out;
+  align-self: center;
 }
 
 @keyframes pulse-border {
   0%, 100% { border-color: rgba(0, 229, 255, 0.5); box-shadow: 0 0 10px rgba(0, 229, 255, 0.2); }
   50% { border-color: rgba(0, 229, 255, 1); box-shadow: 0 0 20px rgba(0, 229, 255, 0.5); }
-}
-
-/* Floating Live Measurement Tag */
-.ar-floating-tag {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  background: rgba(11, 15, 25, 0.9);
-  border: 2px solid var(--accent-cyan);
-  border-radius: var(--radius-full);
-  padding: 5px 14px;
-  font-size: 0.92rem;
-  font-weight: 800;
-  font-family: var(--font-mono);
-  color: #fff;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.8), 0 0 16px rgba(0, 229, 255, 0.4);
-  pointer-events: none;
-  z-index: 6;
-  white-space: nowrap;
 }
 
 /* Reticle / Aiming Guide */
