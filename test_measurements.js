@@ -152,10 +152,28 @@ const requiredKeys = [
   'pixelDistance', 'realDistanceMeters', 'metersPerPixel', 'pixelsPerMeter',
   'measurementSource', 'captureTimestamp'
 ];
-// 6. Direct Screen Tap Ray Unprojection to 3D Surface Plane Test
-function screenPixelTo3DPlane(pixelX, pixelY, screenW, screenH, projMatrix, camMatrix, planePoint, planeNormal) {
-  const ndcX = (pixelX / screenW) * 2 - 1;
-  const ndcY = 1 - (pixelY / screenH) * 2;
+// 6. Shared Ray-Plane Intersection Engine
+function intersectRayWithPlane(rayOrigin, rayDir, planePoint, planeNormal) {
+  const denom = planeNormal.x * rayDir.x + planeNormal.y * rayDir.y + planeNormal.z * rayDir.z;
+  if (Math.abs(denom) < 1e-4) return null; // Ray parallel to plane
+  const t = (
+    planeNormal.x * (planePoint.x - rayOrigin.x) +
+    planeNormal.y * (planePoint.y - rayOrigin.y) +
+    planeNormal.z * (planePoint.z - rayOrigin.z)
+  ) / denom;
+  if (t <= 0.001) return null; // Behind or at camera origin
+  return {
+    x: rayOrigin.x + t * rayDir.x,
+    y: rayOrigin.y + t * rayDir.y,
+    z: rayOrigin.z + t * rayDir.z,
+    t: t
+  };
+}
+
+// 7. Landmark Pixel (u, v) -> NDC -> World Ray -> Plane with FABRIC_OFFSET
+function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMatrix, planePoint, planeNormal, fabricOffset = 0.002) {
+  const ndcX = (u / imageWidth) * 2 - 1;
+  const ndcY = 1 - (v / imageHeight) * 2;
   const dxCam = (ndcX + (projMatrix[8] || 0)) / projMatrix[0];
   const dyCam = (ndcY + (projMatrix[9] || 0)) / projMatrix[5];
   const dzCam = -1.0;
@@ -164,36 +182,77 @@ function screenPixelTo3DPlane(pixelX, pixelY, screenW, screenH, projMatrix, camM
   const rY = camMatrix[1] * dxCam + camMatrix[5] * dyCam + camMatrix[9] * dzCam;
   const rZ = camMatrix[2] * dxCam + camMatrix[6] * dyCam + camMatrix[10] * dzCam;
   const rLen = Math.hypot(rX, rY, rZ);
-  const dirX = rX / rLen;
-  const dirY = rY / rLen;
-  const dirZ = rZ / rLen;
+  if (rLen < 1e-6) return null;
+  const dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
+  const origin = { x: camMatrix[12], y: camMatrix[13], z: camMatrix[14] };
 
-  const camX = camMatrix[12];
-  const camY = camMatrix[13];
-  const camZ = camMatrix[14];
-
-  const denom = planeNormal.x * dirX + planeNormal.y * dirY + planeNormal.z * dirZ;
-  if (Math.abs(denom) < 1e-4) return null;
-
-  const t = (planeNormal.x * (planePoint.x - camX) + planeNormal.y * (planePoint.y - camY) + planeNormal.z * (planePoint.z - camZ)) / denom;
-  return {
-    x: camX + t * dirX,
-    y: camY + t * dirY,
-    z: camZ + t * dirZ
+  // Offset plane point along normal by fabricOffset
+  const offsetPlanePoint = {
+    x: planePoint.x + fabricOffset * planeNormal.x,
+    y: planePoint.y + fabricOffset * planeNormal.y,
+    z: planePoint.z + fabricOffset * planeNormal.z
   };
+
+  return intersectRayWithPlane(origin, dir, offsetPlanePoint, planeNormal);
 }
 
-// Test Screen Tap: Tapping at left pixel (400, 540) and right pixel (1520, 540) on flat table at Z = -1.0m
-const flatPlanePoint = { x: 0, y: 0, z: -1.0 };
-const flatPlaneNormal = { x: 0, y: 0, z: 1.0 }; // Facing camera
-const tap1 = screenPixelTo3DPlane(400, 540, 1920, 1080, projMatrix, viewMatrix, flatPlanePoint, flatPlaneNormal);
-const tap2 = screenPixelTo3DPlane(1520, 540, 1920, 1080, projMatrix, viewMatrix, flatPlanePoint, flatPlaneNormal);
+// Test 6: Landmark unprojection with synthetic camera and plane
+const synthPlanePoint = { x: 0, y: 0, z: -1.0 };
+const synthPlaneNormal = { x: 0, y: 0, z: 1.0 };
+const FABRIC_OFFSET = 0.002;
 
-assert.ok(tap1 && tap2, 'Both screen taps must project to 3D surface');
-assert.strictEqual(tap1.z, -1.0, 'Tap 1 must land on plane Z = -1.0');
-assert.strictEqual(tap2.z, -1.0, 'Tap 2 must land on plane Z = -1.0');
-const tapDist = calculate3DDistance(tap1, tap2);
-assert.ok(tapDist > 0.5, 'Distance between screen taps must be physical metric distance');
-console.log(`✓ Screen Tap 3D Unprojection Test Passed: Distance = ${(tapDist * 100).toFixed(2)} cm without moving phone!`);
+// Left waistband landmark at (720, 540), right at (1200, 540) in 1920x1080
+const kpLeft = unprojectKeypointTo3D(720, 540, 1920, 1080, projMatrix, viewMatrix, synthPlanePoint, synthPlaneNormal, FABRIC_OFFSET);
+const kpRight = unprojectKeypointTo3D(1200, 540, 1920, 1080, projMatrix, viewMatrix, synthPlanePoint, synthPlaneNormal, FABRIC_OFFSET);
+
+assert.ok(kpLeft && kpRight, 'Both landmarks must unproject to valid 3D points');
+assert.strictEqual(Math.round(kpLeft.z * 1000) / 1000, -0.998, 'Z must reflect FABRIC_OFFSET = -1.0 + 0.002 = -0.998m');
+assert.strictEqual(Math.round(kpRight.z * 1000) / 1000, -0.998, 'Z must reflect FABRIC_OFFSET = -1.0 + 0.002 = -0.998m');
+const waistWidthMeters = calculate3DDistance(kpLeft, kpRight);
+assert.ok(waistWidthMeters > 0.25 && waistWidthMeters < 0.60, `Waist width should be realistic garment size (~0.43m, got ${waistWidthMeters.toFixed(3)}m)`);
+console.log(`✓ Landmark Unprojection Test Passed: Waist width = ${(waistWidthMeters * 100).toFixed(2)} cm (Z = ${kpLeft.z}m)`);
+
+// Test 7: Parallel Ray Detection (Ray parallel to plane should return null)
+const parallelDir = { x: 1, y: 0, z: 0 }; // Perpendicular to normal (0, 0, 1)
+const parallelHit = intersectRayWithPlane({ x: 0, y: 0, z: 0 }, parallelDir, synthPlanePoint, synthPlaneNormal);
+assert.strictEqual(parallelHit, null, 'Ray parallel to plane must return null');
+console.log('✓ Parallel Ray Test Passed: Properly returned null');
+
+// Test 8: Behind Camera Detection (t <= 0 should return null)
+const behindDir = { x: 0, y: 0, z: 1.0 }; // Looking opposite to plane at z = -1.0
+const behindHit = intersectRayWithPlane({ x: 0, y: 0, z: 0 }, behindDir, synthPlanePoint, synthPlaneNormal);
+assert.strictEqual(behindHit, null, 'Point behind camera plane must return null');
+console.log('✓ Behind Camera Test Passed: Properly returned null');
+
+// Test 9: Measurement computation & landmark confidence check (< 0.3)
+const MIN_CONFIDENCE = 0.3;
+const mockKeypoints = {
+  'waist_left': { u: 720, v: 540, score: 0.88, p3D: kpLeft },
+  'waist_right': { u: 1200, v: 540, score: 0.85, p3D: kpRight },
+  'crotch_inseam': { u: 960, v: 750, score: 0.15, p3D: null } // Low confidence (< 0.3)
+};
+
+function evaluateMeasurement(label, landmarkA, landmarkB, keypointsMap) {
+  const kpA = keypointsMap[landmarkA];
+  const kpB = keypointsMap[landmarkB];
+  if (!kpA || kpA.score < MIN_CONFIDENCE) {
+    return { valid: false, error: `Couldn't see the ${landmarkA.replace('_', ' ')} clearly, rescan with the trousers flat and well lit` };
+  }
+  if (!kpB || kpB.score < MIN_CONFIDENCE) {
+    return { valid: false, error: `Couldn't see the ${landmarkB.replace('_', ' ')} clearly, rescan with the trousers flat and well lit` };
+  }
+  const dist = calculate3DDistance(kpA.p3D, kpB.p3D);
+  return { valid: true, distMeters: dist, distCm: dist * 100, distInches: dist * 39.3701 };
+}
+
+const waistEval = evaluateMeasurement('Waist Width', 'waist_left', 'waist_right', mockKeypoints);
+assert.strictEqual(waistEval.valid, true);
+assert.ok(waistEval.distCm > 30);
+
+const inseamEval = evaluateMeasurement('Inseam', 'crotch_inseam', 'waist_left', mockKeypoints);
+assert.strictEqual(inseamEval.valid, false);
+assert.ok(inseamEval.error.includes("Couldn't see the crotch inseam clearly"));
+console.log('✓ Measurement & Confidence Score (< 0.3) Test Passed!');
 
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL TESTS PASSED!');
+

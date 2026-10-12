@@ -56,6 +56,7 @@
             <span class="btn-icon">💻</span>
             <span class="btn-text">Test in WebXR Emulator Mode</span>
           </button>
+          <input type="file" id="sim-file-input" accept="image/*" style="display:none;">
           <p class="footnote">Requires Android Chrome 81+ with Google Play Services for AR (ARCore), or WebXR desktop emulator.</p>
         </div>
 
@@ -112,6 +113,7 @@
         </div>
 
         <!-- 2D Projected Marker Overlay & Dynamic Line -->
+        <!-- Dynamic Garment Keypoints Overlay Layer -->
         <div id="hud-markers-layer">
           <div id="marker-a" class="ar-hud-marker hidden">
             <div class="marker-pin pin-a">P1</div>
@@ -121,10 +123,24 @@
             <div class="marker-pin pin-b">P2</div>
             <div class="marker-coords" id="marker-b-coords">Point 2</div>
           </div>
-          <!-- SVG Line connecting P1 and P2 -->
+          <!-- Dynamic Garment Pins Container -->
+          <div id="garment-pins-container"></div>
+          <!-- SVG Line connecting garment points -->
           <svg id="marker-svg-line" class="marker-line-canvas">
             <line id="svg-measure-line" x1="0" y1="0" x2="0" y2="0" stroke="#00e5ff" stroke-width="3" stroke-dasharray="6,4" />
           </svg>
+        </div>
+
+        <!-- Processing / Server Wakeup Toast -->
+        <div id="ar-toast" class="ar-toast hidden">
+          <div class="toast-spinner"></div>
+          <span id="toast-text">Detecting trouser landmarks...</span>
+        </div>
+
+        <!-- Error Notification Banner -->
+        <div id="ar-error-banner" class="ar-error-banner hidden">
+          <span id="error-banner-text">Error occurred</span>
+          <button id="btn-error-retry" class="btn btn-small btn-secondary">Retry</button>
         </div>
 
         <!-- Bottom Controls Bar -->
@@ -133,16 +149,21 @@
             <span>&times;</span>
           </button>
 
-          <!-- Main Action Button (Place Point) -->
+          <!-- Main One-Shot Scan Trigger Button -->
           <div class="action-btn-wrapper">
-            <button id="btn-place-point" class="btn-shutter" title="Tap to Set Point">
-              <span class="shutter-inner" id="shutter-inner-label">P1</span>
+            <button id="btn-scan-trigger" class="btn-shutter btn-scan-ready" title="Scan & Measure Trousers" disabled>
+              <span class="shutter-inner" id="scan-inner-label">SCAN</span>
             </button>
-            <span id="btn-action-label" class="shutter-label">Place Point 1</span>
+            <span id="scan-action-label" class="shutter-label">Aim at trousers...</span>
           </div>
 
-          <!-- Reset / Undo Button -->
-          <button id="btn-reset-points" class="btn btn-icon-round" title="Reset Measurement">
+          <!-- Hidden manual place-point button (keeps existing 2-point code intact) -->
+          <button id="btn-place-point" style="display:none;"></button>
+          <span id="btn-action-label" style="display:none;"></span>
+          <span id="shutter-inner-label" style="display:none;"></span>
+
+          <!-- Rescan / Reset Button -->
+          <button id="btn-reset-points" class="btn btn-icon-round" title="Rescan Trousers">
             <span>&#8634;</span>
           </button>
         </div>
@@ -153,36 +174,88 @@
     <section id="screen-results" class="screen hidden">
       <header class="results-header">
         <div class="header-left">
-          <button id="btn-back-scan" class="btn btn-small btn-secondary">&larr; Measure Another</button>
+          <button id="btn-back-scan" class="btn btn-small btn-secondary">&larr; Rescan</button>
         </div>
-        <h2>Measurement Result</h2>
+        <h2>Trouser Measurements</h2>
         <div class="header-right">
           <span class="badge success">100% AR Verified</span>
         </div>
       </header>
 
       <main class="results-layout">
-        <!-- Hero Measurement Card -->
+        <!-- Hero Garment Measurements Grid -->
         <div class="card hero-measurement-card">
-          <div class="measurement-title">REAL-WORLD DISTANCE (3D EUCLIDEAN)</div>
-          <div id="res-hero-distance" class="hero-distance-val">-- cm</div>
-          <div id="res-hero-sub" class="hero-distance-sub">-- inches</div>
-          <div class="accuracy-tag">✓ Directly measured via AR hardware surface coordinates</div>
+          <div class="measurement-title">AI DETECTED GARMENT MEASUREMENTS (3D METRIC)</div>
+          
+          <div class="garment-grid" id="garment-metrics-grid">
+            <div class="garment-metric-card primary">
+              <span class="g-label">Waist Width</span>
+              <span class="g-val" id="res-waist-width">-- cm</span>
+              <span class="g-sub" id="res-waist-width-sub">-- in</span>
+            </div>
+            <div class="garment-metric-card primary">
+              <span class="g-label">Waist Circumference</span>
+              <span class="g-val" id="res-waist-circ">-- cm</span>
+              <span class="g-sub" id="res-waist-circ-sub">approx. (flat)</span>
+            </div>
+            <div class="garment-metric-card">
+              <span class="g-label">Inseam</span>
+              <span class="g-val" id="res-inseam">-- cm</span>
+              <span class="g-sub" id="res-inseam-sub">-- in</span>
+            </div>
+            <div class="garment-metric-card">
+              <span class="g-label">Outseam</span>
+              <span class="g-val" id="res-outseam">-- cm</span>
+              <span class="g-sub" id="res-outseam-sub">-- in</span>
+            </div>
+            <div class="garment-metric-card">
+              <span class="g-label">Thigh Width</span>
+              <span class="g-val" id="res-thigh-width">-- cm</span>
+              <span class="g-sub" id="res-thigh-width-sub">-- in</span>
+            </div>
+            <div class="garment-metric-card">
+              <span class="g-label">Hem Width</span>
+              <span class="g-val" id="res-hem-width">-- cm</span>
+              <span class="g-sub" id="res-hem-width-sub">-- in</span>
+            </div>
+          </div>
+
+          <!-- Legacy distance placeholders for manual 2-point compatibility -->
+          <div id="res-hero-distance" style="display:none;"></div>
+          <div id="res-hero-sub" style="display:none;"></div>
+
+          <div class="accuracy-tag">✓ Directly measured via AR hardware surface geometry + HRNet keypoints</div>
+        </div>
+
+        <!-- Friendly Low-Confidence Notices -->
+        <div id="res-notices-container" class="card notice-card hidden">
+          <div class="notice-title">⚠️ Measurement Notes</div>
+          <ul id="res-notices-list" class="notice-list"></ul>
+        </div>
+
+        <!-- Debug Keypoints 2D Viewer Drawer (visible if ?debug=1) -->
+        <div id="debug-drawer" class="card debug-card hidden">
+          <div class="debug-drawer-header">
+            <h4>Debug 2D Keypoint Detection View (?debug=1)</h4>
+          </div>
+          <div class="debug-canvas-wrapper">
+            <canvas id="debug-canvas"></canvas>
+          </div>
         </div>
 
         <!-- Detailed Coordinates & Metrics Card -->
         <div class="card metrics-card">
-          <h3>Coordinate Breakdown</h3>
+          <h3>Detected 3D Keypoint Coordinates</h3>
           <div class="table-responsive">
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>Point</th>
-                  <th>AR 3D Position (X, Y, Z meters)</th>
-                  <th>Status</th>
+                  <th>Landmark</th>
+                  <th>AR 3D Position (Meters)</th>
+                  <th>Confidence</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody id="res-keypoints-tbody">
                 <tr>
                   <td><span class="point-tag tag-a">Point 1</span></td>
                   <td id="res-p1-coords">--</td>
@@ -198,13 +271,13 @@
           </div>
 
           <div class="math-explanation">
-            <code>Distance = &radic;((X&sub2; - X&sub1;)&sup2; + (Y&sub2; - Y&sub1;)&sup2; + (Z&sub2; - Z&sub1;)&sup2;)</code>
+            <code>3D Point = RayIntersection(WorldRay(u, v), SurfacePlane + FabricOffset)</code>
           </div>
 
-          <!-- Export Actions -->
+          <!-- Export / Rescan Actions -->
           <div class="export-actions">
             <button id="btn-new-measure" class="btn btn-primary btn-large">
-              <span>Measure Another Distance</span>
+              <span>Rescan Trousers</span>
             </button>
           </div>
         </div>
