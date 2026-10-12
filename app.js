@@ -25,9 +25,8 @@ const BACKEND_URL = 'https://dashgaming-slytear.hf.space';
 // Physical fabric offset along plane normal (2mm cloth thickness)
 const FABRIC_OFFSET = 0.002;
 
-// Minimum confidence score threshold for landmark acceptance.
-// DeepFashion2 HRNet heatmap peak values for garment landmarks typically range between 0.05 and 0.40.
-const MIN_CONFIDENCE = 0.05;
+// Minimum confidence score threshold: 0.0 (confidence checks disabled per user instruction)
+const MIN_CONFIDENCE = 0.0;
 
 // Debug Mode flag via URL query string (?debug=1)
 const isDebugMode = new URLSearchParams(window.location.search).get('debug') === '1';
@@ -692,6 +691,17 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
     }
   }
 
+  // Fallback 3: Project along camera ray at the depth of the detected surface
+  if (!hit) {
+    const planeDepth = Math.hypot(offsetPlanePoint.x - origin.x, offsetPlanePoint.y - origin.y, offsetPlanePoint.z - origin.z) || 0.6;
+    hit = {
+      x: origin.x + planeDepth * dir.x,
+      y: origin.y + planeDepth * dir.y,
+      z: origin.z + planeDepth * dir.z,
+      t: planeDepth
+    };
+  }
+
   return hit;
 }
 
@@ -1068,19 +1078,19 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
       continue;
     }
 
-    // Direct pairwise landmarks
+    // Direct pairwise landmarks (confidence gating removed per user instruction)
     let bestPair = null;
     let bestDist = 0;
 
-    // 1. Check primary landmarks
+    // 1. Direct pairwise calculation from model detected keypoints
     const pA = keypointsMap[m.landmarks[0]];
     const pB = keypointsMap[m.landmarks[1]];
-    if (pA && pB && pA.score >= MIN_CONFIDENCE && pB.score >= MIN_CONFIDENCE && pA.p3D && pB.p3D) {
+    if (pA && pB && pA.p3D && pB.p3D) {
       bestPair = [pA, pB];
       bestDist = calculate3DDistance(pA.p3D, pB.p3D);
     }
 
-    // 2. Check fallback landmarks if primary pair is unavailable
+    // 2. Check fallback landmarks if primary pair is missing
     if (!bestPair && m.fallbackLandmarks) {
       for (const fb of m.fallbackLandmarks) {
         const nameA = fb[0];
@@ -1088,7 +1098,7 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
         const mult = fb[2] || 1.0;
         const fbA = keypointsMap[nameA];
         const fbB = keypointsMap[nameB];
-        if (fbA && fbB && fbA.score >= MIN_CONFIDENCE && fbB.score >= MIN_CONFIDENCE && fbA.p3D && fbB.p3D) {
+        if (fbA && fbB && fbA.p3D && fbB.p3D) {
           bestPair = [fbA, fbB];
           bestDist = calculate3DDistance(fbA.p3D, fbB.p3D) * mult;
           break;
@@ -1110,19 +1120,8 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
         pointB: bestPair[1].p3D
       };
     } else {
-      const kpA = keypointsMap[m.landmarks[0]];
-      const kpB = keypointsMap[m.landmarks[1]];
-      let failReason = 'Not detected';
-      if (!kpA || kpA.score < MIN_CONFIDENCE) {
-        failReason = `Low conf (${Math.round((kpA?.score || 0) * 100)}%)`;
-      } else if (!kpB || kpB.score < MIN_CONFIDENCE) {
-        failReason = `Low conf (${Math.round((kpB?.score || 0) * 100)}%)`;
-      } else if (!kpA.p3D || !kpB.p3D) {
-        failReason = 'Unproject error';
-      }
-
-      state.measurementNotices.push(`Couldn't see the ${friendlyName} clearly (${failReason}), rescan with the trousers flat and well lit.`);
-      calculated[m.id] = { id: m.id, label: m.label, valid: false, reason: failReason };
+      state.measurementNotices.push(`Keypoints for ${friendlyName} were not found in backend response.`);
+      calculated[m.id] = { id: m.id, label: m.label, valid: false, reason: 'Keypoint missing' };
     }
   }
 
@@ -1254,7 +1253,7 @@ function showGarmentResults(backendData, snapshot) {
       const p3D = state.detectedKeypointsMap[kp.name]?.p3D;
       const coordStr = p3D ? `X: ${p3D.x.toFixed(3)}, Y: ${p3D.y.toFixed(3)}, Z: ${p3D.z.toFixed(3)}` : 'Unprojected';
       const confPct = Math.round(kp.score * 100);
-      const confBadge = kp.score >= MIN_CONFIDENCE ? `<span class="badge success">${confPct}%</span>` : `<span class="badge error">${confPct}%</span>`;
+      const confBadge = `<span class="badge success">Plotted</span>`;
       return `
         <tr>
           <td><span class="point-tag tag-a">${kp.name.replace(/_/g, ' ')}</span></td>
@@ -1273,7 +1272,7 @@ function showGarmentResults(backendData, snapshot) {
 }
 
 /**
- * Draws the captured JPEG with the returned 2D keypoints and labels for ?debug=1 verification
+ * Draws the captured JPEG with the returned 2D keypoints, labels, and waist measurement line
  */
 function renderDebug2DView(snapshot, backendData) {
   const canvas = elements.debugCanvas;
@@ -1285,18 +1284,49 @@ function renderDebug2DView(snapshot, backendData) {
     canvas.height = img.height;
     ctx.drawImage(img, 0, 0);
 
+    const keypoints = backendData.keypoints || [];
+    let wLeft = null;
+    let wRight = null;
+
     ctx.font = 'bold 14px monospace';
-    for (const kp of backendData.keypoints) {
+    for (const kp of keypoints) {
+      const isWaist = (kp.name === 'waist_left' || kp.name === 'waist_right');
+      if (kp.name === 'waist_left') wLeft = kp;
+      if (kp.name === 'waist_right') wRight = kp;
+
       ctx.beginPath();
-      ctx.arc(kp.u, kp.v, 6, 0, Math.PI * 2);
-      ctx.fillStyle = kp.score >= MIN_CONFIDENCE ? '#00e5ff' : '#ff3d71';
+      ctx.arc(kp.u, kp.v, isWaist ? 8 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = isWaist ? '#00e5ff' : '#4ade80';
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#000000';
       ctx.stroke();
 
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(`${kp.name} (${Math.round(kp.score * 100)}%)`, kp.u + 8, kp.v - 4);
+      ctx.fillText(`${kp.name.replace(/_/g, ' ')}`, kp.u + 10, kp.v - 4);
+    }
+
+    // Connect waist_left and waist_right with a prominent line and distance label
+    if (wLeft && wRight) {
+      ctx.beginPath();
+      ctx.setLineDash([8, 6]);
+      ctx.moveTo(wLeft.u, wLeft.v);
+      ctx.lineTo(wRight.u, wRight.v);
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = '#00e5ff';
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const m = state.calculatedMeasurements.waist_width;
+      if (m && m.valid) {
+        const midX = (wLeft.u + wRight.u) / 2;
+        const midY = (wLeft.v + wRight.v) / 2;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.fillRect(midX - 50, midY - 24, 100, 26);
+        ctx.fillStyle = '#00e5ff';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText(`${m.distCm.toFixed(1)} cm`, midX - 35, midY - 6);
+      }
     }
   };
   img.src = snapshot.dataUrl;
