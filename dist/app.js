@@ -644,37 +644,44 @@ function intersectRayWithPlane(rayOrigin, rayDir, planePoint, planeNormal) {
  * Uses the frozen camera matrix, projection matrix, and surface plane with FABRIC_OFFSET.
  */
 function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMatrix, planePoint, planeNormal, fabricOffset = FABRIC_OFFSET) {
+  const pPoint = (planePoint && typeof planePoint.x === 'number') ? planePoint : { x: 0, y: -0.5, z: -0.8 };
+  const pNorm = (planeNormal && typeof planeNormal.x === 'number') ? planeNormal : { x: 0, y: 1.0, z: 0 };
+  const imgW = imageWidth || 576;
+  const imgH = imageHeight || 1280;
+  const pMat = (projMatrix && projMatrix.length >= 16) ? projMatrix : new Float32Array([1.8, 0, 0, 0,  0, 0.9, 0, 0,  0, 0, -1, -1,  0, 0, -0.2, 0]);
+  const cMat = (camMatrix && camMatrix.length >= 16) ? camMatrix : new Float32Array([1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]);
+
   // 1. Normalized Device Coordinates (NDC) [-1, 1], top-left pixel origin
-  const ndcX = (u / imageWidth) * 2 - 1;
-  const ndcY = 1 - (v / imageHeight) * 2;
+  const ndcX = (u / imgW) * 2 - 1;
+  const ndcY = 1 - (v / imgH) * 2;
 
   // 2. Camera View Space Ray Direction
-  const dxCam = (ndcX + (projMatrix[8] || 0)) / projMatrix[0];
-  const dyCam = (ndcY + (projMatrix[9] || 0)) / projMatrix[5];
+  const dxCam = (ndcX + (pMat[8] || 0)) / (pMat[0] || 1.8);
+  const dyCam = (ndcY + (pMat[9] || 0)) / (pMat[5] || 0.9);
   const dzCam = -1.0;
 
   // 3. Transform Ray Direction to World Space
-  const rX = camMatrix[0] * dxCam + camMatrix[4] * dyCam + camMatrix[8] * dzCam;
-  const rY = camMatrix[1] * dxCam + camMatrix[5] * dyCam + camMatrix[9] * dzCam;
-  const rZ = camMatrix[2] * dxCam + camMatrix[6] * dyCam + camMatrix[10] * dzCam;
+  const rX = cMat[0] * dxCam + cMat[4] * dyCam + cMat[8] * dzCam;
+  const rY = cMat[1] * dxCam + cMat[5] * dyCam + cMat[9] * dzCam;
+  const rZ = cMat[2] * dxCam + cMat[6] * dyCam + cMat[10] * dzCam;
 
   const rLen = Math.hypot(rX, rY, rZ);
   if (rLen < 1e-6) return null;
   const dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
-  const origin = { x: camMatrix[12], y: camMatrix[13], z: camMatrix[14] };
+  const origin = { x: cMat[12], y: cMat[13], z: cMat[14] };
 
   // 4. Elevate surface plane by FABRIC_OFFSET (0.002m) along the normal
   const offsetPlanePoint = {
-    x: planePoint.x + fabricOffset * planeNormal.x,
-    y: planePoint.y + fabricOffset * planeNormal.y,
-    z: planePoint.z + fabricOffset * planeNormal.z
+    x: pPoint.x + fabricOffset * pNorm.x,
+    y: pPoint.y + fabricOffset * pNorm.y,
+    z: pPoint.z + fabricOffset * pNorm.z
   };
 
-  let hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, planeNormal);
+  let hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, pNorm);
 
   // Fallback 1: Check two-sided plane (opposite normal orientation)
   if (!hit) {
-    const oppNormal = { x: -planeNormal.x, y: -planeNormal.y, z: -planeNormal.z };
+    const oppNormal = { x: -pNorm.x, y: -pNorm.y, z: -pNorm.z };
     hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, oppNormal);
   }
 
@@ -1023,6 +1030,9 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
   const keypointsMap = {};
   const unprojectedPoints = [];
 
+  const planePoint = snapshot.surfacePlane?.point || state.surfacePlane?.point || { x: 0, y: -0.5, z: -0.8 };
+  const planeNormal = snapshot.surfacePlane?.normal || state.surfacePlane?.normal || { x: 0, y: 1.0, z: 0 };
+
   // Map each landmark using the SAVED snapshot matrices and plane
   for (const kp of backendData.keypoints) {
     const p3D = unprojectKeypointTo3D(
@@ -1032,8 +1042,8 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
       snapshot.imageHeight,
       snapshot.projMatrix,
       snapshot.camMatrix,
-      snapshot.surfacePlane.point,
-      snapshot.surfacePlane.normal,
+      planePoint,
+      planeNormal,
       FABRIC_OFFSET
     );
 
@@ -1251,14 +1261,18 @@ function showGarmentResults(backendData, snapshot) {
   if (elements.resKeypointsTbody) {
     elements.resKeypointsTbody.innerHTML = backendData.keypoints.map(kp => {
       const p3D = state.detectedKeypointsMap[kp.name]?.p3D;
-      const coordStr = p3D ? `X: ${p3D.x.toFixed(3)}, Y: ${p3D.y.toFixed(3)}, Z: ${p3D.z.toFixed(3)}` : 'Unprojected';
-      const confPct = Math.round(kp.score * 100);
-      const confBadge = `<span class="badge success">Plotted</span>`;
+      const coordStr = p3D ? `X: ${p3D.x.toFixed(3)}m, Y: ${p3D.y.toFixed(3)}m, Z: ${p3D.z.toFixed(3)}m` : 'Unprojected';
+      const pixelStr = `2D: (${Math.round(kp.u)}px, ${Math.round(kp.v)}px)`;
+      const isWaist = (kp.name === 'waist_left' || kp.name === 'waist_right');
+      const tagClass = isWaist ? 'tag-a' : 'tag-b';
       return `
         <tr>
-          <td><span class="point-tag tag-a">${kp.name.replace(/_/g, ' ')}</span></td>
+          <td>
+            <span class="point-tag ${tagClass}">${kp.name.replace(/_/g, ' ')}</span>
+            <small style="color:var(--text-muted);display:block;margin-top:2px;">${pixelStr}</small>
+          </td>
           <td><code>${coordStr}</code></td>
-          <td>${confBadge}</td>
+          <td><span class="badge success">Plotted</span></td>
         </tr>
       `;
     }).join('');
