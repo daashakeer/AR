@@ -967,41 +967,53 @@ async function dispatchToBackend(snapshot) {
   hideErrorBanner();
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+  const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s timeout for ZeroGPU queue
 
-  // If taking > 3.5s, update toast to inform about server wake up
+  // If taking > 3.5s, update toast to inform about server wake up / GPU queue
   const wakeNoticeTimer = setTimeout(() => {
-    showToast('Waking up server...');
+    showToast('Allocating GPU & detecting...');
   }, 3500);
 
   try {
-    const formData = new FormData();
-    formData.append('image', snapshot.jpegBlob, 'frame.jpg');
-    if (isDebugMode) {
-      formData.append('debug', 'true');
+    let data = null;
+
+    // Strategy 1: If using Hugging Face Space, use the Gradio SSE Queue to trigger @spaces.GPU
+    const isHFSpace = BACKEND_URL.includes('hf.space') || BACKEND_URL.includes('huggingface.co');
+    if (isHFSpace) {
+      logMsg('Connecting to Hugging Face ZeroGPU via Gradio Queue...', 'info');
+      data = await predictViaGradioQueue(snapshot.jpegBlob, isDebugMode, controller.signal);
     }
 
-    logMsg(`Sending JPEG (${Math.round(snapshot.jpegBlob.size / 1024)} KB) to ${BACKEND_URL}/predict...`, 'info');
+    // Strategy 2: Direct HTTP POST /predict (for local servers or non-ZeroGPU endpoints)
+    if (!data) {
+      logMsg(`Sending JPEG (${Math.round(snapshot.jpegBlob.size / 1024)} KB) to ${BACKEND_URL}/predict...`, 'info');
+      const formData = new FormData();
+      formData.append('image', snapshot.jpegBlob, 'frame.jpg');
+      if (isDebugMode) {
+        formData.append('debug', 'true');
+      }
 
-    const res = await fetch(`${BACKEND_URL}/predict`, {
-      method: 'POST',
-      body: formData,
-      signal: controller.signal
-    });
+      const res = await fetch(`${BACKEND_URL}/predict`, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server returned HTTP ${res.status}: ${res.statusText}`);
+      }
+
+      data = await res.json();
+    }
 
     clearTimeout(timeoutId);
     clearTimeout(wakeNoticeTimer);
 
-    if (!res.ok) {
-      throw new Error(`Server returned HTTP ${res.status}: ${res.statusText}`);
+    if (!data || !data.ok || !Array.isArray(data.keypoints) || data.keypoints.length === 0) {
+      throw new Error(data?.error || 'Empty keypoints returned by model');
     }
 
-    const data = await res.json();
-    if (!data.ok || !Array.isArray(data.keypoints) || data.keypoints.length === 0) {
-      throw new Error(data.error || 'Empty keypoints returned by model');
-    }
-
-    logMsg(`Backend returned ${data.keypoints.length} keypoints in ${data.inference_ms}ms`, 'success');
+    logMsg(`Backend returned ${data.keypoints.length} keypoints in ${data.inference_ms || 0}ms`, 'success');
     hideToast();
 
     // Process keypoints and calculate dimensions
@@ -1014,12 +1026,102 @@ async function dispatchToBackend(snapshot) {
     state.flowState = STATES.SCANNING;
 
     if (err.name === 'AbortError') {
-      showErrorBanner('Server timeout (20s). The model server may be starting up. Please tap Retry.');
+      showErrorBanner('Server timeout. The model server may be starting up or GPU queue busy. Please tap Retry.');
     } else {
       showErrorBanner(`Detection error: ${err.message}`);
     }
     console.error('Detection error:', err);
   }
+}
+
+/**
+ * Executes HRNet prediction via Hugging Face Gradio Queue SSE protocol.
+ * This ensures @spaces.GPU decorator is executed and real keypoints are returned!
+ */
+async function predictViaGradioQueue(jpegBlob, debug, signal) {
+  // 1. Upload JPEG to Space
+  const uploadData = new FormData();
+  uploadData.append('files', jpegBlob, 'frame.jpg');
+
+  const uploadRes = await fetch(`${BACKEND_URL}/upload`, {
+    method: 'POST',
+    body: uploadData,
+    signal
+  });
+
+  if (!uploadRes.ok) {
+    throw new Error(`Gradio file upload failed (HTTP ${uploadRes.status})`);
+  }
+
+  const uploadJson = await uploadRes.json();
+  const filePath = Array.isArray(uploadJson) ? uploadJson[0] : uploadJson;
+  if (!filePath) {
+    throw new Error('Upload succeeded but no file path was returned by server');
+  }
+
+  // 2. Join Gradio Queue
+  const sessionHash = Math.random().toString(36).substring(2, 12);
+  const joinRes = await fetch(`${BACKEND_URL}/queue/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      data: [{ path: filePath }, !!debug],
+      event_data: null,
+      fn_index: 0,
+      session_hash: sessionHash,
+      trigger_id: 6
+    }),
+    signal
+  });
+
+  if (!joinRes.ok) {
+    throw new Error(`Gradio queue join failed (HTTP ${joinRes.status})`);
+  }
+
+  // 3. Listen to SSE Stream until process_completed
+  const sseRes = await fetch(`${BACKEND_URL}/queue/data?session_hash=${sessionHash}`, { signal });
+  if (!sseRes.ok) {
+    throw new Error(`Gradio SSE stream failed (HTTP ${sseRes.status})`);
+  }
+
+  const reader = sseRes.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split('\n\n');
+    buffer = chunks.pop() || '';
+
+    for (const chunk of chunks) {
+      const trimmed = chunk.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      try {
+        const payload = JSON.parse(trimmed.slice(5).trim());
+        if (payload.msg === 'process_starts') {
+          showToast('Processing keypoints with ZeroGPU...');
+        } else if (payload.msg === 'process_completed') {
+          reader.cancel().catch(() => {});
+          if (payload.success && payload.output?.data?.[0]) {
+            return payload.output.data[0];
+          } else if (payload.output?.error) {
+            throw new Error(payload.output.error);
+          }
+        } else if (payload.msg === 'queue_full') {
+          throw new Error('Hugging Face GPU queue is currently full. Try again shortly.');
+        }
+      } catch (jsonErr) {
+        if (jsonErr.message && !jsonErr.message.includes('Unexpected token')) {
+          throw jsonErr;
+        }
+      }
+    }
+  }
+
+  throw new Error('Gradio stream closed before completing prediction');
 }
 
 /**
