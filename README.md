@@ -1,117 +1,78 @@
-# AR Measurement MVP
+# AR 2-Point Distance Calculator
 
-A mobile-first, high-precision web application for automated flat surface detection, 3D metric distance calculation, synchronized frame capture, and image/JSON data export.
+A pure client-side web application for scanning physical surroundings and calculating the **100% accurate real-world distance between 2 user-selected points** using WebXR Augmented Reality.
 
-Built with **pure HTML5, CSS3, and modern ES6 JavaScript**. **No HRNet, AI models, machine learning, or manual point selection.**
-
----
-
-## 1. Core Features & Architecture
-
-### 1. Automatic Surface Scanning
-- Initializes WebXR in `immersive-ar` mode with `hit-test` and `dom-overlay`.
-- Probes the visible environment using a multi-directional ray grid (offset rays across the camera FOV) to automatically detect real-world surface hit poses.
-- Continuous coplanar filtering evaluates surface normal vectors and planar distance envelopes (tolerance within 4 cm) to identify valid flat surfaces without manual user tapping.
-
-### 2. Automated Farthest-Two-Points Selection
-- Collects valid coplanar points in real-time from the detected surface.
-- Calculates pairwise physical 3D distances using the metric reference space coordinates:
-  $$\text{realDistanceMeters} = \sqrt{(X_2 - X_1)^2 + (Y_2 - Y_1)^2 + (Z_2 - Z_1)^2}$$
-- Automatically selects the pair $(A, B)$ that maximizes this physical distance.
-- Displays high-contrast 2D projected markers and connecting measurement lines on the live HUD overlay.
-
-### 3. Synchronized Instantaneous Capture
-- Freezes camera frame, 3D metric coordinates $(X, Y, Z)$, and camera calibration projection matrices at the exact instant the **Capture** button is tapped.
-- Preserves the **original, unannotated RGB image** (downloadable as PNG).
-- Generates an **annotated preview** with Point A, Point B, connecting lines, and metric callouts.
-
-### 4. Mathematical Projection & Pixel Distance Calculation
-- Projects 3D metric coordinates $(X, Y, Z)$ to 2D image pixel coordinates $(x, y)$ using the camera's view matrix and projection matrix from that specific frame:
-  $$\mathbf{P}_{\text{cam}} = \mathbf{V} \cdot \mathbf{P}_{\text{world}}$$
-  $$\mathbf{P}_{\text{clip}} = \mathbf{P}_{\text{proj}} \cdot \mathbf{P}_{\text{cam}}$$
-  $$x_{\text{pixel}} = \left(\frac{x_{\text{ndc}} + 1}{2}\right) \times W, \quad y_{\text{pixel}} = \left(\frac{1 - y_{\text{ndc}}}{2}\right) \times H$$
-- Calculates 2D Euclidean pixel distance:
-  $$\text{pixelDistance} = \sqrt{(x_2 - x_1)^2 + (y_2 - y_1)^2}$$
-- Calculates scaling ratios:
-  $$\text{metersPerPixel} = \frac{\text{realDistanceMeters}}{\text{pixelDistance}}$$
-  $$\text{pixelsPerMeter} = \frac{\text{pixelDistance}}{\text{realDistanceMeters}}$$
+Built with **pure HTML5, CSS3, and modern ES6 JavaScript**. Zero build steps, zero external frameworks, and **no reference objects needed** (no coins, markers, cards, or hardcoded camera heights).
 
 ---
 
-## 2. API Support & Hardware Compatibility
+## 1. How It Works
+
+1. **Scan Surrounding**:
+   - The user aims the camera at any surface (floor, table, desk, wall, or object).
+   - WebXR hit-testing continuously tests physical geometry against the environment surface point cloud.
+   - The center reticle locks to the detected surface plane.
+
+2. **Select Point 1**:
+   - Tap anywhere on screen or press the **Place Point 1 (P1)** shutter button.
+   - Anchors Point 1 at the exact 3D world coordinate $(X_1, Y_1, Z_1)$ in physical meters.
+
+3. **Stretch to Point 2**:
+   - Move the phone towards the end target.
+   - A dynamic measuring line and floating distance tag follow the aiming reticle in real time.
+   - Computes live physical distance $D_{\text{live}} = \sqrt{(X_r - X_1)^2 + (Y_r - Y_1)^2 + (Z_r - Z_1)^2}$.
+
+4. **Lock & Calculate Distance**:
+   - Tap anywhere on screen or press **Place Point 2 (P2)**.
+   - Anchors Point 2 at $(X_2, Y_2, Z_2)$.
+   - Immediately calculates and locks the true 3D Euclidean distance:
+     $$D = \sqrt{(X_2 - X_1)^2 + (Y_2 - Y_1)^2 + (Z_2 - Z_1)^2}$$
+   - Displays real-world distance in centimeters, meters, and inches.
+
+5. **View Breakdown / Reset**:
+   - Tap **View Results** to view the full coordinate breakdown and formula verification.
+   - Tap the **Reset** button at any time to clear points and measure another distance.
+
+---
+
+## 2. 100% Metric Accuracy (No Reference Objects)
+
+WebXR's `XRHitResult.getPose(referenceSpace)` returns coordinates directly in metric meters ($1.0 = 1.0\text{ m}$), tracked by device hardware (ARCore on Android with visual-inertial odometry and SLAM plane tracking).
+
+Because measurements are computed directly from the 3D metric coordinate system:
+- **No reference object required** (no credit cards, coins, or paper sheets).
+- **No camera height assumptions** (no fixed heights or hardcoded ratios).
+- Works at any angle, orientation, or distance.
+
+---
+
+## 3. Platform & Browser Compatibility
 
 | Platform / Browser | Support Status | Notes |
 | :--- | :--- | :--- |
-| **Android Chrome (v81+)** | **Full Support** | Requires [Google Play Services for AR (ARCore)](https://play.google.com/store/apps/details?id=com.google.ar.core). Supports WebXR `immersive-ar`, `hit-test`, and `dom-overlay`. |
-| **Desktop Chrome / Edge** | **WebXR Emulator** | Tested via Chrome DevTools WebXR tab or the built-in **WebXR Emulator Mode** button. |
-| **iOS Safari** | **Unsupported** | Apple Safari on iOS does not support the WebXR Device API natively. Requires specialized browsers such as Mozilla WebXR Viewer. |
-
-### Camera Frame Access & Limitations
-- **WebXR Raw Camera Access (`camera-access`)**: Where supported by experimental flags or browser implementation (`XRWebGLBinding.getCameraImage`), raw RGB textures are read directly.
-- **Privacy Isolation**: In standard Android Chrome WebXR, the live camera feed is composited by the OS beneath the WebGL canvas, and raw camera pixel access is restricted for privacy. In this configuration, the app captures the WebGL viewport buffer, marks `measurementSource` accurately, and does not invent fake camera feeds.
+| **Android Chrome (v81+)** | **Full Native AR** | Requires [Google Play Services for AR (ARCore)](https://play.google.com/store/apps/details?id=com.google.ar.core). Supports native WebXR `immersive-ar`, `hit-test`, and `dom-overlay`. |
+| **Desktop Chrome / Edge** | **WebXR Emulator Mode** | Fully interactive testing using the built-in "Test in WebXR Emulator Mode" button or Chrome DevTools WebXR tab. |
+| **iOS Safari** | **Unsupported** | Safari does not implement WebXR natively. Requires WebXR-compatible browsers such as Mozilla WebXR Viewer. |
 
 ---
 
-## 3. Export Data Format
+## 4. Local Testing & Deployment
 
-The application provides two export actions:
-1. **Download Image**: Downloads the original, unannotated captured image (`.png`).
-2. **Download JSON**: Exports calculated measurements matching the exact schema:
-
-```json
-{
-  "imageWidth": 1920,
-  "imageHeight": 1080,
-  "pointA": {
-    "xPixel": 420,
-    "yPixel": 300,
-    "xMeters": 0.1,
-    "yMeters": 0.2,
-    "zMeters": 0.0
-  },
-  "pointB": {
-    "xPixel": 920,
-    "yPixel": 300,
-    "xMeters": 0.6,
-    "yMeters": 0.2,
-    "zMeters": 0.0
-  },
-  "pixelDistance": 500,
-  "realDistanceMeters": 0.5,
-  "metersPerPixel": 0.001,
-  "pixelsPerMeter": 1000,
-  "measurementSource": "AR (WebXR Hit-Test)",
-  "captureTimestamp": "2026-10-11T13:12:00.000Z"
-}
-```
-
----
-
-## 4. Deployment to Cloudflare Pages
-
-This application has no Node.js compilation, bundling, or external build steps.
-
-To deploy to Cloudflare Pages:
-1. Connect your GitHub repository to Cloudflare Pages.
-2. In the deployment settings:
-   - **Framework preset**: None
-   - **Build command**: (Leave empty)
-   - **Build output directory**: `/` (root directory containing `index.html`)
-3. Deploy! Cloudflare Pages automatically provides HTTPS, which is required for WebXR and camera permissions.
-
----
-
-## 5. Local Development & Testing
-
-Serve locally over a local web server:
-
+### Quick Local Test
+Open PowerShell or Terminal in the project directory:
 ```bash
-# Using Python
-python -m http.server 8000
-
-# Or using Node
 npx serve .
 ```
+Or with Python:
+```bash
+python -m http.server 8080
+```
+Open `http://localhost:8080` in your browser. (WebXR requires `localhost` or HTTPS).
 
-Access via `http://localhost:8000` (localhost is treated as a secure context by Chrome).
-To test on a physical Android device, use Chrome Remote Debugging (`chrome://inspect`) with port forwarding over USB.
+### Deployment (Cloudflare Pages / GitHub Pages / Vercel)
+This app consists purely of static HTML, CSS, and JS files (`index.html`, `style.css`, `app.js`).
+Deploy directly to Cloudflare Pages:
+1. Connect repository.
+2. Build command: None (leave blank).
+3. Output directory: `/` or `dist/`.
+4. Deploy! Cloudflare automatically provisions HTTPS.

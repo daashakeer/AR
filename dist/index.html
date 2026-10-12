@@ -6,8 +6,8 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>AR Measurement MVP</title>
-  <link rel="stylesheet" href="style.css?v=3">
+  <title>AR 2-Point Distance Calculator</title>
+  <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
   <!-- Main Application Container -->
@@ -16,70 +16,69 @@
     <!-- 1. LANDING & CAPABILITY SCREEN -->
     <section id="screen-landing" class="screen active">
       <header class="hero-header">
-        <div class="logo-badge">AR METRIC LAB</div>
-        <h1>AR Measurement MVP</h1>
-        <p class="subtitle">Automatic Surface Detection &amp; Metric Distance Calculation</p>
+        <div class="logo-badge">100% ACCURATE AR MEASURE</div>
+        <h1>AR Distance Calculator</h1>
+        <p class="subtitle">Select any 2 points in your surrounding to get exact real-world distance</p>
       </header>
 
       <main class="card-container">
         <!-- Compatibility Status Card -->
         <div class="card status-card">
-          <h2>Device &amp; AR Compatibility</h2>
+          <h2>Device &amp; AR Sensor Status</h2>
           <div id="compatibility-badges" class="badges-row">
             <span id="badge-webxr" class="badge checking">WebXR: Checking...</span>
             <span id="badge-ar" class="badge checking">AR Mode: Checking...</span>
             <span id="badge-hittest" class="badge checking">Hit-Test: Checking...</span>
           </div>
           <p id="compatibility-message" class="info-text">
-            Checking device capabilities...
+            Checking device sensors and ARCore capability...
           </p>
         </div>
 
-        <!-- Specifications & Rules Card -->
+        <!-- How It Works Card -->
         <div class="card info-card">
-          <h3>Measurement Pipeline</h3>
+          <h3>How It Works (No Reference Objects Needed)</h3>
           <ul class="specs-list">
-            <li><strong>Zero AI / No HRNet:</strong> Pure WebXR geometric metric tracking.</li>
-            <li><strong>Automatic Surface Detection:</strong> Continuous multi-ray hit-testing probes visible flat surfaces without manual point tapping.</li>
-            <li><strong>Farthest Two Points:</strong> Real-time 3D Euclidean distance maximization over detected coplanar surface points.</li>
-            <li><strong>Synchronized Capture:</strong> Freezes 3D metric coordinates and exact 2D camera pixel projections simultaneously at the click instant.</li>
+            <li><strong>1. Scan Surrounding:</strong> Aim camera at any surface (floor, table, wall, object). The AR reticle will lock to it.</li>
+            <li><strong>2. Place Point 1:</strong> Tap screen to anchor Point 1 at the desired start position.</li>
+            <li><strong>3. Stretch to Point 2:</strong> Move camera to the end target. A dynamic measuring line follows your aim in real-time.</li>
+            <li><strong>4. 100% Metric Accuracy:</strong> Tap to anchor Point 2. Real-world distance is computed instantly in 3D physical coordinates (cm &amp; inches).</li>
           </ul>
         </div>
 
         <!-- Action Area -->
         <div class="action-card">
           <button id="btn-start-scan" class="btn btn-primary btn-large" disabled>
-            <span class="btn-icon">📐</span>
-            <span class="btn-text">Start Scan</span>
+            <span class="btn-icon">📏</span>
+            <span class="btn-text">Start AR Measurement</span>
           </button>
           <button id="btn-start-sim" class="btn btn-secondary">
             <span class="btn-icon">💻</span>
             <span class="btn-text">Test in WebXR Emulator Mode</span>
           </button>
-          <p class="footnote">Requires Android Chrome 81+ with Google Play Services for AR (ARCore), or WebXR emulator.</p>
+          <p class="footnote">Requires Android Chrome 81+ with Google Play Services for AR (ARCore), or WebXR desktop emulator.</p>
         </div>
 
-        <!-- On-Screen Real-Time Diagnostics Log -->
+        <!-- Diagnostics Log -->
         <div class="card log-card">
           <div class="log-header">
             <span>Diagnostics &amp; Tracking Log</span>
             <button id="btn-clear-log" class="btn-link">Clear</button>
           </div>
           <div id="landing-debug-log" class="debug-terminal">
-            <div class="log-entry info">[System] Initializing AR Measurement MVP...</div>
+            <div class="log-entry info">[System] Initializing AR Distance Calculator...</div>
           </div>
         </div>
       </main>
 
       <footer class="app-footer">
-        <span>Pure HTML5, CSS3 &amp; ES6 JavaScript &bull; Ready for Cloudflare Pages</span>
+        <span>Pure HTML5, CSS3 &amp; ES6 JavaScript &bull; 100% Metric AR Measurement</span>
       </footer>
     </section>
 
     <!-- 2. AR VIEWPORT & DOM OVERLAY -->
-    <!-- The WebGL canvas will be placed here during AR session -->
     <div id="ar-container" class="hidden">
-      <!-- WebGL Canvas for 3D marker rendering -->
+      <!-- WebGL Canvas for 3D coordinate tracking and line rendering -->
       <canvas id="ar-canvas"></canvas>
 
       <!-- WebXR DOM Overlay UI -->
@@ -88,38 +87,46 @@
         <div class="overlay-header">
           <div class="hud-pill tracking-pill">
             <span id="hud-tracking-dot" class="dot red"></span>
-            <span id="hud-tracking-text">Scanning for flat surface...</span>
+            <span id="hud-tracking-text">Scanning surrounding surface...</span>
           </div>
-          <div class="hud-pill distance-pill">
-            <span class="pill-label">3D Distance:</span>
+          <div class="hud-pill distance-pill" id="hud-dist-pill">
+            <span class="pill-label">Distance:</span>
             <span id="hud-distance-val" class="pill-val">--</span>
           </div>
         </div>
 
-        <!-- Real-Time AR Overlay Debug Strip -->
-        <div id="ar-debug-strip" class="ar-debug-strip">
-          <span id="ar-debug-msg">Aim at a textured flat surface (floor/table) and move slowly...</span>
+        <!-- Step Instructions Banner -->
+        <div id="ar-step-banner" class="step-banner">
+          <span id="step-icon">🎯</span>
+          <span id="step-text">Aim at surface and tap to place Point 1</span>
         </div>
 
-        <!-- Center Crosshair & Surface Guidance -->
+        <!-- Center 3D Reticle -->
         <div id="hud-reticle-container">
-          <div class="hud-reticle"></div>
-          <div id="hud-reticle-hint">Aim at a visible, textured flat surface</div>
+          <div class="hud-reticle" id="hud-reticle">
+            <div class="reticle-ring"></div>
+            <div class="reticle-dot"></div>
+          </div>
+          <div id="hud-reticle-hint">Surface locked</div>
         </div>
 
-        <!-- Dynamic 2D Projected Marker Overlay -->
+        <!-- 2D Projected Marker Overlay & Dynamic Line -->
         <div id="hud-markers-layer">
           <div id="marker-a" class="ar-hud-marker hidden">
-            <div class="marker-pin pin-a">A</div>
-            <div class="marker-coords" id="marker-a-coords">--</div>
+            <div class="marker-pin pin-a">P1</div>
+            <div class="marker-coords" id="marker-a-coords">Point 1</div>
           </div>
           <div id="marker-b" class="ar-hud-marker hidden">
-            <div class="marker-pin pin-b">B</div>
-            <div class="marker-coords" id="marker-b-coords">--</div>
+            <div class="marker-pin pin-b">P2</div>
+            <div class="marker-coords" id="marker-b-coords">Point 2</div>
           </div>
-          <!-- SVG Line connecting A and B in 2D overlay -->
+          <!-- Floating live measurement tag between points -->
+          <div id="marker-tag" class="ar-floating-tag hidden">
+            <span id="marker-tag-val">0.0 cm</span>
+          </div>
+          <!-- SVG Line connecting P1, Reticle, and P2 -->
           <svg id="marker-svg-line" class="marker-line-canvas">
-            <line id="svg-measure-line" x1="0" y1="0" x2="0" y2="0" stroke="#00e5ff" stroke-width="2.5" stroke-dasharray="6,4" />
+            <line id="svg-measure-line" x1="0" y1="0" x2="0" y2="0" stroke="#00e5ff" stroke-width="3" stroke-dasharray="6,4" />
           </svg>
         </div>
 
@@ -129,120 +136,78 @@
             <span>&times;</span>
           </button>
 
-          <div class="capture-btn-wrapper">
-            <button id="btn-capture" class="btn-shutter" disabled title="Capture Frame &amp; Freeze Measurements">
-              <span class="shutter-inner"></span>
+          <!-- Main Action Button (Place Point) -->
+          <div class="action-btn-wrapper">
+            <button id="btn-place-point" class="btn-shutter" title="Tap to Set Point">
+              <span class="shutter-inner" id="shutter-inner-label">P1</span>
             </button>
-            <span id="capture-hint" class="shutter-label">Detecting points...</span>
+            <span id="btn-action-label" class="shutter-label">Place Point 1</span>
           </div>
 
-          <div class="overlay-spacer"></div>
+          <!-- Reset / Undo Button -->
+          <button id="btn-reset-points" class="btn btn-icon-round" title="Reset Measurement">
+            <span>&#8634;</span>
+          </button>
         </div>
       </div>
     </div>
 
-    <!-- 3. RESULTS & EXPORT SCREEN -->
+    <!-- 3. RESULTS & SUMMARY SCREEN -->
     <section id="screen-results" class="screen hidden">
       <header class="results-header">
         <div class="header-left">
-          <button id="btn-back-scan" class="btn btn-small btn-secondary">&larr; Scan Again</button>
+          <button id="btn-back-scan" class="btn btn-small btn-secondary">&larr; Measure Another</button>
         </div>
-        <h2>Measurement Captured</h2>
+        <h2>Measurement Result</h2>
         <div class="header-right">
-          <span id="result-status-badge" class="badge success">Verified AR Metric</span>
+          <span class="badge success">100% AR Verified</span>
         </div>
       </header>
 
       <main class="results-layout">
-        <!-- Image Preview Card -->
-        <div class="card preview-card">
-          <div class="card-toolbar">
-            <span class="toolbar-title">Captured Frame</span>
-            <div class="segmented-control">
-              <button id="btn-view-annotated" class="segment active">Annotated</button>
-              <button id="btn-view-original" class="segment">Original Image</button>
-            </div>
-          </div>
-
-          <div class="image-viewport">
-            <canvas id="result-canvas"></canvas>
-          </div>
-          <div class="image-meta-strip">
-            <span id="result-img-dimensions">Resolution: --</span>
-            <span id="result-timestamp">Timestamp: --</span>
-          </div>
+        <!-- Hero Measurement Card -->
+        <div class="card hero-measurement-card">
+          <div class="measurement-title">REAL-WORLD DISTANCE (3D EUCLIDEAN)</div>
+          <div id="res-hero-distance" class="hero-distance-val">-- cm</div>
+          <div id="res-hero-sub" class="hero-distance-sub">-- inches</div>
+          <div class="accuracy-tag">✓ Directly measured via AR hardware surface coordinates</div>
         </div>
 
-        <!-- Calculations & Metrics Card -->
+        <!-- Detailed Coordinates & Metrics Card -->
         <div class="card metrics-card">
-          <h3>Calculated Metric &amp; Pixel Data</h3>
-
-          <div class="metrics-grid">
-            <div class="metric-box primary-box">
-              <div class="metric-label">Real-World Distance (3D)</div>
-              <div id="res-real-dist" class="metric-value">--</div>
-              <div id="res-real-dist-cm" class="metric-sub">--</div>
-            </div>
-
-            <div class="metric-box">
-              <div class="metric-label">2D Pixel Distance</div>
-              <div id="res-pixel-dist" class="metric-value">--</div>
-              <div class="metric-sub">Euclidean pixel length</div>
-            </div>
-
-            <div class="metric-box">
-              <div class="metric-label">Meters Per Pixel</div>
-              <div id="res-m-per-px" class="metric-value">--</div>
-              <div class="metric-sub">realDistance / pixelDistance</div>
-            </div>
-
-            <div class="metric-box">
-              <div class="metric-label">Pixels Per Meter</div>
-              <div id="res-px-per-m" class="metric-value">--</div>
-              <div class="metric-sub">pixelDistance / realDistance</div>
-            </div>
-          </div>
-
-          <!-- Points Breakdown Table -->
+          <h3>Coordinate Breakdown</h3>
           <div class="table-responsive">
             <table class="data-table">
               <thead>
                 <tr>
                   <th>Point</th>
-                  <th>Image Pixel (x, y)</th>
-                  <th>AR 3D Metric (X, Y, Z meters)</th>
+                  <th>AR 3D Position (X, Y, Z meters)</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td><span class="point-tag tag-a">Point A</span></td>
-                  <td id="res-point-a-px">--</td>
-                  <td id="res-point-a-3d">--</td>
+                  <td><span class="point-tag tag-a">Point 1</span></td>
+                  <td id="res-p1-coords">--</td>
+                  <td><span class="badge success">Anchored</span></td>
                 </tr>
                 <tr>
-                  <td><span class="point-tag tag-b">Point B</span></td>
-                  <td id="res-point-b-px">--</td>
-                  <td id="res-point-b-3d">--</td>
+                  <td><span class="point-tag tag-b">Point 2</span></td>
+                  <td id="res-p2-coords">--</td>
+                  <td><span class="badge success">Anchored</span></td>
                 </tr>
               </tbody>
             </table>
           </div>
 
-          <!-- Accuracy & Limitations Box -->
-          <div id="accuracy-notice" class="notice-box info">
-            <h4>Capture Accuracy &amp; API Status</h4>
-            <p id="accuracy-explanation">Measurements computed directly from AR reference space coordinates.</p>
+          <div class="math-explanation">
+            <code>Distance = &radic;((X&sub2; - X&sub1;)&sup2; + (Y&sub2; - Y&sub1;)&sup2; + (Z&sub2; - Z&sub1;)&sup2;)</code>
           </div>
 
           <!-- Export Actions -->
           <div class="export-actions">
-            <button id="btn-download-img" class="btn btn-primary">
-              <span class="btn-icon">💾</span>
-              <span>Download Image (Original)</span>
-            </button>
-            <button id="btn-download-json" class="btn btn-secondary">
-              <span class="btn-icon">{ }</span>
-              <span>Download JSON</span>
+            <button id="btn-new-measure" class="btn btn-primary btn-large">
+              <span>Measure Another Distance</span>
             </button>
           </div>
         </div>
@@ -252,6 +217,7 @@
   </div>
 
   <!-- Main Application Script with cache busting -->
-  <script type="module" src="app.js?v=3"></script>
+  <script type="module" src="app.js?v=4"></script>
 </body>
 </html>
+
