@@ -224,35 +224,52 @@ const behindHit = intersectRayWithPlane({ x: 0, y: 0, z: 0 }, behindDir, synthPl
 assert.strictEqual(behindHit, null, 'Point behind camera plane must return null');
 console.log('✓ Behind Camera Test Passed: Properly returned null');
 
-// Test 9: Measurement computation & landmark confidence check (< 0.3)
-const MIN_CONFIDENCE = 0.3;
+// Test 9: Measurement computation & landmark confidence check (MIN_CONFIDENCE = 0.05)
+const MIN_CONFIDENCE = 0.05;
 const mockKeypoints = {
   'waist_left': { u: 720, v: 540, score: 0.88, p3D: kpLeft },
   'waist_right': { u: 1200, v: 540, score: 0.85, p3D: kpRight },
-  'crotch_inseam': { u: 960, v: 750, score: 0.15, p3D: null } // Low confidence (< 0.3)
+  'crotch': { u: 960, v: 750, score: 0.22, p3D: kpLeft },
+  'crotch_inseam': { u: 960, v: 750, score: 0.02, p3D: null } // Below 0.05 threshold
 };
 
-function evaluateMeasurement(label, landmarkA, landmarkB, keypointsMap) {
-  const kpA = keypointsMap[landmarkA];
-  const kpB = keypointsMap[landmarkB];
-  if (!kpA || kpA.score < MIN_CONFIDENCE) {
-    return { valid: false, error: `Couldn't see the ${landmarkA.replace('_', ' ')} clearly, rescan with the trousers flat and well lit` };
+function evaluateMeasurementWithFallback(label, primary, fallbacks, keypointsMap) {
+  let bestPair = null;
+  const pA = keypointsMap[primary[0]];
+  const pB = keypointsMap[primary[1]];
+  if (pA && pB && pA.score >= MIN_CONFIDENCE && pB.score >= MIN_CONFIDENCE && pA.p3D && pB.p3D) {
+    bestPair = [pA, pB];
   }
-  if (!kpB || kpB.score < MIN_CONFIDENCE) {
-    return { valid: false, error: `Couldn't see the ${landmarkB.replace('_', ' ')} clearly, rescan with the trousers flat and well lit` };
+  if (!bestPair && fallbacks) {
+    for (const fb of fallbacks) {
+      const fbA = keypointsMap[fb[0]];
+      const fbB = keypointsMap[fb[1]];
+      if (fbA && fbB && fbA.score >= MIN_CONFIDENCE && fbB.score >= MIN_CONFIDENCE && fbA.p3D && fbB.p3D) {
+        bestPair = [fbA, fbB];
+        break;
+      }
+    }
   }
-  const dist = calculate3DDistance(kpA.p3D, kpB.p3D);
-  return { valid: true, distMeters: dist, distCm: dist * 100, distInches: dist * 39.3701 };
+  if (!bestPair) {
+    return { valid: false, error: `Couldn't see the ${label.toLowerCase()} clearly` };
+  }
+  const dist = calculate3DDistance(bestPair[0].p3D, bestPair[1].p3D);
+  return { valid: true, distMeters: dist, distCm: dist * 100 };
 }
 
-const waistEval = evaluateMeasurement('Waist Width', 'waist_left', 'waist_right', mockKeypoints);
+const waistEval = evaluateMeasurementWithFallback('Waist Width', ['waist_left', 'waist_right'], [], mockKeypoints);
 assert.strictEqual(waistEval.valid, true);
 assert.ok(waistEval.distCm > 30);
 
-const inseamEval = evaluateMeasurement('Inseam', 'crotch_inseam', 'waist_left', mockKeypoints);
-assert.strictEqual(inseamEval.valid, false);
-assert.ok(inseamEval.error.includes("Couldn't see the crotch inseam clearly"));
-console.log('✓ Measurement & Confidence Score (< 0.3) Test Passed!');
+// Inseam with primary ['crotch_inseam', 'waist_left'] failing, but fallback ['crotch', 'waist_left'] succeeding
+const inseamEval = evaluateMeasurementWithFallback(
+  'Inseam',
+  ['crotch_inseam', 'waist_left'],
+  [['crotch', 'waist_left']],
+  mockKeypoints
+);
+assert.strictEqual(inseamEval.valid, true, 'Fallback landmark must resolve when primary score is below 0.05');
+console.log('✓ Measurement & Confidence Score (0.05 + Fallbacks) Test Passed!');
 
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL TESTS PASSED!');
 

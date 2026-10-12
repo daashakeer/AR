@@ -25,8 +25,9 @@ const BACKEND_URL = 'https://dashgaming-slytear.hf.space';
 // Physical fabric offset along plane normal (2mm cloth thickness)
 const FABRIC_OFFSET = 0.002;
 
-// Minimum confidence score threshold for landmark acceptance
-const MIN_CONFIDENCE = 0.3;
+// Minimum confidence score threshold for landmark acceptance.
+// DeepFashion2 HRNet heatmap peak values for garment landmarks typically range between 0.05 and 0.40.
+const MIN_CONFIDENCE = 0.05;
 
 // Debug Mode flag via URL query string (?debug=1)
 const isDebugMode = new URLSearchParams(window.location.search).get('debug') === '1';
@@ -41,6 +42,11 @@ const MEASUREMENTS = [
     id: 'waist_width',
     label: 'Waist Width',
     landmarks: ['waist_left', 'waist_right'],
+    fallbackLandmarks: [
+      ['waist_left', 'waist_center', 2.0],
+      ['waist_center', 'waist_right', 2.0],
+      ['hip_left', 'hip_right', 1.0]
+    ],
     isPrimary: true
   },
   {
@@ -56,25 +62,45 @@ const MEASUREMENTS = [
     id: 'inseam',
     label: 'Inseam',
     landmarks: ['crotch_inseam', 'hem_inner_left'],
-    fallbackLandmarks: ['crotch_inseam', 'hem_inner_right']
+    fallbackLandmarks: [
+      ['crotch_inseam', 'hem_inner_right', 1.0],
+      ['crotch', 'hem_inner_left', 1.0],
+      ['crotch', 'hem_inner_right', 1.0],
+      ['crotch_bottom', 'hem_inner_left', 1.0],
+      ['crotch_bottom', 'hem_inner_right', 1.0]
+    ]
   },
   {
     id: 'outseam',
     label: 'Outseam',
     landmarks: ['waist_left', 'hem_outer_left'],
-    fallbackLandmarks: ['waist_right', 'hem_outer_right']
+    fallbackLandmarks: [
+      ['waist_right', 'hem_outer_right', 1.0],
+      ['waist_center', 'hem_outer_left', 1.0],
+      ['waist_center', 'hem_outer_right', 1.0],
+      ['hip_left', 'hem_outer_left', 1.0]
+    ]
   },
   {
     id: 'thigh_width',
     label: 'Thigh Width',
     landmarks: ['crotch_inseam', 'hip_left'],
-    fallbackLandmarks: ['crotch_inseam', 'hip_right']
+    fallbackLandmarks: [
+      ['crotch_inseam', 'hip_right', 1.0],
+      ['crotch', 'hip_left', 1.0],
+      ['crotch', 'hip_right', 1.0],
+      ['crotch_bottom', 'hip_left', 1.0],
+      ['crotch_bottom', 'hip_right', 1.0]
+    ]
   },
   {
     id: 'hem_width',
     label: 'Hem Width',
     landmarks: ['hem_inner_left', 'hem_outer_left'],
-    fallbackLandmarks: ['hem_inner_right', 'hem_outer_right']
+    fallbackLandmarks: [
+      ['hem_inner_right', 'hem_outer_right', 1.0],
+      ['hem_outer_left', 'hem_inner_right', 1.0]
+    ]
   }
 ];
 
@@ -645,7 +671,28 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
     z: planePoint.z + fabricOffset * planeNormal.z
   };
 
-  return intersectRayWithPlane(origin, dir, offsetPlanePoint, planeNormal);
+  let hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, planeNormal);
+
+  // Fallback 1: Check two-sided plane (opposite normal orientation)
+  if (!hit) {
+    const oppNormal = { x: -planeNormal.x, y: -planeNormal.y, z: -planeNormal.z };
+    hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, oppNormal);
+  }
+
+  // Fallback 2: Horizontal plane intersection at surface elevation
+  if (!hit && Math.abs(dir.y) > 1e-4) {
+    const tHoriz = (offsetPlanePoint.y - origin.y) / dir.y;
+    if (tHoriz > 0.05 && tHoriz < 5.0) {
+      hit = {
+        x: origin.x + tHoriz * dir.x,
+        y: origin.y + tHoriz * dir.y,
+        z: origin.z + tHoriz * dir.z,
+        t: tHoriz
+      };
+    }
+  }
+
+  return hit;
 }
 
 /**
@@ -869,9 +916,20 @@ async function captureFallbackCameraFrame() {
     const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
     return { width: w, height: h, blob, dataUrl };
   } catch (camErr) {
-    // Canvas fallback
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    // Canvas fallback: capture the active WebGL AR canvas
+    const arCanvas = elements.arCanvas;
+    if (arCanvas && arCanvas.width > 0 && arCanvas.height > 0) {
+      const dataUrl = arCanvas.toDataURL('image/jpeg', 0.9);
+      const binStr = atob(dataUrl.split(',')[1]);
+      const len = binStr.length;
+      const u8Arr = new Uint8Array(len);
+      for (let i = 0; i < len; i++) u8Arr[i] = binStr.charCodeAt(i);
+      const blob = new Blob([u8Arr], { type: 'image/jpeg' });
+      return { width: arCanvas.width, height: arCanvas.height, blob, dataUrl };
+    }
+
+    const w = window.innerWidth || 720;
+    const h = window.innerHeight || 1280;
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
     const ctx = c.getContext('2d');
@@ -1005,62 +1063,67 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
           subLabel: m.subLabel
         };
       } else {
-        calculated[m.id] = { id: m.id, label: m.label, valid: false };
+        calculated[m.id] = { id: m.id, label: m.label, valid: false, reason: 'Waist width needed' };
       }
       continue;
     }
 
     // Direct pairwise landmarks
-    let lmA = m.landmarks[0];
-    let lmB = m.landmarks[1];
+    let bestPair = null;
+    let bestDist = 0;
 
-    let kpA = keypointsMap[lmA];
-    let kpB = keypointsMap[lmB];
+    // 1. Check primary landmarks
+    const pA = keypointsMap[m.landmarks[0]];
+    const pB = keypointsMap[m.landmarks[1]];
+    if (pA && pB && pA.score >= MIN_CONFIDENCE && pB.score >= MIN_CONFIDENCE && pA.p3D && pB.p3D) {
+      bestPair = [pA, pB];
+      bestDist = calculate3DDistance(pA.p3D, pB.p3D);
+    }
 
-    // Check fallback landmarks if primary score is low
-    if ((!kpA || kpA.score < MIN_CONFIDENCE || !kpB || kpB.score < MIN_CONFIDENCE) && m.fallbackLandmarks) {
-      const fbA = keypointsMap[m.fallbackLandmarks[0]];
-      const fbB = keypointsMap[m.fallbackLandmarks[1]];
-      if (fbA && fbA.score >= MIN_CONFIDENCE && fbB && fbB.score >= MIN_CONFIDENCE) {
-        lmA = m.fallbackLandmarks[0];
-        lmB = m.fallbackLandmarks[1];
-        kpA = fbA;
-        kpB = fbB;
+    // 2. Check fallback landmarks if primary pair is unavailable
+    if (!bestPair && m.fallbackLandmarks) {
+      for (const fb of m.fallbackLandmarks) {
+        const nameA = fb[0];
+        const nameB = fb[1];
+        const mult = fb[2] || 1.0;
+        const fbA = keypointsMap[nameA];
+        const fbB = keypointsMap[nameB];
+        if (fbA && fbB && fbA.score >= MIN_CONFIDENCE && fbB.score >= MIN_CONFIDENCE && fbA.p3D && fbB.p3D) {
+          bestPair = [fbA, fbB];
+          bestDist = calculate3DDistance(fbA.p3D, fbB.p3D) * mult;
+          break;
+        }
       }
     }
 
     const friendlyName = m.label.toLowerCase();
 
-    if (!kpA || kpA.score < MIN_CONFIDENCE) {
-      state.measurementNotices.push(`Couldn't see the ${friendlyName} clearly, rescan with the trousers flat and well lit.`);
-      calculated[m.id] = { id: m.id, label: m.label, valid: false };
-      continue;
-    }
+    if (bestPair) {
+      calculated[m.id] = {
+        id: m.id,
+        label: m.label,
+        valid: true,
+        distMeters: bestDist,
+        distCm: bestDist * 100,
+        distInches: bestDist * 39.3701,
+        pointA: bestPair[0].p3D,
+        pointB: bestPair[1].p3D
+      };
+    } else {
+      const kpA = keypointsMap[m.landmarks[0]];
+      const kpB = keypointsMap[m.landmarks[1]];
+      let failReason = 'Not detected';
+      if (!kpA || kpA.score < MIN_CONFIDENCE) {
+        failReason = `Low conf (${Math.round((kpA?.score || 0) * 100)}%)`;
+      } else if (!kpB || kpB.score < MIN_CONFIDENCE) {
+        failReason = `Low conf (${Math.round((kpB?.score || 0) * 100)}%)`;
+      } else if (!kpA.p3D || !kpB.p3D) {
+        failReason = 'Unproject error';
+      }
 
-    if (!kpB || kpB.score < MIN_CONFIDENCE) {
-      state.measurementNotices.push(`Couldn't see the ${friendlyName} clearly, rescan with the trousers flat and well lit.`);
-      calculated[m.id] = { id: m.id, label: m.label, valid: false };
-      continue;
+      state.measurementNotices.push(`Couldn't see the ${friendlyName} clearly (${failReason}), rescan with the trousers flat and well lit.`);
+      calculated[m.id] = { id: m.id, label: m.label, valid: false, reason: failReason };
     }
-
-    if (!kpA.p3D || !kpB.p3D) {
-      state.measurementNotices.push(`Could not compute 3D geometry for ${friendlyName}. Ensure surface is flat.`);
-      calculated[m.id] = { id: m.id, label: m.label, valid: false };
-      continue;
-    }
-
-    // Physical 3D Euclidean distance
-    const distMeters = calculate3DDistance(kpA.p3D, kpB.p3D);
-    calculated[m.id] = {
-      id: m.id,
-      label: m.label,
-      valid: true,
-      distMeters: distMeters,
-      distCm: distMeters * 100,
-      distInches: distMeters * 39.3701,
-      pointA: kpA.p3D,
-      pointB: kpB.p3D
-    };
   }
 
   state.calculatedMeasurements = calculated;
@@ -1087,7 +1150,7 @@ function displayGarmentPins(points) {
     pin.id = `gpin-${pt.name}`;
     pin.innerHTML = `
       <div class="garment-dot"></div>
-      <div class="garment-label">${pt.name.replace('_', ' ')} (${Math.round(pt.score * 100)}%)</div>
+      <div class="garment-label">${pt.name.replace(/_/g, ' ')} (${Math.round(pt.score * 100)}%)</div>
     `;
     elements.garmentPinsContainer.appendChild(pin);
   }
@@ -1144,59 +1207,36 @@ function showGarmentResults(backendData, snapshot) {
 
   const m = state.calculatedMeasurements;
 
-  // Waist Width
-  if (m.waist_width && m.waist_width.valid) {
-    elements.resWaistWidth.textContent = `${m.waist_width.distCm.toFixed(1)} cm`;
-    elements.resWaistWidthSub.textContent = `${m.waist_width.distInches.toFixed(1)} in`;
-    elements.hudDistanceVal.textContent = `${m.waist_width.distCm.toFixed(1)} cm`;
-  } else {
-    elements.resWaistWidth.textContent = '--';
-    elements.resWaistWidthSub.textContent = 'Not detected';
-  }
+  const updateCard = (valEl, subEl, item) => {
+    if (!valEl || !subEl) return;
+    if (item && item.valid) {
+      valEl.textContent = `${item.distCm.toFixed(1)} cm`;
+      subEl.textContent = `${item.distInches.toFixed(1)} in`;
+    } else {
+      valEl.textContent = '--';
+      subEl.textContent = item?.reason || 'Not detected';
+    }
+  };
 
-  // Waist Circumference
+  // Waist Width & Circ
+  updateCard(elements.resWaistWidth, elements.resWaistWidthSub, m.waist_width);
   if (m.waist_circ && m.waist_circ.valid) {
     elements.resWaistCirc.textContent = `${m.waist_circ.distCm.toFixed(1)} cm (${m.waist_circ.distInches.toFixed(1)} in)`;
     elements.resWaistCircSub.textContent = 'approx. (flat)';
   } else {
     elements.resWaistCirc.textContent = '--';
+    elements.resWaistCircSub.textContent = m.waist_circ?.reason || 'Not detected';
   }
 
-  // Inseam
-  if (m.inseam && m.inseam.valid) {
-    elements.resInseam.textContent = `${m.inseam.distCm.toFixed(1)} cm`;
-    elements.resInseamSub.textContent = `${m.inseam.distInches.toFixed(1)} in`;
-  } else {
-    elements.resInseam.textContent = '--';
-    elements.resInseamSub.textContent = 'Not detected';
+  if (m.waist_width && m.waist_width.valid && elements.hudDistanceVal) {
+    elements.hudDistanceVal.textContent = `${m.waist_width.distCm.toFixed(1)} cm`;
   }
 
-  // Outseam
-  if (m.outseam && m.outseam.valid) {
-    elements.resOutseam.textContent = `${m.outseam.distCm.toFixed(1)} cm`;
-    elements.resOutseamSub.textContent = `${m.outseam.distInches.toFixed(1)} in`;
-  } else {
-    elements.resOutseam.textContent = '--';
-    elements.resOutseamSub.textContent = 'Not detected';
-  }
-
-  // Thigh Width
-  if (m.thigh_width && m.thigh_width.valid) {
-    elements.resThighWidth.textContent = `${m.thigh_width.distCm.toFixed(1)} cm`;
-    elements.resThighWidthSub.textContent = `${m.thigh_width.distInches.toFixed(1)} in`;
-  } else {
-    elements.resThighWidth.textContent = '--';
-    elements.resThighWidthSub.textContent = 'Not detected';
-  }
-
-  // Hem Width
-  if (m.hem_width && m.hem_width.valid) {
-    elements.resHemWidth.textContent = `${m.hem_width.distCm.toFixed(1)} cm`;
-    elements.resHemWidthSub.textContent = `${m.hem_width.distInches.toFixed(1)} in`;
-  } else {
-    elements.resHemWidth.textContent = '--';
-    elements.resHemWidthSub.textContent = 'Not detected';
-  }
+  // Inseam, Outseam, Thigh, Hem
+  updateCard(elements.resInseam, elements.resInseamSub, m.inseam);
+  updateCard(elements.resOutseam, elements.resOutseamSub, m.outseam);
+  updateCard(elements.resThighWidth, elements.resThighWidthSub, m.thigh_width);
+  updateCard(elements.resHemWidth, elements.resHemWidthSub, m.hem_width);
 
   // Friendly Low-Confidence Notices
   if (state.measurementNotices && state.measurementNotices.length > 0) {
@@ -1217,7 +1257,7 @@ function showGarmentResults(backendData, snapshot) {
       const confBadge = kp.score >= MIN_CONFIDENCE ? `<span class="badge success">${confPct}%</span>` : `<span class="badge error">${confPct}%</span>`;
       return `
         <tr>
-          <td><span class="point-tag tag-a">${kp.name.replace('_', ' ')}</span></td>
+          <td><span class="point-tag tag-a">${kp.name.replace(/_/g, ' ')}</span></td>
           <td><code>${coordStr}</code></td>
           <td>${confBadge}</td>
         </tr>
@@ -1225,11 +1265,12 @@ function showGarmentResults(backendData, snapshot) {
     }).join('');
   }
 
-  // Debug Viewer for ?debug=1
-  if (isDebugMode && elements.debugDrawer && elements.debugCanvas) {
+  // Always show visual 2D keypoints inspection drawer on results screen
+  if (elements.debugDrawer && elements.debugCanvas) {
     elements.debugDrawer.classList.remove('hidden');
     renderDebug2DView(snapshot, backendData);
   }
+}
 }
 
 /**
