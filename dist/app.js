@@ -4,8 +4,9 @@
  * 
  * Features:
  * 1. WebXR 'immersive-ar' session with 'hit-test' and 'dom-overlay'.
- * 2. Real-time environment surface scanning (floor, table, wall, objects).
- * 3. Interactive 2-Point Selection State Machine (Point 1 -> Point 2).
+ * 2. Real-time environment surface scanning (floor, table, desk, wall, fabric).
+ * 3. Direct On-Screen Tap to Plot Points: Tap anywhere on the camera view to anchor
+ *    Point 1 and Point 2 directly on the detected surface — NO NEED TO MOVE THE PHONE!
  * 4. Dynamic measuring line & floating distance badge stretching in real-time.
  * 5. 100% Accurate 3D Euclidean physical distance (Meters / Centimeters / Inches) without any reference objects.
  * 6. WebXR desktop emulator / simulator mode for instant testing on any device.
@@ -13,8 +14,8 @@
 
 // Measurement Lifecycle States
 const STATES = {
-  SCANNING: 'SCANNING',     // Stage 0: Aiming at surface to place Point 1
-  POINT1_SET: 'POINT1_SET', // Stage 1: Point 1 placed; aiming at target to place Point 2
+  SCANNING: 'SCANNING',     // Stage 0: Scanning surface; tap anywhere on screen to place Point 1
+  POINT1_SET: 'POINT1_SET', // Stage 1: Point 1 placed; tap target on screen to place Point 2
   LOCKED: 'LOCKED'          // Stage 2: Point 1 and Point 2 placed; distance locked
 };
 
@@ -27,16 +28,26 @@ const state = {
   hitTestSource: null,
   gl: null,
 
+  // Detected Surface Plane Equation: plane.normal · (P - plane.point) = 0
+  surfacePlane: null,       // { point: {x,y,z}, normal: {x,y,z}, timestamp }
+  currentReticlePose: null, // { x, y, z, matrix }
+
   // Measurement State
   measurementState: STATES.SCANNING,
-  currentReticlePose: null, // { x, y, z, matrix }
   point1: null,             // { x, y, z } in physical meters
   point2: null,             // { x, y, z } in physical meters
+  point1Pixel: null,        // { x, y } screen pixel coordinates
+  point2Pixel: null,        // { x, y } screen pixel coordinates
   finalDistanceMeters: 0,
   
-  // Last Camera Matrices for 3D-to-2D projection
+  // Last Camera Matrices for 3D-to-2D projection & unprojection
+  lastView: null,
   lastViewMatrix: null,
   lastProjMatrix: null,
+  lastCameraMatrix: null,
+
+  // Pointer tracking for dynamic live measuring
+  activePointer: null,      // { x, y }
 
   // Simulator Mode State
   isSimulator: false,
@@ -153,7 +164,7 @@ async function checkCompatibility() {
       updateBadge(elements.badgeHitTest, 'Hit-Test: Ready', 'success');
       if (elements.compatibilityMessage) {
         elements.compatibilityMessage.innerHTML = 
-          `AR sensors ready! Click <strong>Start AR Measurement</strong> to scan your surrounding and place 2 points.`;
+          `AR sensors ready! Click <strong>Start AR Measurement</strong> to scan your surrounding and tap points on screen.`;
       }
       elements.btnStartScan.disabled = false;
     } else {
@@ -163,7 +174,7 @@ async function checkCompatibility() {
       if (elements.compatibilityMessage) {
         elements.compatibilityMessage.innerHTML = 
           `WebXR is present, but <strong>immersive-ar</strong> is unavailable on this device.<br>` +
-          `Test all 2-point measurement features using <strong>Test in WebXR Emulator Mode</strong> below.`;
+          `Test all tap-to-measure features using <strong>Test in WebXR Emulator Mode</strong> below.`;
       }
     }
   } catch (err) {
@@ -295,7 +306,7 @@ function exitAR() {
 }
 
 /* ==========================================================================
-   3. WebXR Render Loop & Surface Hit-Testing
+   3. WebXR Render Loop & Surface Plane Hit-Testing
    ========================================================================== */
 
 function onXRFrame(time, frame) {
@@ -320,11 +331,12 @@ function onXRFrame(time, frame) {
   const view = pose.views[0];
   if (!view) return;
 
-  // Cache matrices for 3D to 2D screen projection
+  state.lastView = view;
   state.lastViewMatrix = new Float32Array(view.transform.inverse.matrix);
   state.lastProjMatrix = new Float32Array(view.projectionMatrix);
+  state.lastCameraMatrix = new Float32Array(view.transform.matrix);
 
-  // 1. Hit-Test Against Real Physical Environment Surfaces
+  // 1. Continuous Hit-Test Against Environment Surfaces
   let surfaceHitFound = false;
   if (state.hitTestSource) {
     const hitResults = frame.getHitTestResults(state.hitTestSource);
@@ -333,30 +345,39 @@ function onXRFrame(time, frame) {
       if (hitPose) {
         surfaceHitFound = true;
         const pos = hitPose.transform.position;
+        const matrix = hitPose.transform.matrix;
+
         state.currentReticlePose = {
           x: pos.x,
           y: pos.y,
           z: pos.z,
-          matrix: hitPose.transform.matrix
+          matrix: matrix
+        };
+
+        // Extract surface plane equation (Y-axis of orientation matrix is normal vector)
+        const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
+        state.surfacePlane = {
+          point: { x: pos.x, y: pos.y, z: pos.z },
+          normal: { x: matrix[4] / nLen, y: matrix[5] / nLen, z: matrix[6] / nLen },
+          timestamp: time
         };
       }
     }
   }
 
-  updateTrackingStatus(surfaceHitFound);
+  updateTrackingStatus(surfaceHitFound || state.surfacePlane !== null);
 
   // 2. Render HUD, Reticle, Markers, and Dynamic Measuring Line
   renderMeasurementHUD(view, window.innerWidth, window.innerHeight);
 }
 
 /* ==========================================================================
-   4. 3D Euclidean Distance & Projection Mathematics
+   4. 3D Euclidean Distance & Mathematical Screen Unprojection
    ========================================================================== */
 
 /**
  * 100% Accurate 3D Physical Euclidean Distance
  * D = sqrt((X2 - X1)^2 + (Y2 - Y1)^2 + (Z2 - Z1)^2)
- * Both points are expressed in metric coordinates (meters) from WebXR ARCore/ARKit hit-testing.
  */
 function calculate3DDistance(p1, p2) {
   if (!p1 || !p2) return 0;
@@ -368,26 +389,86 @@ function calculate3DDistance(p1, p2) {
 }
 
 /**
+ * Unprojects a 2D screen tap pixel (pixelX, pixelY) into a 3D ray in world space,
+ * and intersects with the detected physical AR surface plane.
+ * Allows tapping anywhere on screen without moving the phone!
+ */
+function screenPixelTo3DPlanePoint(pixelX, pixelY, screenW, screenH) {
+  if (state.surfacePlane && state.lastCameraMatrix && state.lastProjMatrix) {
+    const camMatrix = state.lastCameraMatrix;
+    const projMatrix = state.lastProjMatrix;
+
+    // 1. Normalized Device Coordinates (NDC) [-1, 1]
+    const ndcX = (pixelX / screenW) * 2 - 1;
+    const ndcY = 1 - (pixelY / screenH) * 2;
+
+    // 2. Camera View Space Ray Direction
+    const dxCam = (ndcX + (projMatrix[8] || 0)) / projMatrix[0];
+    const dyCam = (ndcY + (projMatrix[9] || 0)) / projMatrix[5];
+    const dzCam = -1.0;
+
+    // 3. Transform to World Space using Camera Transform Matrix
+    const rX = camMatrix[0] * dxCam + camMatrix[4] * dyCam + camMatrix[8] * dzCam;
+    const rY = camMatrix[1] * dxCam + camMatrix[5] * dyCam + camMatrix[9] * dzCam;
+    const rZ = camMatrix[2] * dxCam + camMatrix[6] * dyCam + camMatrix[10] * dzCam;
+
+    const rLen = Math.hypot(rX, rY, rZ);
+    if (rLen > 1e-6) {
+      const dirX = rX / rLen;
+      const dirY = rY / rLen;
+      const dirZ = rZ / rLen;
+
+      const camX = camMatrix[12];
+      const camY = camMatrix[13];
+      const camZ = camMatrix[14];
+
+      const planeP = state.surfacePlane.point;
+      const planeN = state.surfacePlane.normal;
+
+      // 4. Ray-Plane Intersection: planeN · (planeP - (camPos + t * dir)) = 0
+      const denom = planeN.x * dirX + planeN.y * dirY + planeN.z * dirZ;
+      if (Math.abs(denom) > 1e-4) {
+        const t = (planeN.x * (planeP.x - camX) + planeN.y * (planeP.y - camY) + planeN.z * (planeP.z - camZ)) / denom;
+        if (t > 0.05 && t < 10.0) {
+          return {
+            x: camX + t * dirX,
+            y: camY + t * dirY,
+            z: camZ + t * dirZ
+          };
+        }
+      }
+    }
+  }
+
+  // Fallback: If tap is near center or plane raycast not available, use currentReticlePose
+  if (state.currentReticlePose) {
+    return {
+      x: state.currentReticlePose.x,
+      y: state.currentReticlePose.y,
+      z: state.currentReticlePose.z
+    };
+  }
+
+  return null;
+}
+
+/**
  * Projects a 3D physical world point (X, Y, Z meters) to 2D viewport pixels
- * Using the camera's viewMatrix and projectionMatrix for this frame.
  */
 function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth, screenHeight) {
   const x = point3D.x;
   const y = point3D.y;
   const z = point3D.z;
 
-  // 1. World Space -> Camera View Space
   const cx = viewMatrix[0] * x + viewMatrix[4] * y + viewMatrix[8]  * z + viewMatrix[12];
   const cy = viewMatrix[1] * x + viewMatrix[5] * y + viewMatrix[9]  * z + viewMatrix[13];
   const cz = viewMatrix[2] * x + viewMatrix[6] * y + viewMatrix[10] * z + viewMatrix[14];
   const cw = viewMatrix[3] * x + viewMatrix[7] * y + viewMatrix[11] * z + viewMatrix[15];
 
-  // Point behind or too close to camera plane
   if (cz >= -0.01) {
     return { valid: false, reason: 'Behind camera' };
   }
 
-  // 2. View Space -> Clip Space
   const clipX = projectionMatrix[0] * cx + projectionMatrix[4] * cy + projectionMatrix[8]  * cz + projectionMatrix[12] * cw;
   const clipY = projectionMatrix[1] * cx + projectionMatrix[5] * cy + projectionMatrix[9]  * cz + projectionMatrix[13] * cw;
   const clipW = projectionMatrix[3] * cx + projectionMatrix[7] * cy + projectionMatrix[11] * cz + projectionMatrix[15] * cw;
@@ -396,11 +477,9 @@ function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth,
     return { valid: false, reason: 'Invalid clip W' };
   }
 
-  // 3. Normalized Device Coordinates (NDC)
   const ndcX = clipX / clipW;
   const ndcY = clipY / clipW;
 
-  // 4. Map NDC [-1, 1] to Screen Pixels [0, W], [0, H]
   const xPixel = Math.round(((ndcX + 1) / 2) * screenWidth);
   const yPixel = Math.round(((1 - ndcY) / 2) * screenHeight);
 
@@ -416,43 +495,46 @@ function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth,
 }
 
 /* ==========================================================================
-   5. Interactive 2-Point Selection & HUD Feedback
+   5. Interactive Tap-to-Plot Point Selection
    ========================================================================== */
 
-function handlePlacePointAction() {
+function handlePlacePointAction(tapScreenX, tapScreenY) {
+  const screenW = window.innerWidth;
+  const screenH = window.innerHeight;
+
+  // Use tap coordinates if user tapped screen, otherwise default to screen center
+  const posX = (tapScreenX !== undefined) ? tapScreenX : (screenW / 2);
+  const posY = (tapScreenY !== undefined) ? tapScreenY : (screenH / 2);
+
   if (state.measurementState === STATES.SCANNING) {
-    // Try to anchor Point 1 at current reticle
-    if (!state.currentReticlePose) {
-      flashHint('No surface detected yet. Aim slowly at floor, table, or wall.');
+    const pt3D = screenPixelTo3DPlanePoint(posX, posY, screenW, screenH);
+    if (!pt3D) {
+      flashHint('No surface detected at tap. Aim camera at surface first.');
       return;
     }
-    state.point1 = {
-      x: state.currentReticlePose.x,
-      y: state.currentReticlePose.y,
-      z: state.currentReticlePose.z
-    };
+
+    state.point1 = pt3D;
+    state.point1Pixel = { x: posX, y: posY };
     state.measurementState = STATES.POINT1_SET;
     updateUIState();
     logMsg(`Point 1 anchored at [${state.point1.x.toFixed(3)}, ${state.point1.y.toFixed(3)}, ${state.point1.z.toFixed(3)}]`, 'info');
 
   } else if (state.measurementState === STATES.POINT1_SET) {
-    // Try to anchor Point 2 at current reticle
-    if (!state.currentReticlePose) {
-      flashHint('No surface detected at target. Aim at the end point.');
+    const pt3D = screenPixelTo3DPlanePoint(posX, posY, screenW, screenH);
+    if (!pt3D) {
+      flashHint('No surface detected at tap. Tap on the detected surface.');
       return;
     }
-    state.point2 = {
-      x: state.currentReticlePose.x,
-      y: state.currentReticlePose.y,
-      z: state.currentReticlePose.z
-    };
+
+    state.point2 = pt3D;
+    state.point2Pixel = { x: posX, y: posY };
     state.finalDistanceMeters = calculate3DDistance(state.point1, state.point2);
     state.measurementState = STATES.LOCKED;
     updateUIState();
     logMsg(`Point 2 anchored. Final distance: ${(state.finalDistanceMeters * 100).toFixed(2)} cm`, 'success');
 
   } else if (state.measurementState === STATES.LOCKED) {
-    // User clicked View Results
+    // Tapping again opens the Results Screen
     showResultsScreen();
   }
 }
@@ -461,28 +543,31 @@ function resetMeasurement() {
   state.measurementState = STATES.SCANNING;
   state.point1 = null;
   state.point2 = null;
+  state.point1Pixel = null;
+  state.point2Pixel = null;
   state.finalDistanceMeters = 0;
+  state.activePointer = null;
   updateUIState();
   hideMarkersAndLine();
-  logMsg('Measurement reset. Aim at surface to place Point 1.', 'info');
+  logMsg('Measurement reset. Tap anywhere on screen to place Point 1.', 'info');
 }
 
 function updateUIState() {
   if (state.measurementState === STATES.SCANNING) {
     // Stage 0
     if (elements.stepIcon) elements.stepIcon.textContent = '🎯';
-    if (elements.stepText) elements.stepText.textContent = 'Aim at surface and tap to place Point 1';
+    if (elements.stepText) elements.stepText.textContent = 'Tap Point 1 directly on the screen';
     if (elements.shutterInnerLabel) elements.shutterInnerLabel.textContent = 'P1';
-    if (elements.btnActionLabel) elements.btnActionLabel.textContent = 'Place Point 1';
+    if (elements.btnActionLabel) elements.btnActionLabel.textContent = 'Tap P1';
     if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '--';
     if (elements.btnResetPoints) elements.btnResetPoints.style.opacity = '0.5';
 
   } else if (state.measurementState === STATES.POINT1_SET) {
     // Stage 1
     if (elements.stepIcon) elements.stepIcon.textContent = '📍';
-    if (elements.stepText) elements.stepText.textContent = 'Move to target and tap to place Point 2';
+    if (elements.stepText) elements.stepText.textContent = 'Tap Point 2 directly on the screen';
     if (elements.shutterInnerLabel) elements.shutterInnerLabel.textContent = 'P2';
-    if (elements.btnActionLabel) elements.btnActionLabel.textContent = 'Place Point 2';
+    if (elements.btnActionLabel) elements.btnActionLabel.textContent = 'Tap P2';
     if (elements.btnResetPoints) elements.btnResetPoints.style.opacity = '1.0';
 
   } else if (state.measurementState === STATES.LOCKED) {
@@ -503,8 +588,8 @@ function updateTrackingStatus(hasSurface) {
 
   if (hasSurface) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = 'Surface locked';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Surface ready';
+    elements.hudTrackingText.textContent = 'Surface ready (Tap screen to plot)';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Surface locked - tap anywhere';
   } else {
     elements.hudTrackingDot.className = 'dot amber';
     elements.hudTrackingText.textContent = 'Scanning surrounding surface...';
@@ -531,16 +616,13 @@ function renderMeasurementHUD(view, width, height) {
 
   if (!viewMatrix || !projMatrix) return;
 
-  const reticleX = width / 2;
-  const reticleY = height / 2;
-
   // Case 1: Scanning (No points placed)
   if (state.measurementState === STATES.SCANNING) {
     hideMarkersAndLine();
     return;
   }
 
-  // Case 2: Point 1 placed; moving to Point 2 (Measuring in real-time)
+  // Case 2: Point 1 placed; user aiming or moving towards Point 2
   if (state.measurementState === STATES.POINT1_SET) {
     const proj1 = projectPointToPixel(state.point1, viewMatrix, projMatrix, width, height);
 
@@ -551,16 +633,20 @@ function renderMeasurementHUD(view, width, height) {
     }
     elements.markerB.classList.add('hidden');
 
-    // Dynamic line stretches from Point 1 to the aiming Reticle
+    // Dynamic line stretches from Point 1 to the active pointer or screen center
+    const targetX = state.activePointer ? state.activePointer.x : (width / 2);
+    const targetY = state.activePointer ? state.activePointer.y : (height / 2);
+
     let currentDistMeters = 0;
-    if (state.currentReticlePose) {
-      currentDistMeters = calculate3DDistance(state.point1, state.currentReticlePose);
+    const ptLive = screenPixelTo3DPlanePoint(targetX, targetY, width, height);
+    if (ptLive) {
+      currentDistMeters = calculate3DDistance(state.point1, ptLive);
     }
 
     if (proj1.valid) {
-      drawLine(proj1.xPixel, proj1.yPixel, reticleX, reticleY);
-      const midX = (proj1.xPixel + reticleX) / 2;
-      const midY = (proj1.yPixel + reticleY) / 2;
+      drawLine(proj1.xPixel, proj1.yPixel, targetX, targetY);
+      const midX = (proj1.xPixel + targetX) / 2;
+      const midY = (proj1.yPixel + targetY) / 2;
       showFloatingTag(midX, midY, currentDistMeters);
     }
 
@@ -672,7 +758,7 @@ function returnToScanFromResults() {
 }
 
 /* ==========================================================================
-   7. WebXR Desktop Simulator Mode (For testing without ARCore phone)
+   7. WebXR Desktop Simulator Mode (For testing tap-to-measure on desktop)
    ========================================================================== */
 
 async function startSimulatorMode() {
@@ -687,25 +773,6 @@ async function startSimulatorMode() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
   const ctx = canvas.getContext('2d');
-
-  // Try accessing webcam feed for realistic simulated background
-  try {
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-      });
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      video.autoplay = true;
-      video.playsInline = true;
-      await video.play();
-      state.simVideo = video;
-    }
-  } catch (e) {
-    logMsg('Camera feed unavailable for simulator, using virtual AR grid.', 'info');
-  }
-
-  resetMeasurement();
 
   // Simulated 3D Camera Projection Matrices (FOV 60 deg, 16:9)
   const aspect = canvas.width / canvas.height;
@@ -726,17 +793,38 @@ async function startSimulatorMode() {
 
   state.lastViewMatrix = viewMatrix;
   state.lastProjMatrix = projMatrix;
+  state.lastCameraMatrix = viewMatrix;
 
-  let simTime = 0;
+  // Simulated surface plane at Z = -1.0 meter facing camera
+  state.surfacePlane = {
+    point: { x: 0, y: 0, z: -1.0 },
+    normal: { x: 0, y: 0, z: 1.0 },
+    timestamp: performance.now()
+  };
+
+  resetMeasurement();
+
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.autoplay = true;
+      video.playsInline = true;
+      await video.play();
+      state.simVideo = video;
+    }
+  } catch (e) {
+    logMsg('Camera feed unavailable for simulator, using virtual AR grid.', 'info');
+  }
 
   state.simulatorInterval = setInterval(() => {
-    simTime += 0.03;
-
     // Draw background
     if (state.simVideo && state.simVideo.readyState >= 2) {
       ctx.drawImage(state.simVideo, 0, 0, canvas.width, canvas.height);
     } else {
-      // Draw simulated 3D floor perspective grid
       ctx.fillStyle = '#0a0d14';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -756,22 +844,6 @@ async function startSimulatorMode() {
         ctx.stroke();
       }
     }
-
-    // Simulate 3D surface hit based on pointer/center reticle position
-    // Map screen pixel (X, Y) to a simulated 3D plane at Z ≈ -1.0 meter
-    const normX = (state.simPointer.x / canvas.width) * 2 - 1;
-    const normY = -((state.simPointer.y / canvas.height) * 2 - 1);
-    const planeDepth = 1.0; // 1 meter away
-
-    const simX = (normX * (aspect / f)) * planeDepth;
-    const simY = (normY / f) * planeDepth;
-    const simZ = -planeDepth;
-
-    state.currentReticlePose = {
-      x: simX,
-      y: simY,
-      z: simZ
-    };
 
     updateTrackingStatus(true);
 
@@ -814,21 +886,23 @@ function setupEventListeners() {
   // Start Emulator / Simulator
   elements.btnStartSim.addEventListener('click', startSimulatorMode);
 
-  // Main Action Shutter Button: Place Point 1 -> Place Point 2 -> View Results
+  // Shutter button fallback (places point at screen center)
   elements.btnPlacePoint.addEventListener('click', (e) => {
     e.stopPropagation();
-    handlePlacePointAction();
+    handlePlacePointAction(window.innerWidth / 2, window.innerHeight / 2);
   });
 
-  // Tap anywhere on overlay to place point (convenience for mobile users)
-  elements.arOverlay.addEventListener('click', (e) => {
-    // Only trigger if clicking directly on overlay backdrop, not buttons
+  // DIRECT SCREEN TAP: Tap anywhere on overlay to plot point directly under finger
+  elements.arOverlay.addEventListener('pointerdown', (e) => {
+    // Ignore button clicks
     if (e.target.closest('button')) return;
-    handlePlacePointAction();
+    state.activePointer = { x: e.clientX, y: e.clientY };
+    handlePlacePointAction(e.clientX, e.clientY);
   });
 
-  // Pointer movement in simulator mode
-  window.addEventListener('pointermove', (e) => {
+  // Pointer movement updates active live target
+  elements.arOverlay.addEventListener('pointermove', (e) => {
+    state.activePointer = { x: e.clientX, y: e.clientY };
     if (state.isSimulator) {
       state.simPointer.x = e.clientX;
       state.simPointer.y = e.clientY;

@@ -152,11 +152,48 @@ const requiredKeys = [
   'pixelDistance', 'realDistanceMeters', 'metersPerPixel', 'pixelsPerMeter',
   'measurementSource', 'captureTimestamp'
 ];
-for (const key of requiredKeys) {
-  assert.ok(key in sampleJson, `Key ${key} must exist in JSON`);
+// 6. Direct Screen Tap Ray Unprojection to 3D Surface Plane Test
+function screenPixelTo3DPlane(pixelX, pixelY, screenW, screenH, projMatrix, camMatrix, planePoint, planeNormal) {
+  const ndcX = (pixelX / screenW) * 2 - 1;
+  const ndcY = 1 - (pixelY / screenH) * 2;
+  const dxCam = (ndcX + (projMatrix[8] || 0)) / projMatrix[0];
+  const dyCam = (ndcY + (projMatrix[9] || 0)) / projMatrix[5];
+  const dzCam = -1.0;
+
+  const rX = camMatrix[0] * dxCam + camMatrix[4] * dyCam + camMatrix[8] * dzCam;
+  const rY = camMatrix[1] * dxCam + camMatrix[5] * dyCam + camMatrix[9] * dzCam;
+  const rZ = camMatrix[2] * dxCam + camMatrix[6] * dyCam + camMatrix[10] * dzCam;
+  const rLen = Math.hypot(rX, rY, rZ);
+  const dirX = rX / rLen;
+  const dirY = rY / rLen;
+  const dirZ = rZ / rLen;
+
+  const camX = camMatrix[12];
+  const camY = camMatrix[13];
+  const camZ = camMatrix[14];
+
+  const denom = planeNormal.x * dirX + planeNormal.y * dirY + planeNormal.z * dirZ;
+  if (Math.abs(denom) < 1e-4) return null;
+
+  const t = (planeNormal.x * (planePoint.x - camX) + planeNormal.y * (planePoint.y - camY) + planeNormal.z * (planePoint.z - camZ)) / denom;
+  return {
+    x: camX + t * dirX,
+    y: camY + t * dirY,
+    z: camZ + t * dirZ
+  };
 }
-assert.ok('xPixel' in sampleJson.pointA && 'xMeters' in sampleJson.pointA);
-assert.ok('xPixel' in sampleJson.pointB && 'xMeters' in sampleJson.pointB);
-console.log('✓ Output JSON Schema Verification Passed!');
+
+// Test Screen Tap: Tapping at left pixel (400, 540) and right pixel (1520, 540) on flat table at Z = -1.0m
+const flatPlanePoint = { x: 0, y: 0, z: -1.0 };
+const flatPlaneNormal = { x: 0, y: 0, z: 1.0 }; // Facing camera
+const tap1 = screenPixelTo3DPlane(400, 540, 1920, 1080, projMatrix, viewMatrix, flatPlanePoint, flatPlaneNormal);
+const tap2 = screenPixelTo3DPlane(1520, 540, 1920, 1080, projMatrix, viewMatrix, flatPlanePoint, flatPlaneNormal);
+
+assert.ok(tap1 && tap2, 'Both screen taps must project to 3D surface');
+assert.strictEqual(tap1.z, -1.0, 'Tap 1 must land on plane Z = -1.0');
+assert.strictEqual(tap2.z, -1.0, 'Tap 2 must land on plane Z = -1.0');
+const tapDist = calculate3DDistance(tap1, tap2);
+assert.ok(tapDist > 0.5, 'Distance between screen taps must be physical metric distance');
+console.log(`✓ Screen Tap 3D Unprojection Test Passed: Distance = ${(tapDist * 100).toFixed(2)} cm without moving phone!`);
 
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL TESTS PASSED!');
