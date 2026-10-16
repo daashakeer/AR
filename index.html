@@ -84,75 +84,23 @@
 
       <!-- WebXR DOM Overlay UI -->
       <div id="ar-overlay">
-        <!-- Top Status Bar: AR Tracking, Level Status Pill, Settings, Exit -->
+        <!-- Top Status Bar & Prominent Top Distance Bar -->
         <div class="overlay-header">
           <div class="hud-pill tracking-pill">
             <span id="hud-tracking-dot" class="dot red"></span>
-            <span id="hud-tracking-text">Scanning surface...</span>
+            <span id="hud-tracking-text">Scanning surrounding surface...</span>
           </div>
-
-          <!-- Phone Tilt Level status pill (center) -->
-          <div class="status-pill" id="status-pill">
-            <span class="status-dot" id="status-dot"></span>
-            <span class="status-label" id="status-label">Calibrating…</span>
+          <div class="top-distance-bar" id="hud-dist-pill">
+            <span class="dist-icon">📏</span>
+            <span class="dist-label">Distance:</span>
+            <span id="hud-distance-val" class="dist-val">--</span>
           </div>
-
-          <div class="header-actions">
-            <!-- Settings Button -->
-            <button class="icon-btn" id="settings-btn" title="Settings" aria-label="Open Settings">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-              </svg>
-            </button>
-            <button id="btn-exit-ar" class="btn btn-icon-round" title="Exit AR">
-              <span>&times;</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Top Distance Bar (Legacy / Real-time Distance) -->
-        <div class="top-distance-bar hidden" id="hud-dist-pill">
-          <span class="dist-icon">📏</span>
-          <span class="dist-label">Distance:</span>
-          <span id="hud-distance-val" class="dist-val">--</span>
         </div>
 
         <!-- Step Instructions Banner -->
-        <div id="ar-step-banner" class="step-banner hidden">
+        <div id="ar-step-banner" class="step-banner">
           <span id="step-icon">🎯</span>
-          <span id="step-text">Aim at flat trousers</span>
-        </div>
-
-        <!-- Horizon Level Line (iPhone camera style) -->
-        <div class="horizon-container" id="horizon-container" aria-hidden="true">
-          <div class="horizon-line" id="horizon-line">
-            <div class="horizon-tick left"></div>
-            <div class="horizon-center-dot" id="horizon-dot"></div>
-            <div class="horizon-tick right"></div>
-          </div>
-        </div>
-
-        <!-- Pant Outline SVG Positioning Template -->
-        <div class="pant-outline-wrapper" aria-hidden="true">
-          <svg
-            id="pant-svg"
-            class="pant-svg"
-            viewBox="0 0 2461 3095"
-            preserveAspectRatio="xMidYMid meet"
-          >
-            <path
-              id="pant-outline-path"
-              class="pant-path"
-              d="M2211.43 1709.41L2256.71 1910.52V1910.52L2246.96 1912.71L2292.24 2113.82L2302 2111.62L2347.29 2312.73H2347.29L2337.53 2314.93L2382.82 2516.04L2392.57 2513.84V2513.84L2437.86 2714.95H2437.86L2428.1 2717.14L2448.88 2809.42L2321.49 2861.11L2325.25 2870.38L2054.75 2980.12L2050.99 2970.86L1925.36 3021.83L1892.13 2930.14L1882.72 2933.55L1809.17 2730.65L1818.58 2727.24L1745.03 2524.34L1735.62 2527.75L1662.07 2324.85L1671.48 2321.44L1597.93 2118.54L1588.52 2121.95L1514.97 1919.05L1524.38 1915.64L1450.83 1712.74L1441.42 1716.15L1367.88 1513.25L1377.28 1509.84L1303.73 1306.94L1294.32 1310.35L1220.77 1107.45L1230.18 1104.04L1193.4 1002.59L1182.83 973.442L1174.38 1003.27L1144.78 1107.7L1154.4 1110.42L1095.2 1319.27L1085.58 1316.55L1026.38 1525.4L1036 1528.12L976.8 1736.97L967.179 1734.25L907.979 1943.1L917.6 1945.83L858.399 2154.67L848.779 2151.95L789.579 2360.8L799.199 2363.52L740 2572.38L730.379 2569.65L671.179 2778.5L680.8 2781.22L621.6 2990.08L611.979 2987.35L584.864 3083L519.827 3070.92L518 3080.75L370 3053.25L371.827 3043.42L223.827 3015.92L222 3025.75L74 2998.25L75.8271 2988.42L11.5898 2976.48L26.501 2892.99L16.6562 2891.23L49.9688 2704.7L59.8135 2706.46L93.126 2519.93L83.2812 2518.17L116.594 2331.64L126.438 2333.4L159.751 2146.87L149.906 2145.11L183.219 1958.58L193.062 1960.34L226.376 1773.8L216.531 1772.05L249.844 1585.52L259.688 1587.27L293 1400.74L283.156 1398.98L316.469 1212.45L326.313 1214.21L359.626 1027.68L349.781 1025.92L383.094 839.391L392.938 841.148L426.251 654.617L416.406 652.859L449.719 466.328L459.563 468.086L492.876 281.555L483.031 279.797L516.344 93.2656L526.188 95.0234L541.373 10H640.792V0H856.375V10H1071.96V0H1287.54V10H1503.12V0H1718.71V10H1818.5L1839.39 102.751L1849.14 100.554V100.553L1894.43 301.661H1894.43L1884.67 303.857L1929.96 504.965L1939.71 502.769V502.768L1985 703.875L1975.24 706.072L2020.53 907.179L2030.29 904.982L2075.57 1106.09V1106.09L2065.82 1108.29L2111.1 1309.39L2120.86 1307.2L2166.14 1508.3V1508.3L2156.39 1510.5L2201.67 1711.61L2211.43 1709.41Z"
-              fill="none"
-              stroke="rgba(255,255,255,0.6)"
-              stroke-width="26"
-              stroke-dasharray="180 120"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <span id="step-text">Tap Point 1 directly on the screen</span>
         </div>
 
         <!-- Center 3D Reticle (Only visible during initial surface scan) -->
@@ -165,6 +113,7 @@
         </div>
 
         <!-- 2D Projected Marker Overlay & Dynamic Line -->
+        <!-- Dynamic Garment Keypoints Overlay Layer -->
         <div id="hud-markers-layer">
           <div id="marker-a" class="ar-hud-marker hidden">
             <div class="marker-pin pin-a">P1</div>
@@ -182,14 +131,6 @@
           </svg>
         </div>
 
-        <!-- Single Directional Guidance Pill (above shutter) -->
-        <div class="instruction-wrapper">
-          <div class="instruction-pill" id="instruction-pill">
-            <span class="instruction-icon" id="instruction-icon">↑</span>
-            <span class="instruction-text" id="instruction-text">Align your phone</span>
-          </div>
-        </div>
-
         <!-- Processing / Server Wakeup Toast -->
         <div id="ar-toast" class="ar-toast hidden">
           <div class="toast-spinner"></div>
@@ -202,97 +143,30 @@
           <button id="btn-error-retry" class="btn btn-small btn-secondary">Retry</button>
         </div>
 
-        <!-- Bottom Controls Bar with Circular Progress Ring Shutter -->
+        <!-- Bottom Controls Bar -->
         <div class="overlay-footer">
-          <!-- Reset / Rescan Button -->
-          <button id="btn-reset-points" class="btn btn-icon-round" title="Rescan Trousers">
-            <span>&#8634;</span>
+          <button id="btn-exit-ar" class="btn btn-icon-round" title="Exit AR">
+            <span>&times;</span>
           </button>
 
-          <!-- Main Shutter Unit with SVG Progress Ring -->
-          <div class="shutter-unit">
-            <svg class="progress-ring" viewBox="0 0 84 84" aria-hidden="true">
-              <circle class="progress-ring-track" cx="42" cy="42" r="38" />
-              <circle class="progress-ring-fill" id="progress-ring-fill" cx="42" cy="42" r="38" />
-            </svg>
-            <button
-              id="btn-scan-trigger"
-              class="shutter-btn"
-              title="Capture photo"
-              aria-label="Capture photo"
-            >
-              <span class="shutter-inner" id="scan-inner-label"></span>
+          <!-- Main One-Shot Scan Trigger Button -->
+          <div class="action-btn-wrapper">
+            <button id="btn-scan-trigger" class="btn-shutter btn-scan-ready" title="Scan & Measure Trousers" disabled>
+              <span class="shutter-inner" id="scan-inner-label">SCAN</span>
             </button>
+            <span id="scan-action-label" class="shutter-label">Aim at trousers...</span>
           </div>
-
-          <!-- Hold Still / State Label -->
-          <div class="hold-label hidden" id="hold-label">Hold still</div>
-
-          <!-- Secondary spacer / action button -->
-          <div style="width: 44px; height: 44px;"></div>
 
           <!-- Hidden manual place-point button (keeps existing 2-point code intact) -->
           <button id="btn-place-point" style="display:none;"></button>
           <span id="btn-action-label" style="display:none;"></span>
           <span id="shutter-inner-label" style="display:none;"></span>
-          <span id="scan-action-label" style="display:none;"></span>
+
+          <!-- Rescan / Reset Button -->
+          <button id="btn-reset-points" class="btn btn-icon-round" title="Rescan Trousers">
+            <span>&#8634;</span>
+          </button>
         </div>
-
-        <!-- 3-2-1 Countdown Overlay -->
-        <div class="countdown-overlay hidden" id="countdown-overlay" aria-live="polite">
-          <div class="countdown-number" id="countdown-number">3</div>
-        </div>
-
-        <!-- Success Flash -->
-        <div class="success-flash hidden" id="success-flash" aria-live="assertive"></div>
-
-        <!-- Success Toast -->
-        <div class="success-toast hidden" id="success-toast">
-          <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
-          Photo Captured
-        </div>
-
-        <!-- Tilt Error Toast -->
-        <div class="tilt-error-toast hidden" id="tilt-error-toast" aria-live="assertive">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="8" x2="12" y2="12"></line>
-            <line x1="12" y1="16" x2="12.01" y2="16"></line>
-            <circle cx="12" cy="12" r="10"></circle>
-          </svg>
-          Adjust phone tilt first
-        </div>
-
-        <!-- Settings Modal (Auto-Capture & Level Calibration) -->
-        <div class="settings-overlay hidden" id="settings-menu" role="dialog" aria-modal="true" aria-label="Settings">
-          <div class="settings-card">
-            <div class="settings-header">
-              <span class="settings-title">Level &amp; Auto-Capture</span>
-              <button class="settings-close" id="menu-close-btn" aria-label="Close Settings">&times;</button>
-            </div>
-            <div class="settings-body">
-              <div class="settings-row">
-                <div class="settings-row-info">
-                  <span class="settings-row-label">Auto Capture</span>
-                  <span class="settings-row-desc">Automatically captures when level and surface is locked</span>
-                </div>
-                <div class="mode-toggle-group">
-                  <button id="mode-auto-btn" class="mode-btn" aria-pressed="false">AUTO</button>
-                  <button id="mode-manual-btn" class="mode-btn active" aria-pressed="true">MANUAL</button>
-                </div>
-              </div>
-              <div class="settings-divider"></div>
-              <button id="calibrate-btn" class="settings-action-btn">
-                <span>🎯</span>
-                <span>Calibrate Level</span>
-              </button>
-              <button id="reset-calibration-btn" class="settings-action-btn secondary">
-                <span>↺</span>
-                <span>Reset Calibration</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
       </div>
     </div>
 
