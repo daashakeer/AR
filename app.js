@@ -306,7 +306,7 @@ const state = {
     guidanceText: '✓ Ready',
     isReady: true
   },
-  isAutoCapture: true,
+  isAutoCapture: false,
   levelHoldStart: null,
   holdDuration: 1200,      // ms continuous level hold before countdown
   ringCircumference: 239,  // matches CSS --ring-circ (2 * PI * 38)
@@ -2204,7 +2204,7 @@ function setupEventListeners() {
   // Emulator Mode
   elements.btnStartSim.addEventListener('click', startSimulatorMode);
 
-  // One-Shot Scan Trigger Button with Surface and Phone Tilt Protection
+  // One-Shot Scan Trigger Button (Instant capture when surface locked, exactly like before tilt)
   elements.btnScanTrigger.addEventListener('click', (e) => {
     e.stopPropagation();
     if (state.isSimulator) {
@@ -2220,13 +2220,8 @@ function setupEventListeners() {
       return;
     }
 
-    // Check if phone tilt is level
-    if (!state.telemetry.isReady) {
-      showTiltError();
-      return;
-    }
-
-    triggerAutoScanSnapshot();
+    // Trigger instant frame capture
+    triggerScanCapture();
   });
 
   // Settings Menu Button & Close

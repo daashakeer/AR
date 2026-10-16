@@ -741,8 +741,9 @@ body, html {
   transform: scale(1.25);
 }
 
-/* 2. PANT OUTLINE SVG (Positioning Template) */
+/* 2. PANT OUTLINE SVG (Positioning Template - hidden so camera view is clean and unobstructed) */
 .pant-outline-wrapper {
+  display: none;
   position: absolute;
   top: 60px;
   bottom: 120px;
@@ -750,7 +751,6 @@ body, html {
   transform: translateX(-50%);
   width: 90%;
   max-width: 440px;
-  display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: none;
