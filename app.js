@@ -112,6 +112,174 @@ const STATES = {
   MANUAL_LOCKED: 'LOCKED'
 };
 
+/**
+ * SensorManager - Apple Camera Level Guide Motion Sensor
+ * Evaluates pitch/roll with ±5° level tolerance and outputs clean directional guidance.
+ */
+class SensorManager {
+  constructor() {
+    this.rawBeta = 0;
+    this.rawGamma = 0;
+    this.rawAlpha = 0;
+
+    this.pitch = 0;
+    this.roll = 0;
+
+    this.pitchOffset = 0;
+    this.rollOffset = 0;
+
+    this.filteredPitch = 0;
+    this.filteredRoll = 0;
+    this.smoothingAlpha = 0.2;
+
+    this.isSupported = false;
+    this.isListening = false;
+    this.permissionState = 'unknown';
+
+    this.onUpdateCallback = null;
+    this.onPermissionRequiredCallback = null;
+    this.onSensorUnavailableCallback = null;
+
+    this.handleOrientationEvent = this.handleOrientationEvent.bind(this);
+  }
+
+  async init() {
+    if (!window.DeviceOrientationEvent) {
+      this.isSupported = false;
+      if (this.onSensorUnavailableCallback) this.onSensorUnavailableCallback();
+      return false;
+    }
+
+    this.isSupported = true;
+
+    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+      this.permissionState = 'prompt';
+      if (this.onPermissionRequiredCallback) {
+        this.onPermissionRequiredCallback();
+      }
+      return false;
+    } else {
+      this.permissionState = 'granted';
+      this.startListening();
+      return true;
+    }
+  }
+
+  async requestIOSPermission() {
+    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+      try {
+        const response = await DeviceOrientationEvent.requestPermission();
+        if (response === 'granted') {
+          this.permissionState = 'granted';
+          this.startListening();
+          return true;
+        } else {
+          this.permissionState = 'denied';
+          return false;
+        }
+      } catch (err) {
+        console.error('Permission error:', err);
+        this.permissionState = 'denied';
+        return false;
+      }
+    }
+    return true;
+  }
+
+  startListening() {
+    if (this.isListening) return;
+    window.addEventListener('deviceorientation', this.handleOrientationEvent, true);
+    this.isListening = true;
+  }
+
+  stopListening() {
+    if (!this.isListening) return;
+    window.removeEventListener('deviceorientation', this.handleOrientationEvent, true);
+    this.isListening = false;
+  }
+
+  handleOrientationEvent(event) {
+    if (event.beta === null || event.gamma === null) return;
+
+    this.rawBeta = event.beta;
+    this.rawGamma = event.gamma;
+    this.rawAlpha = event.alpha || 0;
+
+    const calcP = event.beta - this.pitchOffset;
+    const calcR = event.gamma - this.rollOffset;
+
+    this.pitch = calcP;
+    this.roll = calcR;
+
+    this.filteredPitch += (calcP - this.filteredPitch) * this.smoothingAlpha;
+    this.filteredRoll += (calcR - this.filteredRoll) * this.smoothingAlpha;
+
+    if (this.onUpdateCallback) {
+      this.onUpdateCallback(this.getTelemetryPayload());
+    }
+  }
+
+  calibrate() {
+    this.pitchOffset = this.rawBeta;
+    this.rollOffset = this.rawGamma;
+    this.filteredPitch = 0;
+    this.filteredRoll = 0;
+  }
+
+  resetCalibration() {
+    this.pitchOffset = 0;
+    this.rollOffset = 0;
+  }
+
+  getColorState(pitch, roll) {
+    const error = Math.max(Math.abs(pitch), Math.abs(roll));
+    if (error <= 5.0) return 'green';
+    if (error <= 8.0) return 'yellow';
+    return 'red';
+  }
+
+  getStatusText(colorState) {
+    switch (colorState) {
+      case 'green': return '🟢 Ready';
+      case 'yellow': return '🟡 Adjust';
+      case 'red':
+      default: return '🔴 Tilt Phone';
+    }
+  }
+
+  getSingleGuidance(pitch, roll) {
+    const absP = Math.abs(pitch);
+    const absR = Math.abs(roll);
+
+    if (absP <= 5.0 && absR <= 5.0) {
+      return '✓ Ready';
+    }
+
+    if (absP >= absR) {
+      return pitch > 5.0 ? 'Tilt phone forward' : 'Tilt phone backward';
+    } else {
+      return roll > 5.0 ? 'Rotate slightly left' : 'Rotate slightly right';
+    }
+  }
+
+  getTelemetryPayload() {
+    const p = this.filteredPitch;
+    const r = this.filteredRoll;
+    const colorState = this.getColorState(p, r);
+    const statusText = this.getStatusText(colorState);
+    const guidance = this.getSingleGuidance(p, r);
+
+    return {
+      filteredPitch: p,
+      filteredRoll: r,
+      colorState: colorState,
+      statusText: statusText,
+      guidanceText: guidance,
+      isReady: colorState === 'green'
+    };
+  }
+}
+
 // Global App State
 const state = {
   // WebXR Session State
@@ -131,6 +299,26 @@ const state = {
   stabilityTimerStart: 0,
   isTrackingStable: false,
   scanRequested: false,
+
+  // Phone Tilt Sensor & Auto Capture State
+  sensors: null,
+  telemetry: {
+    filteredPitch: 0,
+    filteredRoll: 0,
+    colorState: 'green',
+    statusText: '🟢 Ready',
+    guidanceText: '✓ Ready',
+    isReady: false
+  },
+  isAutoCapture: true,
+  levelHoldStart: null,
+  holdDuration: 1200,      // ms continuous level hold before countdown
+  ringCircumference: 239,  // matches CSS --ring-circ (2 * PI * 38)
+  isCountingDown: false,
+  countdownTimer: null,
+  countdownValue: 3,
+  errorToastTimer: null,
+  hasSurface: false,
 
   // Active Flow State
   flowState: STATES.SCANNING,
@@ -193,6 +381,34 @@ const elements = {
   arStepBanner: document.getElementById('ar-step-banner'),
   stepIcon: document.getElementById('step-icon'),
   stepText: document.getElementById('step-text'),
+
+  // Phone Tilt HUD & Sensor Elements
+  statusPill: document.getElementById('status-pill'),
+  statusDot: document.getElementById('status-dot'),
+  statusLabel: document.getElementById('status-label'),
+  settingsBtn: document.getElementById('settings-btn'),
+  menuCloseBtn: document.getElementById('menu-close-btn'),
+  settingsMenu: document.getElementById('settings-menu'),
+  modeAutoBtn: document.getElementById('mode-auto-btn'),
+  modeManualBtn: document.getElementById('mode-manual-btn'),
+  calibrateBtn: document.getElementById('calibrate-btn'),
+  resetCalibrationBtn: document.getElementById('reset-calibration-btn'),
+  horizonContainer: document.getElementById('horizon-container'),
+  horizonLine: document.getElementById('horizon-line'),
+  pantSvg: document.getElementById('pant-svg'),
+  pantOutlinePath: document.getElementById('pant-outline-path'),
+  instructionPill: document.getElementById('instruction-pill'),
+  instructionIcon: document.getElementById('instruction-icon'),
+  instructionText: document.getElementById('instruction-text'),
+  progressRingFill: document.getElementById('progress-ring-fill'),
+  holdLabel: document.getElementById('hold-label'),
+  countdownOverlay: document.getElementById('countdown-overlay'),
+  countdownNumber: document.getElementById('countdown-number'),
+  successFlash: document.getElementById('success-flash'),
+  successToast: document.getElementById('success-toast'),
+  tiltErrorToast: document.getElementById('tilt-error-toast'),
+  permissionBanner: document.getElementById('permission-banner'),
+  requestPermissionBtn: document.getElementById('request-permission-btn'),
 
   // Scan & Measure Shutter Trigger
   btnScanTrigger: document.getElementById('btn-scan-trigger'),
@@ -422,6 +638,7 @@ async function startARSession() {
 
     session.addEventListener('end', onSessionEnded);
 
+    if (state.sensors) state.sensors.startListening();
     resetToScanning();
     session.requestAnimationFrame(onXRFrame);
 
@@ -435,6 +652,9 @@ async function startARSession() {
 }
 
 function onSessionEnded() {
+  if (state.sensors) state.sensors.stopListening();
+  resetRing();
+  cancelCountdown();
   state.xrSession = null;
   state.hitTestSource = null;
   state.glBinding = null;
@@ -445,6 +665,9 @@ function onSessionEnded() {
 }
 
 function exitAR() {
+  if (state.sensors) state.sensors.stopListening();
+  resetRing();
+  cancelCountdown();
   if (state.xrSession) {
     state.xrSession.end();
   } else if (state.isSimulator) {
@@ -455,7 +678,214 @@ function exitAR() {
 }
 
 /* ==========================================================================
-   4. WebXR Render Loop & Stability Tracking
+   4. Phone Tilt Level Guide & Auto-Capture Controller
+   ========================================================================== */
+
+function updateTiltHUD(telemetry) {
+  const { filteredPitch, filteredRoll, colorState, statusText, guidanceText, isReady } = telemetry;
+
+  // 1. Status Pill
+  if (elements.statusPill) {
+    elements.statusPill.className = `status-pill state-${colorState}`;
+  }
+  if (elements.statusLabel) {
+    elements.statusLabel.textContent = statusText;
+  }
+
+  // 2. Horizon Level Line (iPhone camera style)
+  if (elements.horizonLine) {
+    // Clamp roll to ±45°, map to max ±30° visual display
+    const clampedRoll = Math.max(-45, Math.min(45, filteredRoll));
+    const displayAngle = clampedRoll * (30 / 45);
+    elements.horizonLine.style.transform = `rotate(${displayAngle}deg)`;
+    if (isReady) {
+      elements.horizonLine.classList.add('is-level');
+    } else {
+      elements.horizonLine.classList.remove('is-level');
+    }
+  }
+
+  // 3. Pant Outline SVG Glow
+  if (elements.pantOutlinePath) {
+    if (isReady) {
+      elements.pantOutlinePath.classList.add('is-ready');
+    } else {
+      elements.pantOutlinePath.classList.remove('is-ready');
+    }
+  }
+
+  // 4. Directional Guidance Pill
+  if (elements.instructionPill && elements.instructionText && elements.instructionIcon) {
+    if (state.isCountingDown) {
+      elements.instructionPill.classList.remove('is-ready');
+      elements.instructionIcon.textContent = '🔒';
+      elements.instructionText.textContent = 'Hold still — capturing...';
+    } else if (isReady) {
+      elements.instructionPill.classList.add('is-ready'); // Fade out when level
+    } else {
+      elements.instructionPill.classList.remove('is-ready');
+      if (guidanceText.includes('forward')) {
+        elements.instructionIcon.textContent = '↑';
+        elements.instructionText.textContent = 'Tilt phone forward';
+      } else if (guidanceText.includes('backward')) {
+        elements.instructionIcon.textContent = '↓';
+        elements.instructionText.textContent = 'Tilt phone backward';
+      } else if (guidanceText.includes('left')) {
+        elements.instructionIcon.textContent = '←';
+        elements.instructionText.textContent = 'Rotate slightly left';
+      } else if (guidanceText.includes('right')) {
+        elements.instructionIcon.textContent = '→';
+        elements.instructionText.textContent = 'Rotate slightly right';
+      } else {
+        elements.instructionIcon.textContent = '↑';
+        elements.instructionText.textContent = guidanceText;
+      }
+    }
+  }
+
+  // 5. Shutter Button State
+  if (elements.btnScanTrigger) {
+    if (isReady && state.hasSurface) {
+      elements.btnScanTrigger.classList.add('is-ready');
+    } else {
+      elements.btnScanTrigger.classList.remove('is-ready');
+    }
+  }
+}
+
+function setRing(ratio) {
+  if (!elements.progressRingFill) return;
+  const offset = state.ringCircumference * (1 - ratio);
+  elements.progressRingFill.style.strokeDashoffset = offset;
+}
+
+function resetRing() {
+  state.levelHoldStart = null;
+  setRing(0);
+  if (elements.holdLabel) elements.holdLabel.classList.add('hidden');
+}
+
+function startCountdown() {
+  if (state.isCountingDown) return;
+  state.isCountingDown = true;
+  state.countdownValue = 3;
+
+  if (elements.holdLabel) elements.holdLabel.classList.remove('hidden');
+  if (elements.countdownOverlay) elements.countdownOverlay.classList.remove('hidden');
+  if (elements.countdownNumber) elements.countdownNumber.textContent = '3';
+
+  state.countdownTimer = setInterval(() => {
+    state.countdownValue--;
+    if (state.countdownValue > 0) {
+      if (elements.countdownNumber) {
+        elements.countdownNumber.style.animation = 'none';
+        void elements.countdownNumber.offsetWidth;
+        elements.countdownNumber.style.animation = '';
+        elements.countdownNumber.textContent = state.countdownValue;
+      }
+    } else {
+      clearInterval(state.countdownTimer);
+      state.countdownTimer = null;
+      cancelCountdown();
+      triggerAutoScanSnapshot();
+    }
+  }, 900);
+}
+
+function cancelCountdown() {
+  if (state.countdownTimer) {
+    clearInterval(state.countdownTimer);
+    state.countdownTimer = null;
+  }
+  state.isCountingDown = false;
+  if (elements.countdownOverlay) elements.countdownOverlay.classList.add('hidden');
+  if (elements.holdLabel) elements.holdLabel.classList.add('hidden');
+}
+
+function showTiltError() {
+  if (elements.btnScanTrigger) {
+    elements.btnScanTrigger.classList.remove('shake');
+    void elements.btnScanTrigger.offsetWidth;
+    elements.btnScanTrigger.classList.add('shake');
+  }
+
+  if (elements.tiltErrorToast) {
+    elements.tiltErrorToast.classList.remove('hidden');
+    elements.tiltErrorToast.classList.add('show');
+    clearTimeout(state.errorToastTimer);
+    state.errorToastTimer = setTimeout(() => {
+      elements.tiltErrorToast.classList.remove('show');
+      setTimeout(() => elements.tiltErrorToast.classList.add('hidden'), 250);
+    }, 1800);
+  }
+}
+
+function triggerAutoScanSnapshot() {
+  if (state.flowState !== STATES.SCANNING) return;
+
+  // Flash animation
+  if (elements.successFlash) {
+    elements.successFlash.classList.remove('hidden');
+    elements.successFlash.classList.add('flash-anim');
+    setTimeout(() => {
+      elements.successFlash.classList.add('hidden');
+      elements.successFlash.classList.remove('flash-anim');
+    }, 380);
+  }
+
+  // Success toast
+  if (elements.successToast) {
+    elements.successToast.classList.remove('hidden');
+    elements.successToast.classList.add('show');
+    setTimeout(() => {
+      elements.successToast.classList.remove('show');
+      setTimeout(() => elements.successToast.classList.add('hidden'), 250);
+    }, 1200);
+  }
+
+  logMsg('Auto-capture triggered! Level held steady and surface locked.', 'success');
+  triggerScanCapture();
+}
+
+/**
+ * Evaluates whether AR surface is locked AND phone tilt is level.
+ * When both conditions are met, progress ring fills and countdown executes.
+ */
+function evaluateAutoCapture(now, hasSurface, isReady) {
+  if (state.flowState !== STATES.SCANNING) {
+    resetRing();
+    cancelCountdown();
+    return;
+  }
+
+  if (!state.isAutoCapture) {
+    resetRing();
+    if (state.isCountingDown) cancelCountdown();
+    return;
+  }
+
+  // Condition: Both surface is locked by AR and phone is held level
+  const isConditionMet = hasSurface && isReady;
+
+  if (isConditionMet) {
+    if (!state.levelHoldStart) state.levelHoldStart = now;
+
+    const progress = Math.min(1.0, (now - state.levelHoldStart) / state.holdDuration);
+    setRing(progress);
+
+    if (progress >= 1.0 && !state.isCountingDown) {
+      startCountdown();
+    }
+  } else {
+    resetRing();
+    if (state.isCountingDown) {
+      cancelCountdown();
+    }
+  }
+}
+
+/* ==========================================================================
+   4.5 WebXR Render Loop & Stability Tracking
    ========================================================================== */
 
 function onXRFrame(time, frame) {
@@ -545,7 +975,13 @@ function onXRFrame(time, frame) {
   }
   state.lastCamPosition = camPos;
 
-  updateTrackingUI(surfaceHitFound || state.surfacePlane !== null, state.isTrackingStable);
+  const hasSurface = surfaceHitFound || state.surfacePlane !== null;
+  state.hasSurface = hasSurface;
+
+  updateTrackingUI(hasSurface, state.isTrackingStable);
+
+  // Evaluate Phone Tilt & Auto Capture on every frame
+  evaluateAutoCapture(time, hasSurface, state.telemetry.isReady);
 
   // 3. Handle One-Shot Scan Trigger inside this exact XR frame callback
   if (state.scanRequested && state.flowState === STATES.SCANNING) {
@@ -575,7 +1011,7 @@ function updateTrackingUI(hasSurface, isStable) {
     elements.hudTrackingText.textContent = 'Surface locked - hold phone steady';
     if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Stabilize phone over trousers';
     if (elements.btnScanTrigger) {
-      elements.btnScanTrigger.disabled = false; // Allow manual tap if user prefers
+      elements.btnScanTrigger.disabled = false;
       elements.scanActionLabel.textContent = 'Tap Scan & Measure';
       elements.stepText.textContent = 'Aim at flat trousers, tap Scan';
       elements.stepIcon.textContent = '🎯';
@@ -757,11 +1193,13 @@ function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth,
    ========================================================================== */
 
 function triggerScanCapture() {
-  if (!state.surfacePlane) {
-    showErrorBanner('No surface detected yet. Scan trousers until surface locks.');
+  if (!state.surfacePlane && !state.hasSurface) {
+    showErrorBanner('No surface detected yet. Aim at flat trousers until surface locks.');
     return;
   }
   hideErrorBanner();
+  resetRing();
+  cancelCountdown();
   state.scanRequested = true;
   logMsg('Scan triggered. Freezing calibration on next XR frame...', 'info');
 }
@@ -1456,6 +1894,9 @@ function resetToScanning() {
   state.measurementNotices = [];
   state.scanRequested = false;
 
+  resetRing();
+  cancelCountdown();
+
   hideToast();
   hideErrorBanner();
   if (elements.garmentPinsContainer) elements.garmentPinsContainer.innerHTML = '';
@@ -1602,6 +2043,18 @@ async function startSimulatorMode() {
     normal: { x: 0, y: 0, z: 1.0 },
     timestamp: performance.now()
   };
+  state.hasSurface = true;
+
+  // Simulate level phone orientation in desktop emulator
+  state.telemetry = {
+    filteredPitch: 0,
+    filteredRoll: 0,
+    colorState: 'green',
+    statusText: '🟢 Ready',
+    guidanceText: '✓ Ready',
+    isReady: true
+  };
+  updateTiltHUD(state.telemetry);
 
   resetToScanning();
 
@@ -1642,6 +2095,9 @@ async function startSimulatorMode() {
     state.isTrackingStable = true;
     updateTrackingUI(true, true);
 
+    // Evaluate auto-capture in simulator
+    evaluateAutoCapture(performance.now(), true, state.telemetry.isReady);
+
     const simulatedView = {
       transform: { inverse: { matrix: viewMatrix } },
       projectionMatrix: projMatrix
@@ -1653,6 +2109,8 @@ async function startSimulatorMode() {
 }
 
 function stopSimulator() {
+  resetRing();
+  cancelCountdown();
   if (state.simulatorInterval) {
     clearInterval(state.simulatorInterval);
     state.simulatorInterval = null;
@@ -1712,18 +2170,105 @@ function setupEventListeners() {
   // Emulator Mode
   elements.btnStartSim.addEventListener('click', startSimulatorMode);
 
-  // One-Shot Scan Trigger Button
+  // One-Shot Scan Trigger Button with Surface and Phone Tilt Protection
   elements.btnScanTrigger.addEventListener('click', (e) => {
     e.stopPropagation();
     if (state.isSimulator) {
-      // In simulator, if file input exists, prompt for image or use camera frame
       if (elements.simFileInput && !state.simVideo) {
         elements.simFileInput.click();
         return;
       }
     }
-    triggerScanCapture();
+
+    // Check if surface is detected
+    if (!state.surfacePlane && !state.hasSurface) {
+      showErrorBanner('No surface detected yet. Aim at flat trousers until surface locks.');
+      return;
+    }
+
+    // Check if phone tilt is level
+    if (!state.telemetry.isReady) {
+      showTiltError();
+      return;
+    }
+
+    triggerAutoScanSnapshot();
   });
+
+  // Settings Menu Button & Close
+  if (elements.settingsBtn) {
+    elements.settingsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (elements.settingsMenu) elements.settingsMenu.classList.remove('hidden');
+    });
+  }
+
+  if (elements.menuCloseBtn) {
+    elements.menuCloseBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (elements.settingsMenu) elements.settingsMenu.classList.add('hidden');
+    });
+  }
+
+  if (elements.settingsMenu) {
+    elements.settingsMenu.addEventListener('click', (e) => {
+      if (e.target === elements.settingsMenu) {
+        elements.settingsMenu.classList.add('hidden');
+      }
+    });
+  }
+
+  // Auto / Manual Capture Mode Toggle
+  if (elements.modeAutoBtn && elements.modeManualBtn) {
+    elements.modeAutoBtn.addEventListener('click', () => {
+      state.isAutoCapture = true;
+      resetRing();
+      cancelCountdown();
+      elements.modeAutoBtn.classList.add('active');
+      elements.modeAutoBtn.setAttribute('aria-pressed', 'true');
+      elements.modeManualBtn.classList.remove('active');
+      elements.modeManualBtn.setAttribute('aria-pressed', 'false');
+    });
+
+    elements.modeManualBtn.addEventListener('click', () => {
+      state.isAutoCapture = false;
+      resetRing();
+      cancelCountdown();
+      elements.modeManualBtn.classList.add('active');
+      elements.modeManualBtn.setAttribute('aria-pressed', 'true');
+      elements.modeAutoBtn.classList.remove('active');
+      elements.modeAutoBtn.setAttribute('aria-pressed', 'false');
+    });
+  }
+
+  // Calibration Controls
+  if (elements.calibrateBtn) {
+    elements.calibrateBtn.addEventListener('click', () => {
+      if (state.sensors) state.sensors.calibrate();
+      if (elements.settingsMenu) elements.settingsMenu.classList.add('hidden');
+      logMsg('Phone tilt calibrated to current orientation.', 'info');
+    });
+  }
+
+  if (elements.resetCalibrationBtn) {
+    elements.resetCalibrationBtn.addEventListener('click', () => {
+      if (state.sensors) state.sensors.resetCalibration();
+      if (elements.settingsMenu) elements.settingsMenu.classList.add('hidden');
+      logMsg('Phone tilt calibration reset.', 'info');
+    });
+  }
+
+  // iOS Motion Sensor Permission
+  if (elements.requestPermissionBtn) {
+    elements.requestPermissionBtn.addEventListener('click', async () => {
+      if (state.sensors) {
+        const granted = await state.sensors.requestIOSPermission();
+        if (granted && elements.permissionBanner) {
+          elements.permissionBanner.classList.add('hidden');
+        }
+      }
+    });
+  }
 
   // Simulator file picker
   if (elements.simFileInput) {
@@ -1801,6 +2346,16 @@ function setupEventListeners() {
 
 // Initialize on DOM ready or immediately if already loaded
 function init() {
+  state.sensors = new SensorManager();
+  state.sensors.onUpdateCallback = (telemetry) => {
+    state.telemetry = telemetry;
+    updateTiltHUD(telemetry);
+  };
+  state.sensors.onPermissionRequiredCallback = () => {
+    if (elements.permissionBanner) elements.permissionBanner.classList.remove('hidden');
+  };
+  state.sensors.init();
+
   setupEventListeners();
   checkCompatibility();
 }

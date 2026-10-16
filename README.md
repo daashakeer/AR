@@ -1,78 +1,78 @@
-# AR 2-Point Distance Calculator
+# Unified AR 3D Measurement & DASH Phone Tilt Level Guide
 
-A pure client-side web application for scanning physical surroundings and calculating the **100% accurate real-world distance between 2 user-selected points** using WebXR Augmented Reality.
+A complete, production-ready web application combining **Apple-Style Phone Tilt Level Guidance** and **WebXR 3D Augmented Reality Metric Measurement** into a single, seamless frontend.
 
-Built with **pure HTML5, CSS3, and modern ES6 JavaScript**. Zero build steps, zero external frameworks, and **no reference objects needed** (no coins, markers, cards, or hardcoded camera heights).
-
----
-
-## 1. How It Works
-
-1. **Scan Surrounding**:
-   - The user aims the camera at any surface (floor, table, desk, wall, or object).
-   - WebXR hit-testing continuously tests physical geometry against the environment surface point cloud.
-   - The center reticle locks to the detected surface plane.
-
-2. **Select Point 1**:
-   - Tap anywhere on screen or press the **Place Point 1 (P1)** shutter button.
-   - Anchors Point 1 at the exact 3D world coordinate $(X_1, Y_1, Z_1)$ in physical meters.
-
-3. **Stretch to Point 2**:
-   - Move the phone towards the end target.
-   - A dynamic measuring line and floating distance tag follow the aiming reticle in real time.
-   - Computes live physical distance $D_{\text{live}} = \sqrt{(X_r - X_1)^2 + (Y_r - Y_1)^2 + (Z_r - Z_1)^2}$.
-
-4. **Lock & Calculate Distance**:
-   - Tap anywhere on screen or press **Place Point 2 (P2)**.
-   - Anchors Point 2 at $(X_2, Y_2, Z_2)$.
-   - Immediately calculates and locks the true 3D Euclidean distance:
-     $$D = \sqrt{(X_2 - X_1)^2 + (Y_2 - Y_1)^2 + (Z_2 - Z_1)^2}$$
-   - Displays real-world distance in centimeters, meters, and inches.
-
-5. **View Breakdown / Reset**:
-   - Tap **View Results** to view the full coordinate breakdown and formula verification.
-   - Tap the **Reset** button at any time to clear points and measure another distance.
+Built with **pure HTML5, CSS3, and modern ES6 JavaScript**. Zero heavy framework overhead, mobile-first, and 100% metric-accurate without reference objects.
 
 ---
 
-## 2. 100% Metric Accuracy (No Reference Objects)
+## 🌟 How the Unified Frontend Works
 
-WebXR's `XRHitResult.getPose(referenceSpace)` returns coordinates directly in metric meters ($1.0 = 1.0\text{ m}$), tracked by device hardware (ARCore on Android with visual-inertial odometry and SLAM plane tracking).
+### 1. Dual-Sensor Scanning & Alignment
+When AR starts:
+- **WebXR Hit-Testing**: Continuously scans surrounding floor or table geometry and locks to the physical surface plane.
+- **Phone Tilt Level Guide (DASH)**: Evaluates motion sensor pitch and roll in real time:
+  - 🟢 **Ready**: Within $\pm 5.0^\circ$ of flat ground level.
+  - 🟡 **Adjust**: Within $5.0^\circ$ to $8.0^\circ$ (provides directional guidance: *"Tilt phone forward/backward"*, *"Rotate slightly left/right"*).
+  - 🔴 **Tilt Phone**: $> 8.0^\circ$ tilt.
+- **Horizon Level Line**: iPhone-style horizon indicator that rotates with phone roll and snaps bright green when level.
+- **Trouser SVG Contour**: Overlaid on the camera feed so users can align flat laid trousers; glows bright green when level.
 
-Because measurements are computed directly from the 3D metric coordinate system:
-- **No reference object required** (no credit cards, coins, or paper sheets).
-- **No camera height assumptions** (no fixed heights or hardcoded ratios).
-- Works at any angle, orientation, or distance.
+### 2. Smart Auto-Capture & Backend Inference
+- **Automatic Shutter Trigger**: When **both** conditions are satisfied:
+  1. The AR has scanned the surroundings and locked the surface plane.
+  2. The phone tilt is perfect (held level within $\pm 5^\circ$ for ~1.2s).
+- The circular SVG progress ring fills smoothly around the shutter button.
+- A 3-2-1 countdown overlay engages, the camera flashes, and the exact frame texture is captured alongside frozen camera poses, projection matrices, and surface plane geometry.
+- If the phone tilts or loses the surface during the countdown, auto-capture pauses and resets to protect image quality.
+- **Manual Tap Protection**: Users can also tap the shutter button manually. If tapped while tilted, the shutter shakes and warns *"Adjust phone tilt first"*.
+
+### 3. Backend ZeroGPU Inference & 3D Keypoint Unprojection
+- Captured image is dispatched to the HRNet DeepFashion2 backend via the Gradio Queue protocol (`https://dashgaming-slytear.hf.space`).
+- Backend detects 14 garment landmarks on the trousers.
+- Each landmark pixel coordinate $(u, v)$ is unprojected into the physical 3D world along the camera ray and intersected with the detected surface plane with a $+2\text{mm}$ fabric elevation offset (`FABRIC_OFFSET`).
+- Computes complete metric dimensions:
+  - **Waist Width & Circumference**
+  - **Inseam Length**
+  - **Outseam Length**
+  - **Thigh Width**
+  - **Hem / Ankle Width**
+- Interactive 3D pins appear in the AR viewport, and the detailed Results Screen displays the dimensions, plotted 2D debug canvas, and full 3D coordinates.
 
 ---
 
-## 3. Platform & Browser Compatibility
+## 📂 Project Structure
 
-| Platform / Browser | Support Status | Notes |
-| :--- | :--- | :--- |
-| **Android Chrome (v81+)** | **Full Native AR** | Requires [Google Play Services for AR (ARCore)](https://play.google.com/store/apps/details?id=com.google.ar.core). Supports native WebXR `immersive-ar`, `hit-test`, and `dom-overlay`. |
-| **Desktop Chrome / Edge** | **WebXR Emulator Mode** | Fully interactive testing using the built-in "Test in WebXR Emulator Mode" button or Chrome DevTools WebXR tab. |
-| **iOS Safari** | **Unsupported** | Safari does not implement WebXR natively. Requires WebXR-compatible browsers such as Mozilla WebXR Viewer. |
-
----
-
-## 4. Local Testing & Deployment
-
-### Quick Local Test
-Open PowerShell or Terminal in the project directory:
-```bash
-npx serve .
 ```
-Or with Python:
-```bash
-python -m http.server 8080
+AR/
+├── index.html            # Unified UI (AR session, Phone Tilt HUD, overlays & results)
+├── style.css             # High-contrast luxury styling (Tilt HUD, Horizon, Shutter ring)
+├── app.js                # Core ES6 engine (WebXR, SensorManager, AutoCapture, Gradio API)
+├── build.js              # Production asset builder for Cloudflare/Vercel
+├── test_measurements.js  # Mathematical and architectural verification suite
+├── package.json          # Project metadata & npm scripts
+├── dist/                 # Production static bundle
+└── README.md             # Documentation
 ```
-Open `http://localhost:8080` in your browser. (WebXR requires `localhost` or HTTPS).
 
-### Deployment (Cloudflare Pages / GitHub Pages / Vercel)
-This app consists purely of static HTML, CSS, and JS files (`index.html`, `style.css`, `app.js`).
-Deploy directly to Cloudflare Pages:
-1. Connect repository.
-2. Build command: None (leave blank).
-3. Output directory: `/` or `dist/`.
-4. Deploy! Cloudflare automatically provisions HTTPS.
+---
+
+## 🚀 Running Locally & Testing
+
+1. **Run Unit Tests**:
+   ```bash
+   npm test
+   ```
+
+2. **Build for Production (`dist/`)**:
+   ```bash
+   npm run build
+   ```
+
+3. **Start Local Server**:
+   ```bash
+   npx serve .
+   # Or with Python:
+   python -m http.server 8080
+   ```
+   Open `http://localhost:8080` in your browser. (WebXR and Device Sensors require `localhost` or HTTPS).
