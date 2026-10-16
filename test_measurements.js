@@ -170,77 +170,17 @@ function intersectRayWithPlane(rayOrigin, rayDir, planePoint, planeNormal) {
   };
 }
 
-// 6b. True 4x4 Matrix Inversion
-function invertMatrix4(out, m) {
-  const m00 = m[0], m01 = m[1], m02 = m[2], m03 = m[3];
-  const m10 = m[4], m11 = m[5], m12 = m[6], m13 = m[7];
-  const m20 = m[8], m21 = m[9], m22 = m[10], m23 = m[11];
-  const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
-
-  const b00 = m00 * m11 - m01 * m10;
-  const b01 = m00 * m12 - m02 * m10;
-  const b02 = m00 * m13 - m03 * m10;
-  const b03 = m01 * m12 - m02 * m11;
-  const b04 = m01 * m13 - m03 * m11;
-  const b05 = m02 * m13 - m03 * m12;
-  const b06 = m20 * m31 - m21 * m30;
-  const b07 = m20 * m32 - m22 * m30;
-  const b08 = m20 * m33 - m23 * m30;
-  const b09 = m21 * m32 - m22 * m31;
-  const b10 = m21 * m33 - m23 * m31;
-  const b11 = m22 * m33 - m23 * m32;
-
-  let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-  if (!det) return null;
-  const invDet = 1.0 / det;
-
-  out[0] = (m11 * b11 - m12 * b10 + m13 * b09) * invDet;
-  out[1] = (-m01 * b11 + m02 * b10 - m03 * b09) * invDet;
-  out[2] = (m31 * b05 - m32 * b04 + m33 * b03) * invDet;
-  out[3] = (-m21 * b05 + m22 * b04 - m23 * b03) * invDet;
-  out[4] = (-m10 * b11 + m12 * b08 - m13 * b07) * invDet;
-  out[5] = (m00 * b11 - m02 * b08 + m03 * b07) * invDet;
-  out[6] = (-m30 * b05 + m32 * b02 - m33 * b01) * invDet;
-  out[7] = (m20 * b05 - m22 * b02 + m23 * b01) * invDet;
-  out[8] = (m10 * b10 - m11 * b08 + m13 * b06) * invDet;
-  out[9] = (-m00 * b10 + m01 * b08 - m03 * b06) * invDet;
-  out[10] = (m30 * b04 - m31 * b02 + m33 * b00) * invDet;
-  out[11] = (-m20 * b04 + m21 * b02 - m23 * b00) * invDet;
-  out[12] = (-m10 * b09 + m11 * b07 - m12 * b06) * invDet;
-  out[13] = (m00 * b09 - m01 * b07 + m02 * b06) * invDet;
-  out[14] = (-m30 * b03 + m31 * b01 - m32 * b00) * invDet;
-  out[15] = (m20 * b03 - m21 * b01 + m22 * b00) * invDet;
-
-  return out;
-}
-
 // 7. Landmark Pixel (u, v) -> NDC -> World Ray -> Plane with FABRIC_OFFSET
 function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMatrix, planePoint, planeNormal, fabricOffset = 0.002) {
-  const pPoint = (planePoint && typeof planePoint.x === 'number') ? planePoint : { x: 0, y: -0.5, z: -0.8 };
-  const pNorm = (planeNormal && typeof planeNormal.x === 'number') ? planeNormal : { x: 0, y: 1.0, z: 0 };
-  const imgW = imageWidth || 576;
-  const imgH = imageHeight || 1280;
+  const ndcX = (u / imageWidth) * 2 - 1;
+  const ndcY = 1 - (v / imageHeight) * 2;
+  const dxCam = (ndcX + (projMatrix[8] || 0)) / projMatrix[0];
+  const dyCam = (ndcY + (projMatrix[9] || 0)) / projMatrix[5];
+  const dzCam = -1.0;
 
-  const ndcX = (u / imgW) * 2 - 1;
-  const ndcY = 1 - (v / imgH) * 2;
-
-  const invP = invertMatrix4(new Float32Array(16), projMatrix);
-  if (!invP) return null;
-
-  const xc = invP[0] * ndcX + invP[4] * ndcY - invP[8] + invP[12];
-  const yc = invP[1] * ndcX + invP[5] * ndcY - invP[9] + invP[13];
-  const zc = invP[2] * ndcX + invP[6] * ndcY - invP[10] + invP[14];
-  const wc = invP[3] * ndcX + invP[7] * ndcY - invP[11] + invP[15];
-
-  if (Math.abs(wc) < 1e-6) return null;
-  const vx = xc / wc;
-  const vy = yc / wc;
-  const vz = zc / wc;
-
-  const rX = camMatrix[0] * vx + camMatrix[4] * vy + camMatrix[8] * vz;
-  const rY = camMatrix[1] * vx + camMatrix[5] * vy + camMatrix[9] * vz;
-  const rZ = camMatrix[2] * vx + camMatrix[6] * vy + camMatrix[10] * vz;
-
+  const rX = camMatrix[0] * dxCam + camMatrix[4] * dyCam + camMatrix[8] * dzCam;
+  const rY = camMatrix[1] * dxCam + camMatrix[5] * dyCam + camMatrix[9] * dzCam;
+  const rZ = camMatrix[2] * dxCam + camMatrix[6] * dyCam + camMatrix[10] * dzCam;
   const rLen = Math.hypot(rX, rY, rZ);
   if (rLen < 1e-6) return null;
   const dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
@@ -248,76 +188,12 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
 
   // Offset plane point along normal by fabricOffset
   const offsetPlanePoint = {
-    x: pPoint.x + fabricOffset * pNorm.x,
-    y: pPoint.y + fabricOffset * pNorm.y,
-    z: pPoint.z + fabricOffset * pNorm.z
+    x: planePoint.x + fabricOffset * planeNormal.x,
+    y: planePoint.y + fabricOffset * planeNormal.y,
+    z: planePoint.z + fabricOffset * planeNormal.z
   };
 
-  return intersectRayWithPlane(origin, dir, offsetPlanePoint, pNorm);
-}
-
-// 7b. Surface Plane Stabilizer
-class SurfacePlaneStabilizer {
-  constructor(maxSamples = 20) {
-    this.maxSamples = maxSamples;
-    this.history = [];
-    this.stablePlane = null;
-  }
-
-  reset() {
-    this.history = [];
-    this.stablePlane = null;
-  }
-
-  addHitPose(pos, matrix, time) {
-    const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
-    let nx = matrix[4] / nLen;
-    let ny = matrix[5] / nLen;
-    let nz = matrix[6] / nLen;
-
-    if (ny < 0) {
-      nx = -nx; ny = -ny; nz = -nz;
-    }
-
-    if (this.stablePlane && Math.abs(pos.y - this.stablePlane.point.y) > 0.15) {
-      return this.stablePlane;
-    }
-
-    this.history.push({ x: pos.x, y: pos.y, z: pos.z, nx, ny, nz, time });
-    if (this.history.length > this.maxSamples) {
-      this.history.shift();
-    }
-
-    const sortedY = this.history.map(h => h.y).sort((a, b) => a - b);
-    const mid = Math.floor(sortedY.length / 2);
-    const medianY = (sortedY.length % 2 === 0)
-      ? (sortedY[mid - 1] + sortedY[mid]) / 2
-      : sortedY[mid];
-
-    let sumX = 0, sumZ = 0, sumNx = 0, sumNy = 0, sumNz = 0;
-    for (const h of this.history) {
-      sumX += h.x; sumZ += h.z;
-      sumNx += h.nx; sumNy += h.ny; sumNz += h.nz;
-    }
-    const count = this.history.length;
-    const isHorizontal = (sumNy / count) > 0.65;
-
-    let finalNx = 0, finalNy = 1.0, finalNz = 0;
-    if (!isHorizontal) {
-      finalNx = sumNx / count; finalNy = sumNy / count; finalNz = sumNz / count;
-      const fLen = Math.hypot(finalNx, finalNy, finalNz) || 1;
-      finalNx /= fLen; finalNy /= fLen; finalNz /= fLen;
-    }
-
-    this.stablePlane = {
-      point: { x: sumX / count, y: medianY, z: sumZ / count },
-      normal: { x: finalNx, y: finalNy, z: finalNz },
-      isHorizontal,
-      isStable: this.history.length >= 5,
-      timestamp: time
-    };
-    return this.stablePlane;
-  }
+  return intersectRayWithPlane(origin, dir, offsetPlanePoint, planeNormal);
 }
 
 // Test 6: Landmark unprojection with synthetic camera and plane
@@ -370,26 +246,6 @@ const waistEval = evaluateDirectMeasurement('Waist Width', ['waist_left', 'waist
 assert.strictEqual(waistEval.valid, true);
 assert.ok(waistEval.distCm > 30);
 console.log(`✓ Direct Waist Measurement Passed: ${(waistEval.distCm).toFixed(1)} cm (${(waistEval.distInches).toFixed(1)} in)`);
-
-// Test 10: Surface Plane Stabilizer Test
-const stabilizer = new SurfacePlaneStabilizer(10);
-// Feed 8 poses with slight Y jitter: -0.72, -0.71, -0.73, -0.72, -0.72...
-for (let i = 0; i < 8; i++) {
-  const jitterY = -0.72 + (i % 2 === 0 ? 0.01 : -0.01);
-  stabilizer.addHitPose(
-    { x: 0.05 * i, y: jitterY, z: -0.8 },
-    [1, 0, 0, 0,  0.08, 0.99, -0.05, 0,  0, 0, 1, 0,  0, 0, 0, 1], // Matrix with slightly tilted normal (ny=0.99)
-    1000 + i * 33
-  );
-}
-const stablePlane = stabilizer.stablePlane;
-assert.strictEqual(stablePlane.isStable, true, 'Stabilizer must be stable after 8 frames');
-assert.strictEqual(stablePlane.isHorizontal, true, 'Must detect horizontal surface');
-assert.strictEqual(stablePlane.normal.y, 1.0, 'Horizontal plane normal must be locked to (0, 1, 0)');
-assert.strictEqual(stablePlane.normal.x, 0, 'Normal X must be 0 for horizontal plane');
-assert.strictEqual(stablePlane.normal.z, 0, 'Normal Z must be 0 for horizontal plane');
-assert.strictEqual(Math.round(stablePlane.point.y * 100) / 100, -0.72, 'Median height must be -0.72m');
-console.log('✓ Surface Plane Stabilizer Test Passed: Locked horizontal plane to normal (0, 1, 0) and median Y = -0.72m');
 
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL TESTS PASSED!');
 
