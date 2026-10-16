@@ -31,9 +31,6 @@
   --shadow-glow-cyan: 0 0 20px rgba(0, 229, 255, 0.35);
   --shadow-glow-green: 0 0 20px rgba(0, 230, 118, 0.35);
 
-  /* Progress ring geometry (r=38, circumference ≈ 239) */
-  --ring-circ: 239;
-
   --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-mono: 'SF Mono', Consolas, 'Liberation Mono', Menlo, monospace;
 }
@@ -335,117 +332,30 @@ body, html {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   pointer-events: none;
 }
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  pointer-events: auto;
-}
-
-.icon-btn {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--bg-glass);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1.5px solid rgba(255, 255, 255, 0.2);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  pointer-events: auto;
-}
-
-.icon-btn svg {
-  width: 20px;
-  height: 20px;
-}
-
-.icon-btn:active {
-  transform: scale(0.92);
-  background: rgba(255, 255, 255, 0.15);
-}
-
-/* Status Pill (Phone Tilt Level HUD) */
-.status-pill {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 14px;
-  background: rgba(10, 14, 25, 0.85);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: var(--radius-full);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  pointer-events: none;
-  transition: border-color 0.35s ease;
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  transition: background 0.35s ease, box-shadow 0.35s ease;
-  flex-shrink: 0;
-}
-
-.status-pill.state-green .status-dot {
-  background: var(--accent-green);
-  box-shadow: 0 0 10px rgba(0, 230, 118, 0.7);
-}
-
-.status-pill.state-yellow .status-dot {
-  background: var(--accent-amber);
-  box-shadow: 0 0 10px rgba(255, 171, 0, 0.7);
-}
-
-.status-pill.state-red .status-dot {
-  background: var(--accent-red);
-  box-shadow: 0 0 10px rgba(255, 61, 113, 0.7);
-}
-
-.status-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #fff;
-  white-space: nowrap;
-  letter-spacing: 0.2px;
-  transition: color 0.35s ease;
-}
-
-.status-pill.state-green .status-label { color: var(--accent-green); }
-.status-pill.state-yellow .status-label { color: var(--accent-amber); }
-.status-pill.state-red .status-label { color: var(--accent-red); }
 
 .hud-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 8px 14px;
   background: var(--bg-glass);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-radius: var(--radius-full);
   border: 1px solid rgba(255, 255, 255, 0.15);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-weight: 600;
   pointer-events: none;
 }
 
 .tracking-pill {
   color: var(--text-primary);
-  max-width: 45%;
+  max-width: 55%;
 }
 
 .dot {
@@ -658,8 +568,6 @@ body, html {
   align-items: center;
   width: 100%;
   pointer-events: auto;
-  position: relative;
-  z-index: 20;
 }
 
 .btn-icon-round {
@@ -668,7 +576,6 @@ body, html {
   border-radius: 50%;
   background: var(--bg-glass);
   backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   border: 1.5px solid rgba(255, 255, 255, 0.2);
   color: #fff;
   font-size: 1.5rem;
@@ -683,523 +590,54 @@ body, html {
   transform: scale(0.92);
 }
 
-/* ============================================================
-   PHONE TILT HUD COMPONENTS (DASH LEVEL GUIDE)
-   ============================================================ */
-
-/* 1. HORIZON LEVEL LINE (iPhone Camera Style) */
-.horizon-container {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  right: 0;
-  transform: translateY(-50%);
+.action-btn-wrapper {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 5;
+  gap: 6px;
 }
 
-.horizon-line {
-  position: relative;
-  width: 100%;
-  max-width: 320px;
-  height: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transform-origin: center;
-  transition: filter 0.3s ease;
-}
-
-.horizon-tick {
-  flex: 1;
-  height: 1.5px;
-  background: rgba(255, 255, 255, 0.55);
-  border-radius: 2px;
-  transition: background 0.3s ease;
-}
-
-.horizon-line.is-level .horizon-tick {
-  background: var(--accent-green);
-}
-
-.horizon-center-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #ffffff;
-  margin: 0 10px;
-  flex-shrink: 0;
-  transition: background 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
-}
-
-.horizon-line.is-level .horizon-center-dot {
-  background: var(--accent-green);
-  box-shadow: 0 0 12px rgba(0, 230, 118, 0.8);
-  transform: scale(1.25);
-}
-
-/* 2. PANT OUTLINE SVG (Positioning Template - hidden so camera view is clean and unobstructed) */
-.pant-outline-wrapper {
-  display: none;
-  position: absolute;
-  top: 60px;
-  bottom: 120px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 90%;
-  max-width: 440px;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 4;
-}
-
-.pant-svg {
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-.pant-path {
-  transition: stroke 0.4s ease, filter 0.4s ease;
-}
-
-.pant-path.is-ready {
-  stroke: var(--accent-green) !important;
-  filter: drop-shadow(0 0 8px rgba(0, 230, 118, 0.7));
-}
-
-/* 3. DIRECTIONAL INSTRUCTION PILL */
-.instruction-wrapper {
-  position: absolute;
-  bottom: 114px;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 15;
-}
-
-.instruction-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 18px;
-  background: rgba(10, 14, 25, 0.88);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: var(--radius-full);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
-  transition: opacity 0.3s ease, transform 0.3s ease;
-}
-
-.instruction-pill.is-ready {
-  opacity: 0;
-  transform: translateY(6px);
-}
-
-.instruction-icon {
-  font-size: 14px;
-  font-weight: 700;
-  color: #fff;
-  line-height: 1;
-}
-
-.instruction-text {
-  font-size: 13px;
-  font-weight: 600;
-  color: #fff;
-  white-space: nowrap;
-  letter-spacing: 0.1px;
-}
-
-/* 4. SHUTTER UNIT & CIRCULAR PROGRESS RING */
-.shutter-unit {
-  position: relative;
+.btn-shutter {
   width: 80px;
   height: 80px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.progress-ring {
-  position: absolute;
-  inset: 0;
-  transform: rotate(-90deg);
-  pointer-events: none;
-}
-
-.progress-ring-track {
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.18);
-  stroke-width: 3.5;
-}
-
-.progress-ring-fill {
-  fill: none;
-  stroke: var(--accent-green);
-  stroke-width: 4;
-  stroke-linecap: round;
-  stroke-dasharray: var(--ring-circ, 239);
-  stroke-dashoffset: var(--ring-circ, 239);
-  transition: stroke-dashoffset 0.08s linear;
-}
-
-.shutter-btn {
-  width: 66px;
-  height: 66px;
   border-radius: 50%;
-  border: 3.5px solid rgba(255, 255, 255, 0.88);
-  background: transparent;
+  background: rgba(255, 255, 255, 0.25);
+  border: 4px solid #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
-  position: relative;
-  z-index: 1;
   cursor: pointer;
-  transition: transform 0.2s ease, border-color 0.35s ease, opacity 0.3s ease;
-  pointer-events: auto;
+  box-shadow: 0 4px 25px rgba(0, 0, 0, 0.7);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 0;
 }
 
 .shutter-inner {
-  width: 100%;
-  height: 100%;
+  width: 62px;
+  height: 62px;
   border-radius: 50%;
-  background: #ffffff;
-  transition: background 0.35s ease, transform 0.2s ease, box-shadow 0.35s ease;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  box-shadow: 0 0 20px rgba(0, 229, 255, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: #0b0f19;
+  transition: all 0.2s ease;
 }
 
-.shutter-btn.is-ready .shutter-inner {
-  background: var(--accent-green);
-  box-shadow: 0 0 16px rgba(0, 230, 118, 0.7);
-}
-
-.shutter-btn.is-ready {
-  border-color: var(--accent-green);
-}
-
-.shutter-btn:active {
+.btn-shutter:active {
   transform: scale(0.92);
 }
 
-.shutter-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-@keyframes shutter-shake {
-  0%   { transform: translateX(0); }
-  20%  { transform: translateX(-6px); }
-  40%  { transform: translateX(6px); }
-  60%  { transform: translateX(-4px); }
-  80%  { transform: translateX(4px); }
-  100% { transform: translateX(0); }
-}
-
-.shutter-btn.shake {
-  animation: shutter-shake 0.38s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.hold-label {
-  position: absolute;
-  bottom: 94px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 12px;
+.shutter-label {
+  font-size: 0.78rem;
   font-weight: 700;
   color: #fff;
   background: rgba(0, 0, 0, 0.7);
-  padding: 3px 14px;
+  padding: 3px 10px;
   border-radius: var(--radius-full);
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-/* 5. 3-2-1 COUNTDOWN OVERLAY */
-.countdown-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 80;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  pointer-events: none;
-}
-
-.countdown-number {
-  font-size: 108px;
-  font-weight: 800;
-  color: #fff;
-  text-shadow: 0 4px 40px rgba(0, 0, 0, 0.6);
-  animation: countdown-pulse 1s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes countdown-pulse {
-  from { transform: scale(1.4); opacity: 0; }
-  to   { transform: scale(1.0); opacity: 1; }
-}
-
-/* 6. SUCCESS FLASH & TOASTS */
-.success-flash {
-  position: absolute;
-  inset: 0;
-  z-index: 90;
-  background: #ffffff;
-  pointer-events: none;
-  opacity: 0;
-}
-
-.success-flash.flash-anim {
-  animation: flash 0.35s ease-out forwards;
-}
-
-@keyframes flash {
-  0%   { opacity: 0.85; }
-  100% { opacity: 0; }
-}
-
-.success-toast {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) scale(0.9);
-  z-index: 95;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 13px 24px;
-  background: var(--accent-green);
-  color: #000;
-  font-size: 15px;
-  font-weight: 700;
-  border-radius: var(--radius-full);
-  box-shadow: 0 8px 30px rgba(0, 230, 118, 0.4);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.25s ease, transform 0.25s ease;
-}
-
-.success-toast.show {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-}
-
-.success-toast svg {
-  width: 18px;
-  height: 18px;
-}
-
-.tilt-error-toast {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) scale(0.88);
-  z-index: 95;
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  padding: 13px 22px;
-  background: rgba(255, 61, 113, 0.95);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
-  border-radius: var(--radius-full);
-  box-shadow: 0 8px 30px rgba(255, 61, 113, 0.35);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.22s ease, transform 0.22s ease;
-  white-space: nowrap;
-}
-
-.tilt-error-toast.show {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-}
-
-.tilt-error-toast svg {
-  width: 18px;
-  height: 18px;
-}
-
-/* 7. iOS MOTION PERMISSION OVERLAY */
-.permission-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(0, 0, 0, 0.72);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-
-.permission-card {
-  width: 100%;
-  max-width: 340px;
-  background: rgba(20, 24, 34, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 28px;
-  padding: 32px 28px;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-}
-
-.permission-icon { font-size: 48px; }
-
-.permission-title {
-  font-size: 20px;
-  font-weight: 700;
-  color: #fff;
-}
-
-.permission-body {
-  font-size: 14px;
-  color: var(--text-secondary);
-  line-height: 1.55;
-  max-width: 260px;
-}
-
-/* 8. SETTINGS MODAL */
-.settings-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-.settings-card {
-  width: 100%;
-  max-width: 360px;
-  background: rgba(20, 24, 34, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 24px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
-}
-
-.settings-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.settings-title {
-  font-size: 17px;
-  font-weight: 700;
-  color: #fff;
-}
-
-.settings-close {
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 24px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 4px;
-}
-
-.settings-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-
-.settings-row-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.settings-row-label {
-  font-size: 14px;
-  font-weight: 600;
-  color: #fff;
-}
-
-.settings-row-desc {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.mode-toggle-group {
-  display: flex;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  padding: 3px;
-  gap: 2px;
-}
-
-.mode-btn {
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-muted);
-  border-radius: 6px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.mode-btn.active {
-  background: var(--accent-cyan);
-  color: #000;
-}
-
-.settings-divider {
-  height: 1px;
-  background: rgba(255, 255, 255, 0.1);
-  margin: 4px 0;
-}
-
-.settings-action-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 12px;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.settings-action-btn:active {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.settings-action-btn.secondary {
-  color: var(--text-secondary);
 }
 
 /* ==========================================================================

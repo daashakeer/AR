@@ -60,7 +60,6 @@ const MEASUREMENTS = [
   {
     id: 'inseam',
     label: 'Inseam',
-    usePixelRatio: true,
     landmarks: ['crotch_inseam', 'hem_inner_left'],
     fallbackLandmarks: [
       ['crotch_inseam', 'hem_inner_right', 1.0],
@@ -73,7 +72,6 @@ const MEASUREMENTS = [
   {
     id: 'outseam',
     label: 'Outseam',
-    usePixelRatio: true,
     landmarks: ['waist_left', 'hem_outer_left'],
     fallbackLandmarks: [
       ['waist_right', 'hem_outer_right', 1.0],
@@ -114,168 +112,6 @@ const STATES = {
   MANUAL_LOCKED: 'LOCKED'
 };
 
-/**
- * SensorManager - Apple Camera Level Guide Motion Sensor
- * Evaluates pitch/roll with ±5° level tolerance and outputs clean directional guidance.
- */
-class SensorManager {
-  constructor() {
-    this.rawBeta = 0;
-    this.rawGamma = 0;
-    this.rawAlpha = 0;
-
-    this.pitch = 0;
-    this.roll = 0;
-
-    this.pitchOffset = 0;
-    this.rollOffset = 0;
-
-    this.filteredPitch = 0;
-    this.filteredRoll = 0;
-    this.smoothingAlpha = 0.2;
-
-    this.isSupported = false;
-    this.isListening = false;
-    this.hasReceivedEvent = false;
-    this.onUpdateCallback = null;
-
-    this.handleOrientationEvent = this.handleOrientationEvent.bind(this);
-  }
-
-  async init() {
-    this.isSupported = !!(window.DeviceOrientationEvent || window.OrientationEvent);
-
-    // 1. Immediately start listening directly without asking
-    this.startListening();
-
-    // 2. Silently trigger iOS permission in background on first tap if supported
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-      const silentPermission = async () => {
-        try {
-          const res = await DeviceOrientationEvent.requestPermission();
-          if (res === 'granted') {
-            this.startListening();
-          }
-        } catch (e) {
-          // Ignore silently
-        }
-      };
-      window.addEventListener('click', silentPermission, { once: true });
-      window.addEventListener('touchstart', silentPermission, { once: true });
-    }
-
-    return true;
-  }
-
-  startListening() {
-    if (this.isListening) return;
-    window.addEventListener('deviceorientation', this.handleOrientationEvent, true);
-    window.addEventListener('deviceorientationabsolute', this.handleOrientationEvent, true);
-    this.isListening = true;
-  }
-
-  stopListening() {
-    if (!this.isListening) return;
-    window.removeEventListener('deviceorientation', this.handleOrientationEvent, true);
-    window.removeEventListener('deviceorientationabsolute', this.handleOrientationEvent, true);
-    this.isListening = false;
-  }
-
-  handleOrientationEvent(event) {
-    if (event.beta === null && event.gamma === null) return;
-    this.hasReceivedEvent = true;
-
-    this.rawBeta = event.beta != null ? event.beta : 0;
-    this.rawGamma = event.gamma != null ? event.gamma : 0;
-    this.rawAlpha = event.alpha || 0;
-
-    const calcP = this.rawBeta - this.pitchOffset;
-    const calcR = this.rawGamma - this.rollOffset;
-
-    this.pitch = calcP;
-    this.roll = calcR;
-
-    this.filteredPitch += (calcP - this.filteredPitch) * this.smoothingAlpha;
-    this.filteredRoll += (calcR - this.filteredRoll) * this.smoothingAlpha;
-
-    if (this.onUpdateCallback) {
-      this.onUpdateCallback(this.getTelemetryPayload());
-    }
-  }
-
-  calibrate() {
-    this.pitchOffset = this.rawBeta;
-    this.rollOffset = this.rawGamma;
-    this.filteredPitch = 0;
-    this.filteredRoll = 0;
-  }
-
-  resetCalibration() {
-    this.pitchOffset = 0;
-    this.rollOffset = 0;
-  }
-
-  getColorState(pitch, roll) {
-    const error = Math.max(Math.abs(pitch), Math.abs(roll));
-    if (error <= 5.0) return 'green';
-    if (error <= 8.0) return 'yellow';
-    return 'red';
-  }
-
-  getStatusText(colorState) {
-    switch (colorState) {
-      case 'green': return '🟢 Ready';
-      case 'yellow': return '🟡 Adjust';
-      case 'red':
-      default: return '🔴 Tilt Phone';
-    }
-  }
-
-  getSingleGuidance(pitch, roll) {
-    const absP = Math.abs(pitch);
-    const absR = Math.abs(roll);
-
-    if (absP <= 5.0 && absR <= 5.0) {
-      return '✓ Ready';
-    }
-
-    if (absP >= absR) {
-      return pitch > 5.0 ? 'Tilt phone forward' : 'Tilt phone backward';
-    } else {
-      return roll > 5.0 ? 'Rotate slightly left' : 'Rotate slightly right';
-    }
-  }
-
-  getTelemetryPayload() {
-    // If no sensor event received yet, default to ready
-    if (!this.hasReceivedEvent) {
-      return {
-        filteredPitch: 0,
-        filteredRoll: 0,
-        colorState: 'green',
-        statusText: '🟢 Ready',
-        guidanceText: '✓ Ready',
-        isReady: true
-      };
-    }
-
-    const p = this.filteredPitch;
-    const r = this.filteredRoll;
-    const colorState = this.getColorState(p, r);
-    const statusText = this.getStatusText(colorState);
-    const guidance = this.getSingleGuidance(p, r);
-
-    return {
-      filteredPitch: p,
-      filteredRoll: r,
-      colorState: colorState,
-      statusText: statusText,
-      guidanceText: guidance,
-      isReady: colorState === 'green'
-    };
-  }
-}
-
 // Global App State
 const state = {
   // WebXR Session State
@@ -295,26 +131,6 @@ const state = {
   stabilityTimerStart: 0,
   isTrackingStable: false,
   scanRequested: false,
-
-  // Phone Tilt Sensor & Auto Capture State
-  sensors: null,
-  telemetry: {
-    filteredPitch: 0,
-    filteredRoll: 0,
-    colorState: 'green',
-    statusText: '🟢 Ready',
-    guidanceText: '✓ Ready',
-    isReady: true
-  },
-  isAutoCapture: false,
-  levelHoldStart: null,
-  holdDuration: 1200,      // ms continuous level hold before countdown
-  ringCircumference: 239,  // matches CSS --ring-circ (2 * PI * 38)
-  isCountingDown: false,
-  countdownTimer: null,
-  countdownValue: 3,
-  errorToastTimer: null,
-  hasSurface: false,
 
   // Active Flow State
   flowState: STATES.SCANNING,
@@ -377,32 +193,6 @@ const elements = {
   arStepBanner: document.getElementById('ar-step-banner'),
   stepIcon: document.getElementById('step-icon'),
   stepText: document.getElementById('step-text'),
-
-  // Phone Tilt HUD & Sensor Elements
-  statusPill: document.getElementById('status-pill'),
-  statusDot: document.getElementById('status-dot'),
-  statusLabel: document.getElementById('status-label'),
-  settingsBtn: document.getElementById('settings-btn'),
-  menuCloseBtn: document.getElementById('menu-close-btn'),
-  settingsMenu: document.getElementById('settings-menu'),
-  modeAutoBtn: document.getElementById('mode-auto-btn'),
-  modeManualBtn: document.getElementById('mode-manual-btn'),
-  calibrateBtn: document.getElementById('calibrate-btn'),
-  resetCalibrationBtn: document.getElementById('reset-calibration-btn'),
-  horizonContainer: document.getElementById('horizon-container'),
-  horizonLine: document.getElementById('horizon-line'),
-  pantSvg: document.getElementById('pant-svg'),
-  pantOutlinePath: document.getElementById('pant-outline-path'),
-  instructionPill: document.getElementById('instruction-pill'),
-  instructionIcon: document.getElementById('instruction-icon'),
-  instructionText: document.getElementById('instruction-text'),
-  progressRingFill: document.getElementById('progress-ring-fill'),
-  holdLabel: document.getElementById('hold-label'),
-  countdownOverlay: document.getElementById('countdown-overlay'),
-  countdownNumber: document.getElementById('countdown-number'),
-  successFlash: document.getElementById('success-flash'),
-  successToast: document.getElementById('success-toast'),
-  tiltErrorToast: document.getElementById('tilt-error-toast'),
 
   // Scan & Measure Shutter Trigger
   btnScanTrigger: document.getElementById('btn-scan-trigger'),
@@ -632,7 +422,6 @@ async function startARSession() {
 
     session.addEventListener('end', onSessionEnded);
 
-    if (state.sensors) state.sensors.startListening();
     resetToScanning();
     session.requestAnimationFrame(onXRFrame);
 
@@ -646,9 +435,6 @@ async function startARSession() {
 }
 
 function onSessionEnded() {
-  if (state.sensors) state.sensors.stopListening();
-  resetRing();
-  cancelCountdown();
   state.xrSession = null;
   state.hitTestSource = null;
   state.glBinding = null;
@@ -659,9 +445,6 @@ function onSessionEnded() {
 }
 
 function exitAR() {
-  if (state.sensors) state.sensors.stopListening();
-  resetRing();
-  cancelCountdown();
   if (state.xrSession) {
     state.xrSession.end();
   } else if (state.isSimulator) {
@@ -672,214 +455,7 @@ function exitAR() {
 }
 
 /* ==========================================================================
-   4. Phone Tilt Level Guide & Auto-Capture Controller
-   ========================================================================== */
-
-function updateTiltHUD(telemetry) {
-  const { filteredPitch, filteredRoll, colorState, statusText, guidanceText, isReady } = telemetry;
-
-  // 1. Status Pill
-  if (elements.statusPill) {
-    elements.statusPill.className = `status-pill state-${colorState}`;
-  }
-  if (elements.statusLabel) {
-    elements.statusLabel.textContent = statusText;
-  }
-
-  // 2. Horizon Level Line (iPhone camera style)
-  if (elements.horizonLine) {
-    // Clamp roll to ±45°, map to max ±30° visual display
-    const clampedRoll = Math.max(-45, Math.min(45, filteredRoll));
-    const displayAngle = clampedRoll * (30 / 45);
-    elements.horizonLine.style.transform = `rotate(${displayAngle}deg)`;
-    if (isReady) {
-      elements.horizonLine.classList.add('is-level');
-    } else {
-      elements.horizonLine.classList.remove('is-level');
-    }
-  }
-
-  // 3. Pant Outline SVG Glow
-  if (elements.pantOutlinePath) {
-    if (isReady) {
-      elements.pantOutlinePath.classList.add('is-ready');
-    } else {
-      elements.pantOutlinePath.classList.remove('is-ready');
-    }
-  }
-
-  // 4. Directional Guidance Pill
-  if (elements.instructionPill && elements.instructionText && elements.instructionIcon) {
-    if (state.isCountingDown) {
-      elements.instructionPill.classList.remove('is-ready');
-      elements.instructionIcon.textContent = '🔒';
-      elements.instructionText.textContent = 'Hold still — capturing...';
-    } else if (isReady) {
-      elements.instructionPill.classList.add('is-ready'); // Fade out when level
-    } else {
-      elements.instructionPill.classList.remove('is-ready');
-      if (guidanceText.includes('forward')) {
-        elements.instructionIcon.textContent = '↑';
-        elements.instructionText.textContent = 'Tilt phone forward';
-      } else if (guidanceText.includes('backward')) {
-        elements.instructionIcon.textContent = '↓';
-        elements.instructionText.textContent = 'Tilt phone backward';
-      } else if (guidanceText.includes('left')) {
-        elements.instructionIcon.textContent = '←';
-        elements.instructionText.textContent = 'Rotate slightly left';
-      } else if (guidanceText.includes('right')) {
-        elements.instructionIcon.textContent = '→';
-        elements.instructionText.textContent = 'Rotate slightly right';
-      } else {
-        elements.instructionIcon.textContent = '↑';
-        elements.instructionText.textContent = guidanceText;
-      }
-    }
-  }
-
-  // 5. Shutter Button State
-  if (elements.btnScanTrigger) {
-    if (isReady && state.hasSurface) {
-      elements.btnScanTrigger.classList.add('is-ready');
-    } else {
-      elements.btnScanTrigger.classList.remove('is-ready');
-    }
-  }
-}
-
-function setRing(ratio) {
-  if (!elements.progressRingFill) return;
-  const offset = state.ringCircumference * (1 - ratio);
-  elements.progressRingFill.style.strokeDashoffset = offset;
-}
-
-function resetRing() {
-  state.levelHoldStart = null;
-  setRing(0);
-  if (elements.holdLabel) elements.holdLabel.classList.add('hidden');
-}
-
-function startCountdown() {
-  if (state.isCountingDown) return;
-  state.isCountingDown = true;
-  state.countdownValue = 3;
-
-  if (elements.holdLabel) elements.holdLabel.classList.remove('hidden');
-  if (elements.countdownOverlay) elements.countdownOverlay.classList.remove('hidden');
-  if (elements.countdownNumber) elements.countdownNumber.textContent = '3';
-
-  state.countdownTimer = setInterval(() => {
-    state.countdownValue--;
-    if (state.countdownValue > 0) {
-      if (elements.countdownNumber) {
-        elements.countdownNumber.style.animation = 'none';
-        void elements.countdownNumber.offsetWidth;
-        elements.countdownNumber.style.animation = '';
-        elements.countdownNumber.textContent = state.countdownValue;
-      }
-    } else {
-      clearInterval(state.countdownTimer);
-      state.countdownTimer = null;
-      cancelCountdown();
-      triggerAutoScanSnapshot();
-    }
-  }, 900);
-}
-
-function cancelCountdown() {
-  if (state.countdownTimer) {
-    clearInterval(state.countdownTimer);
-    state.countdownTimer = null;
-  }
-  state.isCountingDown = false;
-  if (elements.countdownOverlay) elements.countdownOverlay.classList.add('hidden');
-  if (elements.holdLabel) elements.holdLabel.classList.add('hidden');
-}
-
-function showTiltError() {
-  if (elements.btnScanTrigger) {
-    elements.btnScanTrigger.classList.remove('shake');
-    void elements.btnScanTrigger.offsetWidth;
-    elements.btnScanTrigger.classList.add('shake');
-  }
-
-  if (elements.tiltErrorToast) {
-    elements.tiltErrorToast.classList.remove('hidden');
-    elements.tiltErrorToast.classList.add('show');
-    clearTimeout(state.errorToastTimer);
-    state.errorToastTimer = setTimeout(() => {
-      elements.tiltErrorToast.classList.remove('show');
-      setTimeout(() => elements.tiltErrorToast.classList.add('hidden'), 250);
-    }, 1800);
-  }
-}
-
-function triggerAutoScanSnapshot() {
-  if (state.flowState !== STATES.SCANNING) return;
-
-  // Flash animation
-  if (elements.successFlash) {
-    elements.successFlash.classList.remove('hidden');
-    elements.successFlash.classList.add('flash-anim');
-    setTimeout(() => {
-      elements.successFlash.classList.add('hidden');
-      elements.successFlash.classList.remove('flash-anim');
-    }, 380);
-  }
-
-  // Success toast
-  if (elements.successToast) {
-    elements.successToast.classList.remove('hidden');
-    elements.successToast.classList.add('show');
-    setTimeout(() => {
-      elements.successToast.classList.remove('show');
-      setTimeout(() => elements.successToast.classList.add('hidden'), 250);
-    }, 1200);
-  }
-
-  logMsg('Auto-capture triggered! Level held steady and surface locked.', 'success');
-  triggerScanCapture();
-}
-
-/**
- * Evaluates whether AR surface is locked AND phone tilt is level.
- * When both conditions are met, progress ring fills and countdown executes.
- */
-function evaluateAutoCapture(now, hasSurface, isReady) {
-  if (state.flowState !== STATES.SCANNING) {
-    resetRing();
-    cancelCountdown();
-    return;
-  }
-
-  if (!state.isAutoCapture) {
-    resetRing();
-    if (state.isCountingDown) cancelCountdown();
-    return;
-  }
-
-  // Condition: Both surface is locked by AR and phone is held level
-  const isConditionMet = hasSurface && isReady;
-
-  if (isConditionMet) {
-    if (!state.levelHoldStart) state.levelHoldStart = now;
-
-    const progress = Math.min(1.0, (now - state.levelHoldStart) / state.holdDuration);
-    setRing(progress);
-
-    if (progress >= 1.0 && !state.isCountingDown) {
-      startCountdown();
-    }
-  } else {
-    resetRing();
-    if (state.isCountingDown) {
-      cancelCountdown();
-    }
-  }
-}
-
-/* ==========================================================================
-   4.5 WebXR Render Loop & Stability Tracking
+   4. WebXR Render Loop & Stability Tracking
    ========================================================================== */
 
 function onXRFrame(time, frame) {
@@ -910,7 +486,7 @@ function onXRFrame(time, frame) {
   state.lastProjMatrix = new Float32Array(view.projectionMatrix);
   state.lastCameraMatrix = new Float32Array(view.transform.matrix);
 
-  // 1. Hit-Test against garment/table surface
+  // 1. Hit-Test against garment/table surface with statistical plane stabilizer
   let surfaceHitFound = false;
   if (state.hitTestSource) {
     const hitResults = frame.getHitTestResults(state.hitTestSource);
@@ -921,29 +497,30 @@ function onXRFrame(time, frame) {
         const pos = hitPose.transform.position;
         const matrix = hitPose.transform.matrix;
 
+        // Add to statistical stabilizer to filter jitter and lock horizontal plane
+        state.surfacePlane = planeStabilizer.addHitPose(pos, matrix, time);
+
         state.currentReticlePose = {
           x: pos.x,
-          y: pos.y,
+          y: state.surfacePlane.point.y,
           z: pos.z,
           matrix: matrix
-        };
-
-        const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
-        state.surfacePlane = {
-          point: { x: pos.x, y: pos.y, z: pos.z },
-          normal: { x: matrix[4] / nLen, y: matrix[5] / nLen, z: matrix[6] / nLen },
-          timestamp: time
         };
       }
     }
   }
 
-  // 2. Track Phone Stability over ~1.5s
+  // 2. Track Phone Stability & Tilt Angle
   const camPos = {
     x: view.transform.matrix[12],
     y: view.transform.matrix[13],
     z: view.transform.matrix[14]
   };
+
+  // Optical axis downward alignment (-view.transform.matrix[9] is dot product with gravity down)
+  const lookDown = -view.transform.matrix[9];
+  const tiltDeg = Math.acos(Math.max(-1, Math.min(1, lookDown))) * (180 / Math.PI);
+  state.phoneTiltDeg = tiltDeg;
 
   if (state.lastCamPosition && state.surfacePlane) {
     const moveDist = Math.hypot(
@@ -957,7 +534,7 @@ function onXRFrame(time, frame) {
       if (!state.stabilityTimerStart) {
         state.stabilityTimerStart = time;
       }
-      if (time - state.stabilityTimerStart > 800) {
+      if (time - state.stabilityTimerStart > 600) {
         state.isTrackingStable = true;
       }
     } else {
@@ -969,13 +546,7 @@ function onXRFrame(time, frame) {
   }
   state.lastCamPosition = camPos;
 
-  const hasSurface = surfaceHitFound || state.surfacePlane !== null;
-  state.hasSurface = hasSurface;
-
-  updateTrackingUI(hasSurface, state.isTrackingStable);
-
-  // Evaluate Phone Tilt & Auto Capture on every frame
-  evaluateAutoCapture(time, hasSurface, state.telemetry.isReady);
+  updateTrackingUI(surfaceHitFound || state.surfacePlane !== null, state.isTrackingStable, state.phoneTiltDeg);
 
   // 3. Handle One-Shot Scan Trigger inside this exact XR frame callback
   if (state.scanRequested && state.flowState === STATES.SCANNING) {
@@ -987,28 +558,43 @@ function onXRFrame(time, frame) {
   renderGarmentHUD(view, window.innerWidth, window.innerHeight);
 }
 
-function updateTrackingUI(hasSurface, isStable) {
+function updateTrackingUI(hasSurface, isStable, tiltDeg = 0) {
   if (!elements.hudTrackingDot || !elements.hudTrackingText) return;
+
+  const isLevel = (tiltDeg <= 18);
+
+  // Keep manual measurement instructions visible if user is measuring manually
+  if (state.measurementState === STATES.MANUAL_P1) {
+    elements.stepIcon.textContent = '📍';
+    elements.stepText.textContent = 'Point 1 placed. Aim reticle & tap Point 2';
+  } else if (state.measurementState === STATES.MANUAL_LOCKED && state.finalDistanceMeters > 0) {
+    elements.stepIcon.textContent = '✓';
+    elements.stepText.textContent = `Measured: ${(state.finalDistanceMeters * 100).toFixed(1)} cm — Tap ↺ to Rescan`;
+  }
 
   if (hasSurface && isStable) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = 'Surface ready (Phone steady)';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold steady, tap Scan';
+    elements.hudTrackingText.textContent = isLevel ? 'Surface locked & level' : `Level phone flatter (${Math.round(tiltDeg)}° tilt)`;
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isLevel ? 'Surface locked — tap Scan' : 'Tilt phone flatter over surface';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
-      elements.scanActionLabel.textContent = 'Hold steady, tap Scan';
-      elements.stepText.textContent = 'Hold steady, tap Scan & Measure';
-      elements.stepIcon.textContent = '📸';
+      elements.scanActionLabel.textContent = isLevel ? 'Hold steady, tap Scan' : 'Level phone & tap Scan';
+      if (state.measurementState === STATES.SCANNING) {
+        elements.stepText.textContent = isLevel ? 'Hold steady, tap Scan & Measure' : 'Level phone flatter over surface';
+        elements.stepIcon.textContent = isLevel ? '📸' : '📱';
+      }
     }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = 'Surface locked - hold phone steady';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Stabilize phone over trousers';
+    elements.hudTrackingText.textContent = isLevel ? 'Surface locked — hold steady' : `Tilt phone flatter (${Math.round(tiltDeg)}°)`;
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold steady over trousers';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
       elements.scanActionLabel.textContent = 'Tap Scan & Measure';
-      elements.stepText.textContent = 'Aim at flat trousers, tap Scan';
-      elements.stepIcon.textContent = '🎯';
+      if (state.measurementState === STATES.SCANNING) {
+        elements.stepText.textContent = 'Aim at flat trousers, tap Scan';
+        elements.stepIcon.textContent = '🎯';
+      }
     }
   } else {
     elements.hudTrackingDot.className = 'dot amber';
@@ -1017,8 +603,10 @@ function updateTrackingUI(hasSurface, isStable) {
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = true;
       elements.scanActionLabel.textContent = 'Aim at trousers...';
-      elements.stepText.textContent = 'Scan trousers until surface locks';
-      elements.stepIcon.textContent = '🔍';
+      if (state.measurementState === STATES.SCANNING) {
+        elements.stepText.textContent = 'Scan trousers until surface locks';
+        elements.stepIcon.textContent = '🔍';
+      }
     }
   }
 }
@@ -1026,6 +614,124 @@ function updateTrackingUI(hasSurface, isStable) {
 /* ==========================================================================
    5. 3D Euclidean Math & Shared Ray-Plane Intersection Engine
    ========================================================================== */
+
+/**
+ * True 4x4 Matrix Inversion
+ * Handles arbitrary WebXR projection and camera transform matrices without approximations
+ */
+function invertMatrix4(out, m) {
+  const m00 = m[0], m01 = m[1], m02 = m[2], m03 = m[3];
+  const m10 = m[4], m11 = m[5], m12 = m[6], m13 = m[7];
+  const m20 = m[8], m21 = m[9], m22 = m[10], m23 = m[11];
+  const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
+
+  const b00 = m00 * m11 - m01 * m10;
+  const b01 = m00 * m12 - m02 * m10;
+  const b02 = m00 * m13 - m03 * m10;
+  const b03 = m01 * m12 - m02 * m11;
+  const b04 = m01 * m13 - m03 * m11;
+  const b05 = m02 * m13 - m03 * m12;
+  const b06 = m20 * m31 - m21 * m30;
+  const b07 = m20 * m32 - m22 * m30;
+  const b08 = m20 * m33 - m23 * m30;
+  const b09 = m21 * m32 - m22 * m31;
+  const b10 = m21 * m33 - m23 * m31;
+  const b11 = m22 * m33 - m23 * m32;
+
+  let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (!det) return null;
+  const invDet = 1.0 / det;
+
+  out[0] = (m11 * b11 - m12 * b10 + m13 * b09) * invDet;
+  out[1] = (-m01 * b11 + m02 * b10 - m03 * b09) * invDet;
+  out[2] = (m31 * b05 - m32 * b04 + m33 * b03) * invDet;
+  out[3] = (-m21 * b05 + m22 * b04 - m23 * b03) * invDet;
+  out[4] = (-m10 * b11 + m12 * b08 - m13 * b07) * invDet;
+  out[5] = (m00 * b11 - m02 * b08 + m03 * b07) * invDet;
+  out[6] = (-m30 * b05 + m32 * b02 - m33 * b01) * invDet;
+  out[7] = (m20 * b05 - m22 * b02 + m23 * b01) * invDet;
+  out[8] = (m10 * b10 - m11 * b08 + m13 * b06) * invDet;
+  out[9] = (-m00 * b10 + m01 * b08 - m03 * b06) * invDet;
+  out[10] = (m30 * b04 - m31 * b02 + m33 * b00) * invDet;
+  out[11] = (-m20 * b04 + m21 * b02 - m23 * b00) * invDet;
+  out[12] = (-m10 * b09 + m11 * b07 - m12 * b06) * invDet;
+  out[13] = (m00 * b09 - m01 * b07 + m02 * b06) * invDet;
+  out[14] = (-m30 * b03 + m31 * b01 - m32 * b00) * invDet;
+  out[15] = (m20 * b03 - m21 * b01 + m22 * b00) * invDet;
+
+  return out;
+}
+
+/**
+ * Surface Plane Stabilizer
+ * Uses statistical median filtering on height Y and locks horizontal surfaces (floor/table)
+ * to normal (0, 1, 0) to eliminate tilt jitter and perspective noise.
+ */
+class SurfacePlaneStabilizer {
+  constructor(maxSamples = 20) {
+    this.maxSamples = maxSamples;
+    this.history = [];
+    this.stablePlane = null;
+  }
+
+  reset() {
+    this.history = [];
+    this.stablePlane = null;
+  }
+
+  addHitPose(pos, matrix, time) {
+    const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
+    let nx = matrix[4] / nLen;
+    let ny = matrix[5] / nLen;
+    let nz = matrix[6] / nLen;
+
+    if (ny < 0) {
+      nx = -nx; ny = -ny; nz = -nz;
+    }
+
+    // Outlier rejection: ignore sudden vertical jumps (> 15cm from established plane)
+    if (this.stablePlane && Math.abs(pos.y - this.stablePlane.point.y) > 0.15) {
+      return this.stablePlane;
+    }
+
+    this.history.push({ x: pos.x, y: pos.y, z: pos.z, nx, ny, nz, time });
+    if (this.history.length > this.maxSamples) {
+      this.history.shift();
+    }
+
+    const sortedY = this.history.map(h => h.y).sort((a, b) => a - b);
+    const mid = Math.floor(sortedY.length / 2);
+    const medianY = (sortedY.length % 2 === 0)
+      ? (sortedY[mid - 1] + sortedY[mid]) / 2
+      : sortedY[mid];
+
+    let sumX = 0, sumZ = 0, sumNx = 0, sumNy = 0, sumNz = 0;
+    for (const h of this.history) {
+      sumX += h.x; sumZ += h.z;
+      sumNx += h.nx; sumNy += h.ny; sumNz += h.nz;
+    }
+    const count = this.history.length;
+    const isHorizontal = (sumNy / count) > 0.65;
+
+    let finalNx = 0, finalNy = 1.0, finalNz = 0;
+    if (!isHorizontal) {
+      finalNx = sumNx / count; finalNy = sumNy / count; finalNz = sumNz / count;
+      const fLen = Math.hypot(finalNx, finalNy, finalNz) || 1;
+      finalNx /= fLen; finalNy /= fLen; finalNz /= fLen;
+    }
+
+    this.stablePlane = {
+      point: { x: sumX / count, y: medianY, z: sumZ / count },
+      normal: { x: finalNx, y: finalNy, z: finalNz },
+      isHorizontal,
+      isStable: this.history.length >= 6,
+      timestamp: time
+    };
+    return this.stablePlane;
+  }
+}
+
+const planeStabilizer = new SurfacePlaneStabilizer(25);
 
 /**
  * 100% Accurate 3D Physical Euclidean Distance
@@ -1071,13 +777,13 @@ function intersectRayWithPlane(rayOrigin, rayDir, planePoint, planeNormal) {
 
 /**
  * Unprojects a 2D image landmark coordinate (u, v in pixels) into a physical 3D world point.
- * Uses the frozen camera matrix, projection matrix, and surface plane with FABRIC_OFFSET.
+ * Uses exact 4x4 matrix inversion and surface plane with FABRIC_OFFSET.
  */
 function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMatrix, planePoint, planeNormal, fabricOffset = FABRIC_OFFSET) {
   const pPoint = (planePoint && typeof planePoint.x === 'number') ? planePoint : { x: 0, y: -0.5, z: -0.8 };
   const pNorm = (planeNormal && typeof planeNormal.x === 'number') ? planeNormal : { x: 0, y: 1.0, z: 0 };
-  const imgW = imageWidth || 576;
-  const imgH = imageHeight || 1280;
+  const imgW = imageWidth || window.innerWidth || 576;
+  const imgH = imageHeight || window.innerHeight || 1280;
   const pMat = (projMatrix && projMatrix.length >= 16) ? projMatrix : new Float32Array([1.8, 0, 0, 0,  0, 0.9, 0, 0,  0, 0, -1, -1,  0, 0, -0.2, 0]);
   const cMat = (camMatrix && camMatrix.length >= 16) ? camMatrix : new Float32Array([1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]);
 
@@ -1085,27 +791,59 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
   const ndcX = (u / imgW) * 2 - 1;
   const ndcY = 1 - (v / imgH) * 2;
 
-  // 2. Camera View Space Ray Direction
-  const dxCam = (ndcX + (pMat[8] || 0)) / (pMat[0] || 1.8);
-  const dyCam = (ndcY + (pMat[9] || 0)) / (pMat[5] || 0.9);
-  const dzCam = -1.0;
+  // 2. Exact 4x4 Inverse Projection to View Space Ray
+  const invP = invertMatrix4(new Float32Array(16), pMat);
+  let dir, origin;
 
-  // 3. Transform Ray Direction to World Space
-  const rX = cMat[0] * dxCam + cMat[4] * dyCam + cMat[8] * dzCam;
-  const rY = cMat[1] * dxCam + cMat[5] * dyCam + cMat[9] * dzCam;
-  const rZ = cMat[2] * dxCam + cMat[6] * dyCam + cMat[10] * dzCam;
+  if (invP) {
+    const xc = invP[0] * ndcX + invP[4] * ndcY - invP[8] + invP[12];
+    const yc = invP[1] * ndcX + invP[5] * ndcY - invP[9] + invP[13];
+    const zc = invP[2] * ndcX + invP[6] * ndcY - invP[10] + invP[14];
+    const wc = invP[3] * ndcX + invP[7] * ndcY - invP[11] + invP[15];
+    const invW = (Math.abs(wc) > 1e-6) ? (1.0 / wc) : 1.0;
+    const vx = xc * invW;
+    const vy = yc * invW;
+    const vz = zc * invW;
 
-  const rLen = Math.hypot(rX, rY, rZ);
-  if (rLen < 1e-6) return null;
-  const dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
-  const origin = { x: cMat[12], y: cMat[13], z: cMat[14] };
+    const rX = cMat[0] * vx + cMat[4] * vy + cMat[8] * vz;
+    const rY = cMat[1] * vx + cMat[5] * vy + cMat[9] * vz;
+    const rZ = cMat[2] * vx + cMat[6] * vy + cMat[10] * vz;
+    const rLen = Math.hypot(rX, rY, rZ) || 1.0;
 
-  // 4. Elevate surface plane by FABRIC_OFFSET (0.002m) along the normal
+    dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
+    origin = { x: cMat[12], y: cMat[13], z: cMat[14] };
+  } else {
+    // Fallback ray calculation
+    const dxCam = (ndcX + (pMat[8] || 0)) / (pMat[0] || 1.8);
+    const dyCam = (ndcY + (pMat[9] || 0)) / (pMat[5] || 0.9);
+    const dzCam = -1.0;
+    const rX = cMat[0] * dxCam + cMat[4] * dyCam + cMat[8] * dzCam;
+    const rY = cMat[1] * dxCam + cMat[5] * dyCam + cMat[9] * dzCam;
+    const rZ = cMat[2] * dxCam + cMat[6] * dyCam + cMat[10] * dzCam;
+    const rLen = Math.hypot(rX, rY, rZ) || 1.0;
+    dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
+    origin = { x: cMat[12], y: cMat[13], z: cMat[14] };
+  }
+
+  // 3. Elevate surface plane by FABRIC_OFFSET along normal
   const offsetPlanePoint = {
     x: pPoint.x + fabricOffset * pNorm.x,
     y: pPoint.y + fabricOffset * pNorm.y,
     z: pPoint.z + fabricOffset * pNorm.z
   };
+
+  // 4. If surface is horizontal (floor/table), compute direct stable ground intersection
+  if (Math.abs(pNorm.y) > 0.99 && Math.abs(pNorm.x) < 0.05 && Math.abs(pNorm.z) < 0.05 && Math.abs(dir.y) > 1e-4) {
+    const tH = (offsetPlanePoint.y - origin.y) / dir.y;
+    if (tH > 0.01 && tH < 10.0) {
+      return {
+        x: origin.x + tH * dir.x,
+        y: offsetPlanePoint.y,
+        z: origin.z + tH * dir.z,
+        t: tH
+      };
+    }
+  }
 
   let hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, pNorm);
 
@@ -1187,13 +925,11 @@ function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth,
    ========================================================================== */
 
 function triggerScanCapture() {
-  if (!state.surfacePlane && !state.hasSurface) {
-    showErrorBanner('No surface detected yet. Aim at flat trousers until surface locks.');
+  if (!state.surfacePlane) {
+    showErrorBanner('No surface detected yet. Scan trousers until surface locks.');
     return;
   }
   hideErrorBanner();
-  resetRing();
-  cancelCountdown();
   state.scanRequested = true;
   logMsg('Scan triggered. Freezing calibration on next XR frame...', 'info');
 }
@@ -1347,23 +1083,52 @@ async function captureFallbackCameraFrame() {
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920, min: 1280 }, height: { ideal: 1080, min: 720 } }
     });
     const video = document.createElement('video');
     video.srcObject = stream;
     video.playsInline = true;
     await video.play();
 
-    const w = video.videoWidth || 1280;
-    const h = video.videoHeight || 720;
+    const vidW = video.videoWidth || 1280;
+    const vidH = video.videoHeight || 720;
+
+    // Match exact aspect ratio of active WebXR viewport
+    const targetAspect = window.innerWidth / window.innerHeight;
+    const vidAspect = vidW / vidH;
+
+    let cropX = 0, cropY = 0, cropW = vidW, cropH = vidH;
+
+    if (vidAspect > targetAspect) {
+      // Video is wider than screen: crop sides symmetrically
+      cropW = vidH * targetAspect;
+      cropX = (vidW - cropW) / 2;
+    } else {
+      // Video is taller than screen: crop top and bottom
+      cropH = vidW / targetAspect;
+      cropY = (vidH - cropH) / 2;
+    }
+
+    // Target max 1280 for fast HRNet inference
+    let targetW = Math.round(cropW);
+    let targetH = Math.round(cropH);
+    const maxDim = 1280;
+    if (Math.max(targetW, targetH) > maxDim) {
+      const s = maxDim / Math.max(targetW, targetH);
+      targetW = Math.round(targetW * s);
+      targetH = Math.round(targetH * s);
+    }
+
     const c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    c.getContext('2d').drawImage(video, 0, 0);
+    c.width = targetW;
+    c.height = targetH;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, targetW, targetH);
 
     stream.getTracks().forEach(t => t.stop());
     const dataUrl = c.toDataURL('image/jpeg', 0.9);
     const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
-    return { width: w, height: h, blob, dataUrl };
+    return { width: targetW, height: targetH, blob, dataUrl };
   } catch (camErr) {
     // Canvas fallback: capture the active WebGL AR canvas
     const arCanvas = elements.arCanvas;
@@ -1598,24 +1363,6 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
   state.detectedKeypointsMap = keypointsMap;
   state.measurementNotices = [];
 
-  // Helper to compute 2D pixel distance between two keypoint objects { u, v }
-  const get2DPixelDist = (kpA, kpB) => {
-    if (!kpA || !kpB || typeof kpA.u !== 'number' || typeof kpB.u !== 'number') return 0;
-    return Math.hypot(kpB.u - kpA.u, kpB.v - kpA.v);
-  };
-
-  // Determine waistPixels from detected waist keypoints
-  let waistPixels = 0;
-  if (keypointsMap['waist_left'] && keypointsMap['waist_right']) {
-    waistPixels = get2DPixelDist(keypointsMap['waist_left'], keypointsMap['waist_right']);
-  } else if (keypointsMap['waist_left'] && keypointsMap['waist_center']) {
-    waistPixels = get2DPixelDist(keypointsMap['waist_left'], keypointsMap['waist_center']) * 2.0;
-  } else if (keypointsMap['waist_center'] && keypointsMap['waist_right']) {
-    waistPixels = get2DPixelDist(keypointsMap['waist_center'], keypointsMap['waist_right']) * 2.0;
-  } else if (keypointsMap['hip_left'] && keypointsMap['hip_right']) {
-    waistPixels = get2DPixelDist(keypointsMap['hip_left'], keypointsMap['hip_right']);
-  }
-
   // Evaluate MEASUREMENTS config
   const calculated = {};
 
@@ -1643,19 +1390,13 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
     // Direct pairwise landmarks (confidence gating removed per user instruction)
     let bestPair = null;
     let bestDist = 0;
-    let pairPixels = 0;
 
     // 1. Direct pairwise calculation from model detected keypoints
     const pA = keypointsMap[m.landmarks[0]];
     const pB = keypointsMap[m.landmarks[1]];
-    if (pA && pB) {
-      pairPixels = get2DPixelDist(pA, pB);
-      if (pA.p3D && pB.p3D) {
-        bestPair = [pA, pB];
-        bestDist = calculate3DDistance(pA.p3D, pB.p3D);
-      } else if (m.usePixelRatio) {
-        bestPair = [pA, pB];
-      }
+    if (pA && pB && pA.p3D && pB.p3D) {
+      bestPair = [pA, pB];
+      bestDist = calculate3DDistance(pA.p3D, pB.p3D);
     }
 
     // 2. Check fallback landmarks if primary pair is missing
@@ -1666,33 +1407,17 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
         const mult = fb[2] || 1.0;
         const fbA = keypointsMap[nameA];
         const fbB = keypointsMap[nameB];
-        if (fbA && fbB) {
-          pairPixels = get2DPixelDist(fbA, fbB) * mult;
-          if (fbA.p3D && fbB.p3D) {
-            bestPair = [fbA, fbB];
-            bestDist = calculate3DDistance(fbA.p3D, fbB.p3D) * mult;
-          } else if (m.usePixelRatio) {
-            bestPair = [fbA, fbB];
-          }
+        if (fbA && fbB && fbA.p3D && fbB.p3D) {
+          bestPair = [fbA, fbB];
+          bestDist = calculate3DDistance(fbA.p3D, fbB.p3D) * mult;
           break;
         }
       }
     }
 
-    // 3. User Pixel-Ratio Scaling for Outseam and Inseam:
-    // outseam = (outseampixels * waistsize) / waistpixels
-    // inseam = (inseampixels * waistsize) / waistpixels
-    if (m.usePixelRatio && waistPixels > 0 && calculated['waist_width']?.valid) {
-      const waistSizeMeters = calculated['waist_width'].distMeters;
-      if (pairPixels > 0 && waistSizeMeters > 0) {
-        bestDist = (pairPixels * waistSizeMeters) / waistPixels;
-        logMsg(`[PixelRatio] ${m.label}: (${pairPixels.toFixed(0)}px * ${(waistSizeMeters * 39.3701).toFixed(1)}" waist) / ${waistPixels.toFixed(0)}px = ${(bestDist * 39.3701).toFixed(1)}"`, 'success');
-      }
-    }
-
     const friendlyName = m.label.toLowerCase();
 
-    if (bestPair && (bestDist > 0 || (bestPair[0]?.p3D && bestPair[1]?.p3D))) {
+    if (bestPair) {
       calculated[m.id] = {
         id: m.id,
         label: m.label,
@@ -1700,8 +1425,8 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
         distMeters: bestDist,
         distCm: bestDist * 100,
         distInches: bestDist * 39.3701,
-        pointA: bestPair[0]?.p3D || null,
-        pointB: bestPair[1]?.p3D || null
+        pointA: bestPair[0].p3D,
+        pointB: bestPair[1].p3D
       };
     } else {
       state.measurementNotices.push(`Keypoints for ${friendlyName} were not found in backend response.`);
@@ -1922,22 +1647,29 @@ function renderDebug2DView(snapshot, backendData) {
 
 function resetToScanning() {
   state.flowState = STATES.SCANNING;
+  state.measurementState = STATES.SCANNING;
   state.frozenSnapshot = null;
   state.detectedKeypointsMap = {};
   state.calculatedMeasurements = {};
   state.measurementNotices = [];
   state.scanRequested = false;
-
-  resetRing();
-  cancelCountdown();
+  state.point1 = null;
+  state.point2 = null;
+  state.point1Pixel = null;
+  state.point2Pixel = null;
+  state.finalDistanceMeters = 0;
+  planeStabilizer.reset();
 
   hideToast();
   hideErrorBanner();
   if (elements.garmentPinsContainer) elements.garmentPinsContainer.innerHTML = '';
   if (elements.svgMeasureLine) elements.svgMeasureLine.style.display = 'none';
+  if (elements.markerA) elements.markerA.classList.add('hidden');
+  if (elements.markerB) elements.markerB.classList.add('hidden');
   if (elements.hudReticleContainer) elements.hudReticleContainer.classList.remove('hidden');
+  if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '--';
 
-  updateTrackingUI(state.surfacePlane !== null, false);
+  updateTrackingUI(state.surfacePlane !== null, false, state.phoneTiltDeg || 0);
 }
 
 function showToast(msg) {
@@ -1972,24 +1704,34 @@ function handleManualPlacePoint(tapX, tapY) {
   const posX = (tapX !== undefined) ? tapX : (screenW / 2);
   const posY = (tapY !== undefined) ? tapY : (screenH / 2);
 
-  if (state.measurementState === STATES.SCANNING) {
+  if (!state.surfacePlane) {
+    showToast('Scan surface first until surface locks');
+    return;
+  }
+
+  if (state.measurementState === STATES.SCANNING || state.measurementState === STATES.MANUAL_LOCKED) {
     const pt3D = unprojectKeypointTo3D(
       posX, posY, screenW, screenH,
       state.lastProjMatrix, state.lastCameraMatrix,
-      state.surfacePlane ? state.surfacePlane.point : { x: 0, y: 0, z: -1 },
-      state.surfacePlane ? state.surfacePlane.normal : { x: 0, y: 0, z: 1 },
+      state.surfacePlane.point,
+      state.surfacePlane.normal,
       0.0
     );
     if (!pt3D) return;
     state.point1 = pt3D;
     state.point1Pixel = { x: posX, y: posY };
+    state.point2 = null;
     state.measurementState = STATES.MANUAL_P1;
+    if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '0.0 cm';
+    if (elements.stepText) elements.stepText.textContent = 'Point 1 placed. Aim reticle & tap Point 2';
+    if (elements.stepIcon) elements.stepIcon.textContent = '📍';
+    if (elements.markerB) elements.markerB.classList.add('hidden');
   } else if (state.measurementState === STATES.MANUAL_P1) {
     const pt3D = unprojectKeypointTo3D(
       posX, posY, screenW, screenH,
       state.lastProjMatrix, state.lastCameraMatrix,
-      state.surfacePlane ? state.surfacePlane.point : { x: 0, y: 0, z: -1 },
-      state.surfacePlane ? state.surfacePlane.normal : { x: 0, y: 0, z: 1 },
+      state.surfacePlane.point,
+      state.surfacePlane.normal,
       0.0
     );
     if (!pt3D) return;
@@ -1997,6 +1739,11 @@ function handleManualPlacePoint(tapX, tapY) {
     state.point2Pixel = { x: posX, y: posY };
     state.finalDistanceMeters = calculate3DDistance(state.point1, state.point2);
     state.measurementState = STATES.MANUAL_LOCKED;
+    const cm = (state.finalDistanceMeters * 100).toFixed(1);
+    const inches = (state.finalDistanceMeters * 39.3701).toFixed(1);
+    if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = `${cm} cm (${inches} in)`;
+    if (elements.stepText) elements.stepText.textContent = `✓ Measured: ${cm} cm (${inches} in) — Tap ↺ to Rescan`;
+    if (elements.stepIcon) elements.stepIcon.textContent = '✓';
   }
 }
 
@@ -2012,6 +1759,36 @@ function renderManualHUD(view, width, height) {
       elements.markerA.style.left = `${proj1.xPixel}px`;
       elements.markerA.style.top = `${proj1.yPixel}px`;
     }
+
+    // Dynamic Live Distance tracking to center reticle
+    let currentReticle3D = null;
+    if (state.surfacePlane) {
+      currentReticle3D = unprojectKeypointTo3D(
+        width / 2, height / 2, width, height,
+        projMatrix, state.lastCameraMatrix,
+        state.surfacePlane.point,
+        state.surfacePlane.normal,
+        0.0
+      );
+    }
+
+    if (currentReticle3D) {
+      const liveDist = calculate3DDistance(state.point1, currentReticle3D);
+      const cm = (liveDist * 100).toFixed(1);
+      const inches = (liveDist * 39.3701).toFixed(1);
+      if (elements.hudDistanceVal) {
+        elements.hudDistanceVal.textContent = `${cm} cm (${inches} in)`;
+      }
+
+      // Draw dynamic measuring line from marker A to center screen
+      if (proj1.valid && elements.svgMeasureLine) {
+        elements.svgMeasureLine.setAttribute('x1', proj1.xPixel);
+        elements.svgMeasureLine.setAttribute('y1', proj1.yPixel);
+        elements.svgMeasureLine.setAttribute('x2', width / 2);
+        elements.svgMeasureLine.setAttribute('y2', height / 2);
+        elements.svgMeasureLine.style.display = 'block';
+      }
+    }
   } else if (state.measurementState === STATES.MANUAL_LOCKED && state.point1 && state.point2) {
     const proj1 = projectPointToPixel(state.point1, viewMatrix, projMatrix, width, height);
     const proj2 = projectPointToPixel(state.point2, viewMatrix, projMatrix, width, height);
@@ -2022,11 +1799,13 @@ function renderManualHUD(view, width, height) {
       elements.markerB.classList.remove('hidden');
       elements.markerB.style.left = `${proj2.xPixel}px`;
       elements.markerB.style.top = `${proj2.yPixel}px`;
-      elements.svgMeasureLine.setAttribute('x1', proj1.xPixel);
-      elements.svgMeasureLine.setAttribute('y1', proj1.yPixel);
-      elements.svgMeasureLine.setAttribute('x2', proj2.xPixel);
-      elements.svgMeasureLine.setAttribute('y2', proj2.yPixel);
-      elements.svgMeasureLine.style.display = 'block';
+      if (elements.svgMeasureLine) {
+        elements.svgMeasureLine.setAttribute('x1', proj1.xPixel);
+        elements.svgMeasureLine.setAttribute('y1', proj1.yPixel);
+        elements.svgMeasureLine.setAttribute('x2', proj2.xPixel);
+        elements.svgMeasureLine.setAttribute('y2', proj2.yPixel);
+        elements.svgMeasureLine.style.display = 'block';
+      }
     }
   } else {
     elements.markerA.classList.add('hidden');
@@ -2077,18 +1856,6 @@ async function startSimulatorMode() {
     normal: { x: 0, y: 0, z: 1.0 },
     timestamp: performance.now()
   };
-  state.hasSurface = true;
-
-  // Simulate level phone orientation in desktop emulator
-  state.telemetry = {
-    filteredPitch: 0,
-    filteredRoll: 0,
-    colorState: 'green',
-    statusText: '🟢 Ready',
-    guidanceText: '✓ Ready',
-    isReady: true
-  };
-  updateTiltHUD(state.telemetry);
 
   resetToScanning();
 
@@ -2129,9 +1896,6 @@ async function startSimulatorMode() {
     state.isTrackingStable = true;
     updateTrackingUI(true, true);
 
-    // Evaluate auto-capture in simulator
-    evaluateAutoCapture(performance.now(), true, state.telemetry.isReady);
-
     const simulatedView = {
       transform: { inverse: { matrix: viewMatrix } },
       projectionMatrix: projMatrix
@@ -2143,8 +1907,6 @@ async function startSimulatorMode() {
 }
 
 function stopSimulator() {
-  resetRing();
-  cancelCountdown();
   if (state.simulatorInterval) {
     clearInterval(state.simulatorInterval);
     state.simulatorInterval = null;
@@ -2204,88 +1966,18 @@ function setupEventListeners() {
   // Emulator Mode
   elements.btnStartSim.addEventListener('click', startSimulatorMode);
 
-  // One-Shot Scan Trigger Button (Instant capture when surface locked, exactly like before tilt)
+  // One-Shot Scan Trigger Button
   elements.btnScanTrigger.addEventListener('click', (e) => {
     e.stopPropagation();
     if (state.isSimulator) {
+      // In simulator, if file input exists, prompt for image or use camera frame
       if (elements.simFileInput && !state.simVideo) {
         elements.simFileInput.click();
         return;
       }
     }
-
-    // Check if surface is detected
-    if (!state.surfacePlane && !state.hasSurface) {
-      showErrorBanner('No surface detected yet. Aim at flat trousers until surface locks.');
-      return;
-    }
-
-    // Trigger instant frame capture
     triggerScanCapture();
   });
-
-  // Settings Menu Button & Close
-  if (elements.settingsBtn) {
-    elements.settingsBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (elements.settingsMenu) elements.settingsMenu.classList.remove('hidden');
-    });
-  }
-
-  if (elements.menuCloseBtn) {
-    elements.menuCloseBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (elements.settingsMenu) elements.settingsMenu.classList.add('hidden');
-    });
-  }
-
-  if (elements.settingsMenu) {
-    elements.settingsMenu.addEventListener('click', (e) => {
-      if (e.target === elements.settingsMenu) {
-        elements.settingsMenu.classList.add('hidden');
-      }
-    });
-  }
-
-  // Auto / Manual Capture Mode Toggle
-  if (elements.modeAutoBtn && elements.modeManualBtn) {
-    elements.modeAutoBtn.addEventListener('click', () => {
-      state.isAutoCapture = true;
-      resetRing();
-      cancelCountdown();
-      elements.modeAutoBtn.classList.add('active');
-      elements.modeAutoBtn.setAttribute('aria-pressed', 'true');
-      elements.modeManualBtn.classList.remove('active');
-      elements.modeManualBtn.setAttribute('aria-pressed', 'false');
-    });
-
-    elements.modeManualBtn.addEventListener('click', () => {
-      state.isAutoCapture = false;
-      resetRing();
-      cancelCountdown();
-      elements.modeManualBtn.classList.add('active');
-      elements.modeManualBtn.setAttribute('aria-pressed', 'true');
-      elements.modeAutoBtn.classList.remove('active');
-      elements.modeAutoBtn.setAttribute('aria-pressed', 'false');
-    });
-  }
-
-  // Calibration Controls
-  if (elements.calibrateBtn) {
-    elements.calibrateBtn.addEventListener('click', () => {
-      if (state.sensors) state.sensors.calibrate();
-      if (elements.settingsMenu) elements.settingsMenu.classList.add('hidden');
-      logMsg('Phone tilt calibrated to current orientation.', 'info');
-    });
-  }
-
-  if (elements.resetCalibrationBtn) {
-    elements.resetCalibrationBtn.addEventListener('click', () => {
-      if (state.sensors) state.sensors.resetCalibration();
-      if (elements.settingsMenu) elements.settingsMenu.classList.add('hidden');
-      logMsg('Phone tilt calibration reset.', 'info');
-    });
-  }
 
   // Simulator file picker
   if (elements.simFileInput) {
@@ -2363,13 +2055,6 @@ function setupEventListeners() {
 
 // Initialize on DOM ready or immediately if already loaded
 function init() {
-  state.sensors = new SensorManager();
-  state.sensors.onUpdateCallback = (telemetry) => {
-    state.telemetry = telemetry;
-    updateTiltHUD(telemetry);
-  };
-  state.sensors.init();
-
   setupEventListeners();
   checkCompatibility();
 }
