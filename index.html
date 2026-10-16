@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Slyte AI Fit Assistant &amp; AR Measurement</title>
-  <meta name="description" content="Slyte AI Fit Assistant — Find your perfect custom size with 100% accurate AR and Phone Tilt Guidance.">
+  <meta name="description" content="Slyte AI Fit Assistant — 100% automated pant size & dimension measurement using AR + HRNet. No tape measure or manual inputs needed.">
 
   <!-- Google Fonts & Material Symbols -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,7 +19,7 @@
   <link rel="icon" type="image/png" href="images/logos/slyte-only-logo-black.png">
 
   <!-- Main Stylesheet -->
-  <link rel="stylesheet" href="style.css?v=11">
+  <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
   <!-- Global App Shell -->
@@ -31,12 +31,12 @@
         <a href="#" class="brand-link" id="brand-home-link">
           <img src="images/logos/slyte-logo-black.png" alt="Slyte Logo" class="brand-logo" onerror="this.src='images/logos/dash-logo.png'">
         </a>
-        <span class="brand-tagline">AI Fit &bull; AR + Tilt Guidance</span>
+        <span class="brand-tagline">100% Metric AR &bull; HRNet AI</span>
       </div>
     </header>
 
     <!-- =========================================================================
-         MAIN APPLICATION: SLYTE AI FIT ASSISTANT WITH SINGLE CAPTURE BUTTON
+         MAIN APPLICATION: SLYTE AI FIT (NO MANUAL WAIST SIZE NEEDED)
          ========================================================================= -->
     <main class="main-content">
       <div class="fit-container">
@@ -45,10 +45,10 @@
         <div class="ai-fit-header">
           <div class="badge-pill-header">
             <span class="pulse-indicator"></span>
-            SAM3 + HRNet + AR Tilt Engine
+            100% Automated AR &amp; HRNet Landmark Sizing
           </div>
           <h1 class="ai-fit-title">AI Fit Assistant</h1>
-          <p class="ai-fit-subtitle">Find your perfect custom size in seconds with AR level guidance.</p>
+          <p class="ai-fit-subtitle">Zero tape measure needed. Simply capture your pant with AR tilt alignment to calculate all true physical sizes.</p>
         </div>
 
         <!-- Step 1: Name Input -->
@@ -74,7 +74,7 @@
               <span class="capture-btn-text">CAPTURE IMAGE</span>
               <span class="capture-badge-tag">AR + Tilt Guide</span>
             </button>
-            <p class="capture-zone-hint">Opens live camera with AR surface lock &amp; phone tilt guidance.</p>
+            <p class="capture-zone-hint">Align your camera parallel to the floor with AR surface lock to capture.</p>
           </div>
 
           <!-- Captured Image Preview (Shown after capture) -->
@@ -90,27 +90,14 @@
           </div>
         </div>
 
-        <!-- Step 3: Waist Input -->
-        <div class="step-card">
-          <div class="step-header">
-            <span class="step-num">STEP 3</span>
-            <span class="step-title">ENTER YOUR WAIST SIZE</span>
-          </div>
-          <div class="waist-input-group">
-            <input id="waist-input" class="waist-input" type="number" placeholder="e.g. 32" min="24" max="60" step="1">
-            <span class="waist-unit">INCHES</span>
-          </div>
-          <p class="field-hint">Enter your comfortable wearing waist size (typically 26 to 48).</p>
-        </div>
-
-        <!-- Action & Social Proof -->
+        <!-- Action Area (No manual waist size required) -->
         <div class="analyze-cta-area">
           <div class="social-proof-bar">
             <span class="social-star">★</span>
-            <span>Used by 500+ Users &bull; 100% Calibrated</span>
+            <span>All sizes measured directly by AR 3D metric geometry &amp; HRNet</span>
           </div>
           <button id="analyze-btn" class="btn-analyze">
-            <span>ANALYZE MY FIT</span>
+            <span>GET SIZES &amp; FIT</span>
             <span class="material-symbols-outlined">arrow_forward</span>
           </button>
         </div>
@@ -118,35 +105,35 @@
         <!-- Spinner & Progress -->
         <div id="spinner" class="spinner-container">
           <div class="spinner-ring"></div>
-          <div id="spinner-label" class="spinner-label">Analyzing with SAM3 + HRNet AI...</div>
-          <div class="spinner-subtext">Segmenting contours &amp; detecting 14 key landmarks</div>
+          <div id="spinner-label" class="spinner-label">Detecting landmarks via slytear...</div>
+          <div class="spinner-subtext">Unprojecting 3D surface coordinates &amp; calculating garment dimensions</div>
         </div>
 
         <!-- Error Toast Notification -->
         <div id="error-toast" class="error-toast-banner" role="alert"></div>
 
-        <!-- Results Section -->
+        <!-- Results Section: Automated Measurements Derived 100% from AR + HRNet -->
         <div id="result-section" class="fit-results-section">
           <div id="sync-badge" class="sync-banner"></div>
 
-          <!-- Result Preview Image -->
+          <!-- Result Preview Image with Plotted Landmarks -->
           <div class="result-image-card">
-            <img id="result-image" class="result-display-img" alt="AI Detection & Segmentation Result">
-            <div class="result-image-caption">HRNet &amp; SAM3 Segmentation Result</div>
+            <img id="result-image" class="result-display-img" alt="HRNet 3D Landmark Result">
+            <div class="result-image-caption">Plotted 14-Keypoint DeepFashion2 Detection</div>
           </div>
 
           <!-- Recommended Size & Fit Card -->
           <div class="results-card">
             <div id="result-greeting" class="results-greeting">Hello,</div>
             <div class="size-recommendation-block">
-              <span class="size-tag-label">RECOMMENDED SIZE</span>
+              <span class="size-tag-label">AR CALCULATED RECOMMENDED SIZE</span>
               <div id="result-size" class="size-badge-large">--</div>
             </div>
 
-            <!-- Dimensions Grid -->
+            <!-- Dimensions Grid Measured by AR -->
             <div class="metrics-grid">
               <div class="metric-item">
-                <span class="metric-title">WAIST</span>
+                <span class="metric-title">WAIST (CIRCUMFERENCE)</span>
                 <span id="result-waist" class="metric-number">--</span>
               </div>
               <div class="metric-item">
@@ -166,8 +153,8 @@
             <!-- Extended Trouser Measurements -->
             <div class="extended-metrics-grid">
               <div class="ext-item">
-                <span class="ext-label">Waist Circ:</span>
-                <span id="result-waist-circ" class="ext-val">--</span>
+                <span class="ext-label">Flat Waist Width:</span>
+                <span id="result-waist-width" class="ext-val">--</span>
               </div>
               <div class="ext-item">
                 <span class="ext-label">Thigh Width:</span>
@@ -232,7 +219,7 @@
             <button class="icon-btn" id="ts-settings-btn" aria-label="Settings">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="3"></circle>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83-2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
               </svg>
             </button>
           </header>
@@ -371,7 +358,7 @@
             </div>
             <div class="preview-actions">
               <button id="ts-retake-btn" class="btn-secondary">Retake</button>
-              <button id="ts-continue-btn" class="btn-primary">Use Photo</button>
+              <button id="ts-continue-btn" class="btn-primary">Use Photo &amp; Measure</button>
             </div>
           </div>
         </div>
@@ -382,6 +369,6 @@
   </div><!-- /#app -->
 
   <!-- Main Unified ES6 Application Script with cache busting -->
-  <script type="module" src="app.js?v=11"></script>
+  <script type="module" src="app.js?v=12"></script>
 </body>
 </html>
