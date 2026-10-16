@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>Slyte AI Fit Assistant &amp; AR Measurement</title>
-  <meta name="description" content="Slyte AI Fit Assistant — Find your perfect custom size and calculate 100% accurate 3D garment dimensions with WebXR AR and Phone Tilt Guide.">
+  <meta name="description" content="Slyte AI Fit Assistant — Find your perfect custom size with 100% accurate AR and Phone Tilt Guidance.">
 
   <!-- Google Fonts & Material Symbols -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,7 +19,7 @@
   <link rel="icon" type="image/png" href="images/logos/slyte-only-logo-black.png">
 
   <!-- Main Stylesheet -->
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
   <!-- Global App Shell -->
@@ -31,35 +31,24 @@
         <a href="#" class="brand-link" id="brand-home-link">
           <img src="images/logos/slyte-logo-black.png" alt="Slyte Logo" class="brand-logo" onerror="this.src='images/logos/dash-logo.png'">
         </a>
-        <span class="brand-tagline">AI Fit &bull; 100% Metric AR</span>
+        <span class="brand-tagline">AI Fit &bull; AR + Tilt Guidance</span>
       </div>
-
-      <nav class="nav-modes">
-        <button id="tab-fit-mode" class="mode-tab-btn active">
-          <span class="material-symbols-outlined tab-icon">accessibility_new</span>
-          <span class="tab-label">AI Fit Assistant</span>
-        </button>
-        <button id="tab-ar-mode" class="mode-tab-btn">
-          <span class="material-symbols-outlined tab-icon">view_in_ar</span>
-          <span class="tab-label">AR 3D Measure</span>
-        </button>
-      </nav>
     </header>
 
     <!-- =========================================================================
-         SCREEN 1: SLYTE AI FIT ASSISTANT (Frontend from E:\slyte_frontend\ai-fit)
+         MAIN APPLICATION: SLYTE AI FIT ASSISTANT WITH SINGLE CAPTURE BUTTON
          ========================================================================= -->
-    <section id="screen-ai-fit" class="screen-view active">
+    <main class="main-content">
       <div class="fit-container">
 
         <!-- Header -->
         <div class="ai-fit-header">
           <div class="badge-pill-header">
             <span class="pulse-indicator"></span>
-            SAM3 + HRNet + WebXR AR Engine
+            SAM3 + HRNet + AR Tilt Engine
           </div>
           <h1 class="ai-fit-title">AI Fit Assistant</h1>
-          <p class="ai-fit-subtitle">Find your perfect custom size in seconds. No measuring tape required.</p>
+          <p class="ai-fit-subtitle">Find your perfect custom size in seconds with AR level guidance.</p>
         </div>
 
         <!-- Step 1: Name Input -->
@@ -71,46 +60,32 @@
           <input id="name-input" class="text-input" type="text" placeholder="Enter your full name" autocomplete="name">
         </div>
 
-        <!-- Step 2: Flat Laid Pant Image with Upload & Phone Tilt Camera Trigger -->
+        <!-- Step 2: Single Capture Image Button (AR + Tilt Guidance) -->
         <div class="step-card">
           <div class="step-header">
             <span class="step-num">STEP 2</span>
-            <span class="step-title">UPLOAD OR SCAN FLAT LAID PANT</span>
+            <span class="step-title">CAPTURE FLAT LAID PANT</span>
           </div>
 
-          <!-- Interactive Upload Zone -->
-          <div id="upload-zone" class="upload-zone" role="button" tabindex="0" aria-label="Upload or take photo of flat laid pant">
-            <div class="upload-icon-wrap">
-              <svg class="upload-pant-svg" viewBox="0 0 2461 3095" preserveAspectRatio="xMidYMid meet">
-                <path
-                  d="M2211.43 1709.41L2256.71 1910.52V1910.52L2246.96 1912.71L2292.24 2113.82L2302 2111.62L2347.29 2312.73H2347.29L2337.53 2314.93L2382.82 2516.04L2392.57 2513.84V2513.84L2437.86 2714.95H2437.86L2428.1 2717.14L2448.88 2809.42L2321.49 2861.11L2325.25 2870.38L2054.75 2980.12L2050.99 2970.86L1925.36 3021.83L1892.13 2930.14L1882.72 2933.55L1809.17 2730.65L1818.58 2727.24L1745.03 2524.34L1735.62 2527.75L1662.07 2324.85L1671.48 2321.44L1597.93 2118.54L1588.52 2121.95L1514.97 1919.05L1524.38 1915.64L1450.83 1712.74L1441.42 1716.15L1367.88 1513.25L1377.28 1509.84L1303.73 1306.94L1294.32 1310.35L1220.77 1107.45L1230.18 1104.04L1193.4 1002.59L1182.83 973.442L1174.38 1003.27L1144.78 1107.7L1154.4 1110.42L1095.2 1319.27L1085.58 1316.55L1026.38 1525.4L1036 1528.12L976.8 1736.97L967.179 1734.25L907.979 1943.1L917.6 1945.83L858.399 2154.67L848.779 2151.95L789.579 2360.8L799.199 2363.52L740 2572.38L730.379 2569.65L671.179 2778.5L680.8 2781.22L621.6 2990.08L611.979 2987.35L584.864 3083L519.827 3070.92L518 3080.75L370 3053.25L371.827 3043.42L223.827 3015.92L222 3025.75L74 2998.25L75.8271 2988.42L11.5898 2976.48L26.501 2892.99L16.6562 2891.23L49.9688 2704.7L59.8135 2706.46L93.126 2519.93L83.2812 2518.17L116.594 2331.64L126.438 2333.4L159.751 2146.87L149.906 2145.11L183.219 1958.58L193.062 1960.34L226.376 1773.8L216.531 1772.05L249.844 1585.52L259.688 1587.27L293 1400.74L283.156 1398.98L316.469 1212.45L326.313 1214.21L359.626 1027.68L349.781 1025.92L383.094 839.391L392.938 841.148L426.251 654.617L416.406 652.859L449.719 466.328L459.563 468.086L492.876 281.555L483.031 279.797L516.344 93.2656L526.188 95.0234L541.373 10H640.792V0H856.375V10H1071.96V0H1287.54V10H1503.12V0H1718.71V10H1818.5L1839.39 102.751L1849.14 100.554V100.553L1894.43 301.661H1894.43L1884.67 303.857L1929.96 504.965L1939.71 502.769V502.768L1985 703.875L1975.24 706.072L2020.53 907.179L2030.29 904.982L2075.57 1106.09V1106.09L2065.82 1108.29L2111.1 1309.39L2120.86 1307.2L2166.14 1508.3V1508.3L2156.39 1510.5L2201.67 1711.61L2211.43 1709.41Z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="120"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+          <!-- Single Capture Button -->
+          <div class="capture-action-zone">
+            <button type="button" id="btn-capture-image" class="btn-capture-single">
+              <span class="material-symbols-outlined capture-icon">photo_camera</span>
+              <span class="capture-btn-text">CAPTURE IMAGE</span>
+              <span class="capture-badge-tag">AR + Tilt Guide</span>
+            </button>
+            <p class="capture-zone-hint">Opens live camera with AR surface lock &amp; phone tilt guidance.</p>
+          </div>
+
+          <!-- Captured Image Preview (Shown after capture) -->
+          <div id="captured-preview-container" class="captured-preview-container hidden">
+            <div class="preview-media-box">
+              <img id="upload-preview" class="upload-preview-img" alt="Captured pant preview">
+              <span id="upload-success-badge" class="upload-success-badge">✓ Photo Ready</span>
             </div>
-            <div class="upload-title">Upload flat laid pant image</div>
-            <div class="upload-hint">Tap to use Phone Tilt Camera, AR Mode, or Gallery</div>
-            <img id="upload-preview" class="upload-preview-img" alt="Uploaded pant thumbnail">
-            <span id="upload-success-badge" class="upload-success-badge">✓ Ready</span>
-          </div>
-
-          <!-- Quick Action Buttons for Step 2 -->
-          <div class="upload-quick-actions">
-            <button type="button" id="btn-quick-camera" class="btn-quick btn-quick-dark">
-              <span class="material-symbols-outlined">photo_camera</span>
-              <span>Level Camera</span>
-            </button>
-            <button type="button" id="btn-quick-ar" class="btn-quick btn-quick-cyan">
-              <span class="material-symbols-outlined">view_in_ar</span>
-              <span>AR 3D Scan</span>
-            </button>
-            <button type="button" id="btn-quick-gallery" class="btn-quick btn-quick-light">
-              <span class="material-symbols-outlined">image</span>
-              <span>Gallery</span>
+            <button type="button" id="btn-retake-capture" class="btn-retake-pill">
+              <span class="material-symbols-outlined">refresh</span>
+              <span>Retake Photo</span>
             </button>
           </div>
         </div>
@@ -132,7 +107,7 @@
         <div class="analyze-cta-area">
           <div class="social-proof-bar">
             <span class="social-star">★</span>
-            <span>Used by 500+ Users &bull; 100% Metric AR Calibrated</span>
+            <span>Used by 500+ Users &bull; 100% Calibrated</span>
           </div>
           <button id="analyze-btn" class="btn-analyze">
             <span>ANALYZE MY FIT</span>
@@ -144,13 +119,13 @@
         <div id="spinner" class="spinner-container">
           <div class="spinner-ring"></div>
           <div id="spinner-label" class="spinner-label">Analyzing with SAM3 + HRNet AI...</div>
-          <div class="spinner-subtext">Isolating garment contours &amp; detecting 14 key landmarks</div>
+          <div class="spinner-subtext">Segmenting contours &amp; detecting 14 key landmarks</div>
         </div>
 
         <!-- Error Toast Notification -->
         <div id="error-toast" class="error-toast-banner" role="alert"></div>
 
-        <!-- AI Fit Assistant Results Section -->
+        <!-- Results Section -->
         <div id="result-section" class="fit-results-section">
           <div id="sync-badge" class="sync-banner"></div>
 
@@ -188,7 +163,7 @@
               </div>
             </div>
 
-            <!-- Extended Trouser Measurements (Circumference, Thigh) -->
+            <!-- Extended Trouser Measurements -->
             <div class="extended-metrics-grid">
               <div class="ext-item">
                 <span class="ext-label">Waist Circ:</span>
@@ -212,157 +187,20 @@
                 <span class="material-symbols-outlined">refresh</span>
                 <span>Measure Another Pant</span>
               </button>
-              <button type="button" id="btn-open-ar-fit" class="btn-ar-view">
-                <span class="material-symbols-outlined">view_in_ar</span>
-                <span>Verify in WebXR AR</span>
-              </button>
             </div>
           </div>
         </div>
 
       </div>
-    </section>
+    </main>
 
     <!-- =========================================================================
-         SCREEN 2: NATIVE AR VIEWPORT & DOM OVERLAY (WebXR immersive-ar)
-         ========================================================================= -->
-    <div id="ar-container" class="hidden">
-      <!-- WebGL Canvas for 3D coordinate tracking -->
-      <canvas id="ar-canvas"></canvas>
-
-      <!-- WebXR DOM Overlay UI with Integrated Phone Tilt HUD -->
-      <div id="ar-overlay">
-
-        <!-- Top Header: Tracking Status, Live Distance & Integrated AR Tilt Pill -->
-        <div class="overlay-header">
-          <div class="hud-pill tracking-pill">
-            <span id="hud-tracking-dot" class="dot red"></span>
-            <span id="hud-tracking-text">Scanning surrounding surface...</span>
-          </div>
-
-          <!-- AR Phone Tilt Status Indicator (Live in AR!) -->
-          <div class="hud-pill ar-tilt-pill" id="ar-tilt-pill">
-            <span class="ar-tilt-dot" id="ar-tilt-dot"></span>
-            <span class="ar-tilt-label" id="ar-tilt-label">Tilt: Calibrating...</span>
-          </div>
-
-          <div class="top-distance-bar" id="hud-dist-pill">
-            <span class="dist-icon">📏</span>
-            <span class="dist-label">Distance:</span>
-            <span id="hud-distance-val" class="dist-val">--</span>
-          </div>
-        </div>
-
-        <!-- Real-time Horizon Level Line directly in AR -->
-        <div class="ar-horizon-container" id="ar-horizon-container" aria-hidden="true">
-          <div class="horizon-line" id="ar-horizon-line">
-            <div class="horizon-tick left"></div>
-            <div class="horizon-center-dot" id="ar-horizon-dot"></div>
-            <div class="horizon-tick right"></div>
-          </div>
-        </div>
-
-        <!-- AR Step Instruction Banner with Tilt Guidance -->
-        <div id="ar-step-banner" class="step-banner">
-          <span id="step-icon">🎯</span>
-          <span id="step-text">Aim camera parallel to trousers</span>
-        </div>
-
-        <!-- AR Pant Outline Guide (glowing green when phone is level!) -->
-        <div class="ar-pant-guide-wrapper" id="ar-pant-guide-wrapper" aria-hidden="true">
-          <svg id="ar-pant-svg" class="pant-svg" viewBox="0 0 2461 3095" preserveAspectRatio="xMidYMid meet">
-            <path
-              id="ar-pant-path"
-              class="pant-path"
-              d="M2211.43 1709.41L2256.71 1910.52V1910.52L2246.96 1912.71L2292.24 2113.82L2302 2111.62L2347.29 2312.73H2347.29L2337.53 2314.93L2382.82 2516.04L2392.57 2513.84V2513.84L2437.86 2714.95H2437.86L2428.1 2717.14L2448.88 2809.42L2321.49 2861.11L2325.25 2870.38L2054.75 2980.12L2050.99 2970.86L1925.36 3021.83L1892.13 2930.14L1882.72 2933.55L1809.17 2730.65L1818.58 2727.24L1745.03 2524.34L1735.62 2527.75L1662.07 2324.85L1671.48 2321.44L1597.93 2118.54L1588.52 2121.95L1514.97 1919.05L1524.38 1915.64L1450.83 1712.74L1441.42 1716.15L1367.88 1513.25L1377.28 1509.84L1303.73 1306.94L1294.32 1310.35L1220.77 1107.45L1230.18 1104.04L1193.4 1002.59L1182.83 973.442L1174.38 1003.27L1144.78 1107.7L1154.4 1110.42L1095.2 1319.27L1085.58 1316.55L1026.38 1525.4L1036 1528.12L976.8 1736.97L967.179 1734.25L907.979 1943.1L917.6 1945.83L858.399 2154.67L848.779 2151.95L789.579 2360.8L799.199 2363.52L740 2572.38L730.379 2569.65L671.179 2778.5L680.8 2781.22L621.6 2990.08L611.979 2987.35L584.864 3083L519.827 3070.92L518 3080.75L370 3053.25L371.827 3043.42L223.827 3015.92L222 3025.75L74 2998.25L75.8271 2988.42L11.5898 2976.48L26.501 2892.99L16.6562 2891.23L49.9688 2704.7L59.8135 2706.46L93.126 2519.93L83.2812 2518.17L116.594 2331.64L126.438 2333.4L159.751 2146.87L149.906 2145.11L183.219 1958.58L193.062 1960.34L226.376 1773.8L216.531 1772.05L249.844 1585.52L259.688 1587.27L293 1400.74L283.156 1398.98L316.469 1212.45L326.313 1214.21L359.626 1027.68L349.781 1025.92L383.094 839.391L392.938 841.148L426.251 654.617L416.406 652.859L449.719 466.328L459.563 468.086L492.876 281.555L483.031 279.797L516.344 93.2656L526.188 95.0234L541.373 10H640.792V0H856.375V10H1071.96V0H1287.54V10H1503.12V0H1718.71V10H1818.5L1839.39 102.751L1849.14 100.554V100.553L1894.43 301.661H1894.43L1884.67 303.857L1929.96 504.965L1939.71 502.769V502.768L1985 703.875L1975.24 706.072L2020.53 907.179L2030.29 904.982L2075.57 1106.09V1106.09L2065.82 1108.29L2111.1 1309.39L2120.86 1307.2L2166.14 1508.3V1508.3L2156.39 1510.5L2201.67 1711.61L2211.43 1709.41Z"
-              fill="none"
-              stroke="rgba(255,255,255,0.4)"
-              stroke-width="30"
-              stroke-dasharray="200 140"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </div>
-
-        <!-- Center 3D Reticle -->
-        <div id="hud-reticle-container">
-          <div class="hud-reticle" id="hud-reticle">
-            <div class="reticle-ring"></div>
-            <div class="reticle-dot"></div>
-          </div>
-          <div id="hud-reticle-hint">Surface locked</div>
-        </div>
-
-        <!-- Garment Markers & Projected Line Overlay -->
-        <div id="hud-markers-layer">
-          <div id="marker-a" class="ar-hud-marker hidden">
-            <div class="marker-pin pin-a">P1</div>
-            <div class="marker-coords" id="marker-a-coords">Point 1</div>
-          </div>
-          <div id="marker-b" class="ar-hud-marker hidden">
-            <div class="marker-pin pin-b">P2</div>
-            <div class="marker-coords" id="marker-b-coords">Point 2</div>
-          </div>
-          <div id="garment-pins-container"></div>
-          <svg id="marker-svg-line" class="marker-line-canvas">
-            <line id="svg-measure-line" x1="0" y1="0" x2="0" y2="0" stroke="#00e5ff" stroke-width="3" stroke-dasharray="6,4" />
-          </svg>
-        </div>
-
-        <!-- Toast -->
-        <div id="ar-toast" class="ar-toast hidden">
-          <div class="toast-spinner"></div>
-          <span id="toast-text">Detecting trouser landmarks...</span>
-        </div>
-
-        <!-- Error Banner -->
-        <div id="ar-error-banner" class="ar-error-banner hidden">
-          <span id="error-banner-text">Error occurred</span>
-          <button id="btn-error-retry" class="btn btn-small btn-secondary">Retry</button>
-        </div>
-
-        <!-- Bottom Controls Bar -->
-        <div class="overlay-footer">
-          <button id="btn-exit-ar" class="btn btn-icon-round" title="Exit AR">
-            <span>&times;</span>
-          </button>
-
-          <!-- Main Shutter Button with Progress Ring for Level Scan -->
-          <div class="action-btn-wrapper">
-            <div class="shutter-unit">
-              <svg class="progress-ring" viewBox="0 0 84 84" aria-hidden="true">
-                <circle class="progress-ring-track" cx="42" cy="42" r="38"/>
-                <circle class="progress-ring-fill" id="ar-progress-ring-fill" cx="42" cy="42" r="38"/>
-              </svg>
-              <button id="btn-scan-trigger" class="btn-shutter btn-scan-ready" title="Scan & Measure Trousers" disabled>
-                <span class="shutter-inner" id="scan-inner-label">SCAN</span>
-              </button>
-            </div>
-            <span id="scan-action-label" class="shutter-label">Aim at trousers &amp; level phone</span>
-          </div>
-
-          <!-- Hidden manual button for legacy 2-point code -->
-          <button id="btn-place-point" style="display:none;"></button>
-          <span id="btn-action-label" style="display:none;"></span>
-          <span id="shutter-inner-label" style="display:none;"></span>
-
-          <!-- Rescan / Reset Button -->
-          <button id="btn-reset-points" class="btn btn-icon-round" title="Rescan Trousers">
-            <span>&#8634;</span>
-          </button>
-        </div>
-
-      </div>
-    </div>
-
-    <!-- =========================================================================
-         SCREEN 3: FULLSCREEN PHONE TILT CAMERA (phone_tilt exact implementation)
+         UNIFIED AR + TILT GUIDANCE CAMERA SCREEN (Single HUD Experience)
          ========================================================================= -->
     <div id="tilt-screen">
       <div class="ts-app">
 
-        <!-- Camera layer -->
+        <!-- Camera Layer -->
         <div class="camera-layer">
           <video id="camera-feed" autoplay playsinline muted></video>
           <div id="camera-fallback" class="camera-fallback ts-hidden">
@@ -372,16 +210,25 @@
           </div>
         </div>
 
-        <!-- Overlay layer -->
+        <!-- Integrated AR + Tilt Overlay Layer -->
         <div class="overlay-layer">
 
-          <!-- Top bar -->
+          <!-- Top Bar -->
           <header class="top-bar" id="ts-top-bar">
             <button class="ts-back-btn" id="tilt-back" aria-label="Close camera">←</button>
-            <div class="status-pill" id="status-pill">
-              <span class="status-dot" id="status-dot"></span>
-              <span class="status-label" id="status-label">Calibrating...</span>
+
+            <!-- Dual Status Pills: AR Surface Status + Phone Tilt Status -->
+            <div class="top-pills-row">
+              <div class="status-pill" id="status-pill">
+                <span class="status-dot" id="status-dot"></span>
+                <span class="status-label" id="status-label">Tilt: Calibrating...</span>
+              </div>
+              <div class="status-pill ar-status-pill" id="ar-surface-pill">
+                <span class="status-dot ar-dot" id="ar-surface-dot"></span>
+                <span class="status-label" id="ar-surface-label">AR: Surface Locked</span>
+              </div>
             </div>
+
             <button class="icon-btn" id="ts-settings-btn" aria-label="Settings">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="3"></circle>
@@ -390,7 +237,7 @@
             </button>
           </header>
 
-          <!-- Horizon level line (iPhone style) -->
+          <!-- 1. Phone Tilt Horizon Line (Apple style) -->
           <div class="horizon-container" id="ts-horizon-container" aria-hidden="true">
             <div class="horizon-line" id="ts-horizon-line">
               <div class="horizon-tick left"></div>
@@ -399,7 +246,15 @@
             </div>
           </div>
 
-          <!-- Pant outline SVG (positioning template) -->
+          <!-- 2. AR Surface 3D Reticle in Center -->
+          <div class="ar-center-reticle-wrap" aria-hidden="true">
+            <div class="ar-center-reticle" id="ar-center-reticle">
+              <div class="ar-reticle-ring"></div>
+              <div class="ar-reticle-dot"></div>
+            </div>
+          </div>
+
+          <!-- 3. Pant Outline SVG Silhouette Guide -->
           <div class="pant-outline-wrapper" aria-hidden="true">
             <svg id="ts-pant-svg" class="pant-svg" viewBox="0 0 2461 3095" preserveAspectRatio="xMidYMid meet">
               <path
@@ -416,15 +271,15 @@
             </svg>
           </div>
 
-          <!-- Single Instruction Pill -->
+          <!-- 4. Single Guidance Instruction Pill -->
           <div class="instruction-wrapper">
             <div class="instruction-pill" id="ts-instruction-pill">
               <span class="instruction-icon" id="ts-instruction-icon">↑</span>
-              <span class="instruction-text" id="ts-instruction-text">Align your phone</span>
+              <span class="instruction-text" id="ts-instruction-text">Align phone parallel to floor</span>
             </div>
           </div>
 
-          <!-- Bottom bar -->
+          <!-- 5. Bottom Bar with Progress Ring & Shutter -->
           <footer class="bottom-bar">
             <div class="shutter-unit">
               <svg class="progress-ring" viewBox="0 0 84 84" aria-hidden="true">
@@ -451,7 +306,7 @@
         <!-- Success toast -->
         <div class="success-toast ts-hidden" id="ts-success-toast">
           <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
-          Photo saved
+          Photo Captured
         </div>
 
         <!-- Tilt error toast -->
@@ -468,7 +323,7 @@
           <div class="permission-card">
             <div class="permission-icon">📡</div>
             <h2 class="permission-title">Motion Access Needed</h2>
-            <p class="permission-body">Slyte Level needs motion sensors to ensure a perfectly level, distortion-free pant scan.</p>
+            <p class="permission-body">Slyte needs motion sensors to ensure a distortion-free, level AR pant scan.</p>
             <button id="ts-request-permission-btn" class="btn-primary">Allow Motion Access</button>
           </div>
         </div>
@@ -505,11 +360,11 @@
           </div>
         </div>
 
-        <!-- Preview modal -->
+        <!-- Photo Review Modal -->
         <div class="preview-modal ts-hidden" id="ts-capture-modal" role="dialog" aria-modal="true">
           <div class="preview-card">
             <div class="preview-header">
-              <span class="preview-title">Captured Photo</span>
+              <span class="preview-title">Captured Pant Photo</span>
             </div>
             <div class="preview-image-wrap">
               <img id="ts-captured-image-view" src="" alt="Captured pant photo">
@@ -524,174 +379,9 @@
       </div><!-- /ts-app -->
     </div>
 
-    <!-- =========================================================================
-         SCREEN 4: AR RESULTS & DETAILED 3D METRIC SUMMARY
-         ========================================================================= -->
-    <section id="screen-results" class="screen-view hidden">
-      <header class="results-top-header">
-        <button id="btn-back-scan" class="btn btn-small btn-secondary">&larr; Return to Fit</button>
-        <h2>Trouser 3D Measurements</h2>
-        <span class="badge success">100% Metric AR</span>
-      </header>
-
-      <main class="results-layout">
-        <div class="card hero-measurement-card">
-          <div class="measurement-title">AI DETECTED GARMENT MEASUREMENTS (3D METRIC)</div>
-          
-          <div class="garment-grid" id="garment-metrics-grid">
-            <div class="garment-metric-card primary">
-              <span class="g-label">Waist Width</span>
-              <span class="g-val" id="res-waist-width">-- cm</span>
-              <span class="g-sub" id="res-waist-width-sub">-- in</span>
-            </div>
-            <div class="garment-metric-card primary">
-              <span class="g-label">Waist Circumference</span>
-              <span class="g-val" id="res-waist-circ">-- cm</span>
-              <span class="g-sub" id="res-waist-circ-sub">approx. (flat)</span>
-            </div>
-            <div class="garment-metric-card">
-              <span class="g-label">Inseam</span>
-              <span class="g-val" id="res-inseam">-- cm</span>
-              <span class="g-sub" id="res-inseam-sub">-- in</span>
-            </div>
-            <div class="garment-metric-card">
-              <span class="g-label">Outseam</span>
-              <span class="g-val" id="res-outseam">-- cm</span>
-              <span class="g-sub" id="res-outseam-sub">-- in</span>
-            </div>
-            <div class="garment-metric-card">
-              <span class="g-label">Thigh Width</span>
-              <span class="g-val" id="res-thigh-width">-- cm</span>
-              <span class="g-sub" id="res-thigh-width-sub">-- in</span>
-            </div>
-            <div class="garment-metric-card">
-              <span class="g-label">Hem Width</span>
-              <span class="g-val" id="res-hem-width">-- cm</span>
-              <span class="g-sub" id="res-hem-width-sub">-- in</span>
-            </div>
-          </div>
-
-          <!-- Legacy distance placeholders for manual 2-point compatibility -->
-          <div id="res-hero-distance" style="display:none;"></div>
-          <div id="res-hero-sub" style="display:none;"></div>
-
-          <div class="accuracy-tag">✓ Directly measured via AR hardware surface geometry + HRNet keypoints</div>
-        </div>
-
-        <!-- Debug Keypoints Drawer -->
-        <div id="debug-drawer" class="card debug-card hidden">
-          <div class="debug-drawer-header">
-            <h4>📸 Captured Frame &amp; Plotted Landmarks (14 Keypoints)</h4>
-          </div>
-          <div class="debug-canvas-wrapper">
-            <canvas id="debug-canvas"></canvas>
-          </div>
-        </div>
-
-        <!-- Detailed Coordinates & Metrics Card -->
-        <div class="card metrics-card">
-          <h3>Detected 3D Keypoint Coordinates</h3>
-          <div class="table-responsive">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Landmark</th>
-                  <th>AR 3D Position (Meters)</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody id="res-keypoints-tbody">
-                <tr>
-                  <td><span class="point-tag tag-a">Point 1</span></td>
-                  <td id="res-p1-coords">--</td>
-                  <td><span class="badge success">Anchored</span></td>
-                </tr>
-                <tr>
-                  <td><span class="point-tag tag-b">Point 2</span></td>
-                  <td id="res-p2-coords">--</td>
-                  <td><span class="badge success">Anchored</span></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="export-actions">
-            <button id="btn-new-measure" class="btn btn-primary btn-large">
-              <span>Measure Another Pair</span>
-            </button>
-          </div>
-        </div>
-      </main>
-    </section>
-
-    <!-- =========================================================================
-         SCREEN 5: AR CAPABILITY & EMULATOR MODAL / DRAWER
-         ========================================================================= -->
-    <section id="screen-landing" class="screen-view hidden">
-      <div class="card-container">
-        <div class="card status-card">
-          <h2>WebXR Sensor Diagnostics</h2>
-          <div id="compatibility-badges" class="badges-row">
-            <span id="badge-webxr" class="badge checking">WebXR: Checking...</span>
-            <span id="badge-ar" class="badge checking">AR Mode: Checking...</span>
-            <span id="badge-hittest" class="badge checking">Hit-Test: Checking...</span>
-          </div>
-          <p id="compatibility-message" class="info-text">Checking device sensors...</p>
-        </div>
-
-        <div class="action-card">
-          <button id="btn-start-scan" class="btn btn-primary btn-large" disabled>
-            <span class="btn-icon">📏</span>
-            <span class="btn-text">Start Native WebXR AR</span>
-          </button>
-          <button id="btn-start-sim" class="btn btn-secondary">
-            <span class="btn-icon">💻</span>
-            <span class="btn-text">Test in WebXR Emulator Mode</span>
-          </button>
-          <input type="file" id="sim-file-input" accept="image/*" style="display:none;">
-        </div>
-
-        <div class="card log-card">
-          <div class="log-header">
-            <span>Diagnostics &amp; Tracking Log</span>
-            <button id="btn-clear-log" class="btn-link">Clear</button>
-          </div>
-          <div id="landing-debug-log" class="debug-terminal">
-            <div class="log-entry info">[System] Initializing AR &amp; Sensor Engine...</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Mobile Picker Overlay + Sheet -->
-    <div id="picker-overlay"></div>
-    <div id="picker-sheet">
-      <div class="picker-drag-handle"></div>
-      <img src="images/other/pant_photo_guide.png" alt="Add your pant photo guide" class="picker-guide-img" onerror="this.style.display='none'">
-      <div class="picker-actions">
-        <button type="button" class="picker-btn picker-btn-camera" id="pick-camera">
-          <span class="material-symbols-outlined">photo_camera</span>
-          <span>Take Photo (Tilt Guide)</span>
-        </button>
-        <button type="button" class="picker-btn picker-btn-ar" id="pick-ar">
-          <span class="material-symbols-outlined">view_in_ar</span>
-          <span>Start AR Scan (WebXR)</span>
-        </button>
-        <button type="button" class="picker-btn picker-btn-gallery" id="pick-files">
-          <span class="material-symbols-outlined">image</span>
-          <span>Choose from Gallery</span>
-        </button>
-      </div>
-    </div>
-
   </div><!-- /#app -->
 
-  <!-- Hidden file inputs -->
-  <input type="file" id="file-input" accept="image/jpeg,image/png,image/jpg,image/webp">
-  <input type="file" id="file-input-camera" accept="image/*" capture="environment">
-  <canvas id="capture-canvas" style="display:none;"></canvas>
-
   <!-- Main Unified ES6 Application Script with cache busting -->
-  <script type="module" src="app.js?v=10"></script>
+  <script type="module" src="app.js?v=11"></script>
 </body>
 </html>
