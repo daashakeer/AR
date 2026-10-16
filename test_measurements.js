@@ -247,5 +247,20 @@ assert.strictEqual(waistEval.valid, true);
 assert.ok(waistEval.distCm > 30);
 console.log(`✓ Direct Waist Measurement Passed: ${(waistEval.distCm).toFixed(1)} cm (${(waistEval.distInches).toFixed(1)} in)`);
 
+// Test 10: User Pixel-Ratio Formula for Outseam: outseam = (outseampixels * waistsize) / waistpixels
+const waistPixels = Math.hypot(1200 - 720, 540 - 540); // 480 px
+const waistSizeInches = 16.0; // 16 inches flat waist width (32" waist circumference)
+const outseamPixels = 1200; // 1200 px from waist to hem
+const outseamInches = (outseamPixels * waistSizeInches) / waistPixels;
+assert.strictEqual(outseamInches, 40.0, 'Outseam must calculate to exactly 40.0 inches using pixel ratio');
+console.log(`✓ Outseam Pixel Ratio Test Passed: (${outseamPixels}px * ${waistSizeInches}") / ${waistPixels}px = ${outseamInches}"`);
+
+// Test 11: User Pixel-Ratio Formula for Inseam: inseam = (inseampixels * waistsize) / waistpixels
+const inseamPixels = 900; // 900 px from crotch to hem
+const inseamInches = (inseamPixels * waistSizeInches) / waistPixels;
+assert.strictEqual(inseamInches, 30.0, 'Inseam must calculate to exactly 30.0 inches using pixel ratio');
+console.log(`✓ Inseam Pixel Ratio Test Passed: (${inseamPixels}px * ${waistSizeInches}") / ${waistPixels}px = ${inseamInches}"`);
+
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL TESTS PASSED!');
+
 

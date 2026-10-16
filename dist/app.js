@@ -60,6 +60,7 @@ const MEASUREMENTS = [
   {
     id: 'inseam',
     label: 'Inseam',
+    usePixelRatio: true,
     landmarks: ['crotch_inseam', 'hem_inner_left'],
     fallbackLandmarks: [
       ['crotch_inseam', 'hem_inner_right', 1.0],
@@ -72,6 +73,7 @@ const MEASUREMENTS = [
   {
     id: 'outseam',
     label: 'Outseam',
+    usePixelRatio: true,
     landmarks: ['waist_left', 'hem_outer_left'],
     fallbackLandmarks: [
       ['waist_right', 'hem_outer_right', 1.0],
@@ -1596,6 +1598,24 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
   state.detectedKeypointsMap = keypointsMap;
   state.measurementNotices = [];
 
+  // Helper to compute 2D pixel distance between two keypoint objects { u, v }
+  const get2DPixelDist = (kpA, kpB) => {
+    if (!kpA || !kpB || typeof kpA.u !== 'number' || typeof kpB.u !== 'number') return 0;
+    return Math.hypot(kpB.u - kpA.u, kpB.v - kpA.v);
+  };
+
+  // Determine waistPixels from detected waist keypoints
+  let waistPixels = 0;
+  if (keypointsMap['waist_left'] && keypointsMap['waist_right']) {
+    waistPixels = get2DPixelDist(keypointsMap['waist_left'], keypointsMap['waist_right']);
+  } else if (keypointsMap['waist_left'] && keypointsMap['waist_center']) {
+    waistPixels = get2DPixelDist(keypointsMap['waist_left'], keypointsMap['waist_center']) * 2.0;
+  } else if (keypointsMap['waist_center'] && keypointsMap['waist_right']) {
+    waistPixels = get2DPixelDist(keypointsMap['waist_center'], keypointsMap['waist_right']) * 2.0;
+  } else if (keypointsMap['hip_left'] && keypointsMap['hip_right']) {
+    waistPixels = get2DPixelDist(keypointsMap['hip_left'], keypointsMap['hip_right']);
+  }
+
   // Evaluate MEASUREMENTS config
   const calculated = {};
 
@@ -1623,13 +1643,19 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
     // Direct pairwise landmarks (confidence gating removed per user instruction)
     let bestPair = null;
     let bestDist = 0;
+    let pairPixels = 0;
 
     // 1. Direct pairwise calculation from model detected keypoints
     const pA = keypointsMap[m.landmarks[0]];
     const pB = keypointsMap[m.landmarks[1]];
-    if (pA && pB && pA.p3D && pB.p3D) {
-      bestPair = [pA, pB];
-      bestDist = calculate3DDistance(pA.p3D, pB.p3D);
+    if (pA && pB) {
+      pairPixels = get2DPixelDist(pA, pB);
+      if (pA.p3D && pB.p3D) {
+        bestPair = [pA, pB];
+        bestDist = calculate3DDistance(pA.p3D, pB.p3D);
+      } else if (m.usePixelRatio) {
+        bestPair = [pA, pB];
+      }
     }
 
     // 2. Check fallback landmarks if primary pair is missing
@@ -1640,17 +1666,33 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
         const mult = fb[2] || 1.0;
         const fbA = keypointsMap[nameA];
         const fbB = keypointsMap[nameB];
-        if (fbA && fbB && fbA.p3D && fbB.p3D) {
-          bestPair = [fbA, fbB];
-          bestDist = calculate3DDistance(fbA.p3D, fbB.p3D) * mult;
+        if (fbA && fbB) {
+          pairPixels = get2DPixelDist(fbA, fbB) * mult;
+          if (fbA.p3D && fbB.p3D) {
+            bestPair = [fbA, fbB];
+            bestDist = calculate3DDistance(fbA.p3D, fbB.p3D) * mult;
+          } else if (m.usePixelRatio) {
+            bestPair = [fbA, fbB];
+          }
           break;
         }
       }
     }
 
+    // 3. User Pixel-Ratio Scaling for Outseam and Inseam:
+    // outseam = (outseampixels * waistsize) / waistpixels
+    // inseam = (inseampixels * waistsize) / waistpixels
+    if (m.usePixelRatio && waistPixels > 0 && calculated['waist_width']?.valid) {
+      const waistSizeMeters = calculated['waist_width'].distMeters;
+      if (pairPixels > 0 && waistSizeMeters > 0) {
+        bestDist = (pairPixels * waistSizeMeters) / waistPixels;
+        logMsg(`[PixelRatio] ${m.label}: (${pairPixels.toFixed(0)}px * ${(waistSizeMeters * 39.3701).toFixed(1)}" waist) / ${waistPixels.toFixed(0)}px = ${(bestDist * 39.3701).toFixed(1)}"`, 'success');
+      }
+    }
+
     const friendlyName = m.label.toLowerCase();
 
-    if (bestPair) {
+    if (bestPair && (bestDist > 0 || (bestPair[0]?.p3D && bestPair[1]?.p3D))) {
       calculated[m.id] = {
         id: m.id,
         label: m.label,
@@ -1658,8 +1700,8 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
         distMeters: bestDist,
         distCm: bestDist * 100,
         distInches: bestDist * 39.3701,
-        pointA: bestPair[0].p3D,
-        pointB: bestPair[1].p3D
+        pointA: bestPair[0]?.p3D || null,
+        pointB: bestPair[1]?.p3D || null
       };
     } else {
       state.measurementNotices.push(`Keypoints for ${friendlyName} were not found in backend response.`);
