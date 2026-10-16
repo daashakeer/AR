@@ -134,79 +134,61 @@ class SensorManager {
 
     this.isSupported = false;
     this.isListening = false;
-    this.permissionState = 'unknown';
-
+    this.hasReceivedEvent = false;
     this.onUpdateCallback = null;
-    this.onPermissionRequiredCallback = null;
-    this.onSensorUnavailableCallback = null;
 
     this.handleOrientationEvent = this.handleOrientationEvent.bind(this);
   }
 
   async init() {
-    if (!window.DeviceOrientationEvent) {
-      this.isSupported = false;
-      if (this.onSensorUnavailableCallback) this.onSensorUnavailableCallback();
-      return false;
-    }
+    this.isSupported = !!(window.DeviceOrientationEvent || window.OrientationEvent);
 
-    this.isSupported = true;
+    // 1. Immediately start listening directly without asking
+    this.startListening();
 
-    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-      this.permissionState = 'prompt';
-      if (this.onPermissionRequiredCallback) {
-        this.onPermissionRequiredCallback();
-      }
-      return false;
-    } else {
-      this.permissionState = 'granted';
-      this.startListening();
-      return true;
-    }
-  }
-
-  async requestIOSPermission() {
-    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-      try {
-        const response = await DeviceOrientationEvent.requestPermission();
-        if (response === 'granted') {
-          this.permissionState = 'granted';
-          this.startListening();
-          return true;
-        } else {
-          this.permissionState = 'denied';
-          return false;
+    // 2. Silently trigger iOS permission in background on first tap if supported
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const silentPermission = async () => {
+        try {
+          const res = await DeviceOrientationEvent.requestPermission();
+          if (res === 'granted') {
+            this.startListening();
+          }
+        } catch (e) {
+          // Ignore silently
         }
-      } catch (err) {
-        console.error('Permission error:', err);
-        this.permissionState = 'denied';
-        return false;
-      }
+      };
+      window.addEventListener('click', silentPermission, { once: true });
+      window.addEventListener('touchstart', silentPermission, { once: true });
     }
+
     return true;
   }
 
   startListening() {
     if (this.isListening) return;
     window.addEventListener('deviceorientation', this.handleOrientationEvent, true);
+    window.addEventListener('deviceorientationabsolute', this.handleOrientationEvent, true);
     this.isListening = true;
   }
 
   stopListening() {
     if (!this.isListening) return;
     window.removeEventListener('deviceorientation', this.handleOrientationEvent, true);
+    window.removeEventListener('deviceorientationabsolute', this.handleOrientationEvent, true);
     this.isListening = false;
   }
 
   handleOrientationEvent(event) {
-    if (event.beta === null || event.gamma === null) return;
+    if (event.beta === null && event.gamma === null) return;
+    this.hasReceivedEvent = true;
 
-    this.rawBeta = event.beta;
-    this.rawGamma = event.gamma;
+    this.rawBeta = event.beta != null ? event.beta : 0;
+    this.rawGamma = event.gamma != null ? event.gamma : 0;
     this.rawAlpha = event.alpha || 0;
 
-    const calcP = event.beta - this.pitchOffset;
-    const calcR = event.gamma - this.rollOffset;
+    const calcP = this.rawBeta - this.pitchOffset;
+    const calcR = this.rawGamma - this.rollOffset;
 
     this.pitch = calcP;
     this.roll = calcR;
@@ -263,6 +245,18 @@ class SensorManager {
   }
 
   getTelemetryPayload() {
+    // If no sensor event received yet, default to ready
+    if (!this.hasReceivedEvent) {
+      return {
+        filteredPitch: 0,
+        filteredRoll: 0,
+        colorState: 'green',
+        statusText: '🟢 Ready',
+        guidanceText: '✓ Ready',
+        isReady: true
+      };
+    }
+
     const p = this.filteredPitch;
     const r = this.filteredRoll;
     const colorState = this.getColorState(p, r);
@@ -308,7 +302,7 @@ const state = {
     colorState: 'green',
     statusText: '🟢 Ready',
     guidanceText: '✓ Ready',
-    isReady: false
+    isReady: true
   },
   isAutoCapture: true,
   levelHoldStart: null,
@@ -407,8 +401,6 @@ const elements = {
   successFlash: document.getElementById('success-flash'),
   successToast: document.getElementById('success-toast'),
   tiltErrorToast: document.getElementById('tilt-error-toast'),
-  permissionBanner: document.getElementById('permission-banner'),
-  requestPermissionBtn: document.getElementById('request-permission-btn'),
 
   // Scan & Measure Shutter Trigger
   btnScanTrigger: document.getElementById('btn-scan-trigger'),
@@ -2258,18 +2250,6 @@ function setupEventListeners() {
     });
   }
 
-  // iOS Motion Sensor Permission
-  if (elements.requestPermissionBtn) {
-    elements.requestPermissionBtn.addEventListener('click', async () => {
-      if (state.sensors) {
-        const granted = await state.sensors.requestIOSPermission();
-        if (granted && elements.permissionBanner) {
-          elements.permissionBanner.classList.add('hidden');
-        }
-      }
-    });
-  }
-
   // Simulator file picker
   if (elements.simFileInput) {
     elements.simFileInput.addEventListener('change', (e) => {
@@ -2350,9 +2330,6 @@ function init() {
   state.sensors.onUpdateCallback = (telemetry) => {
     state.telemetry = telemetry;
     updateTiltHUD(telemetry);
-  };
-  state.sensors.onPermissionRequiredCallback = () => {
-    if (elements.permissionBanner) elements.permissionBanner.classList.remove('hidden');
   };
   state.sensors.init();
 
