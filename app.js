@@ -51,11 +51,7 @@ const MEASUREMENTS = [
     id: 'waist_width',
     label: 'Waist Width',
     landmarks: ['waist_left', 'waist_right'],
-    fallbackLandmarks: [
-      ['waist_left', 'waist_center', 2.0],
-      ['waist_center', 'waist_right', 2.0],
-      ['hip_left', 'hip_right', 1.0]
-    ],
+    fallbackLandmarks: [],
     isPrimary: true
   },
   {
@@ -85,8 +81,6 @@ const MEASUREMENTS = [
     landmarks: ['waist_left', 'hem_outer_left'],
     fallbackLandmarks: [
       ['waist_right', 'hem_outer_right', 1.0],
-      ['waist_center', 'hem_outer_left', 1.0],
-      ['waist_center', 'hem_outer_right', 1.0],
       ['hip_left', 'hem_outer_left', 1.0]
     ]
   },
