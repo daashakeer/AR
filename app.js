@@ -1330,11 +1330,17 @@ function onXRFrame(time, frame) {
         };
 
         const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
-        const rawNormal = {
+        let rawNormal = {
           x: matrix[4] / nLen,
           y: matrix[5] / nLen,
           z: matrix[6] / nLen
         };
+        // Tables, desks, and floors are physically horizontal planes in WebXR's gravity space.
+        // If within 28 degrees of vertical (|ny| >= 0.88), snap to gravity-up [0, 1, 0] to eliminate SLAM tilt noise:
+        const isHorizontal = Math.abs(rawNormal.y) >= 0.88;
+        if (isHorizontal) {
+          rawNormal = { x: 0, y: rawNormal.y >= 0 ? 1 : -1, z: 0 };
+        }
         const rawPoint = { x: pos.x, y: pos.y, z: pos.z };
 
         if (!state.surfacePlane) {
@@ -1363,14 +1369,22 @@ function onXRFrame(time, frame) {
           const smPtY = (1 - alpha) * state.surfacePlane.point.y + alpha * rawPoint.y;
           const smPtZ = (1 - alpha) * state.surfacePlane.point.z + alpha * rawPoint.z;
 
-          const smNormX = (1 - alpha) * state.surfacePlane.normal.x + alpha * alignedNx;
-          const smNormY = (1 - alpha) * state.surfacePlane.normal.y + alpha * alignedNy;
-          const smNormZ = (1 - alpha) * state.surfacePlane.normal.z + alpha * alignedNz;
-          const smLen = Math.hypot(smNormX, smNormY, smNormZ) || 1;
+          let smNormX = 0, smNormY = 1, smNormZ = 0;
+          if (isHorizontal) {
+            smNormY = alignedNy >= 0 ? 1 : -1;
+          } else {
+            smNormX = (1 - alpha) * state.surfacePlane.normal.x + alpha * alignedNx;
+            smNormY = (1 - alpha) * state.surfacePlane.normal.y + alpha * alignedNy;
+            smNormZ = (1 - alpha) * state.surfacePlane.normal.z + alpha * alignedNz;
+            const smLen = Math.hypot(smNormX, smNormY, smNormZ) || 1;
+            smNormX /= smLen;
+            smNormY /= smLen;
+            smNormZ /= smLen;
+          }
 
           state.surfacePlane = {
             point: { x: smPtX, y: smPtY, z: smPtZ },
-            normal: { x: smNormX / smLen, y: smNormY / smLen, z: smNormZ / smLen },
+            normal: { x: smNormX, y: smNormY, z: smNormZ },
             timestamp: time,
             sampleCount: (state.surfacePlane.sampleCount || 0) + 1
           };
@@ -1403,14 +1417,29 @@ function onXRFrame(time, frame) {
   if (state.scanRequested && state.flowState === STATES.SCANNING) {
     // Ensure plane timestamp is synchronized with this capture frame (<= 500ms fresh)
     const isPlaneFresh = state.surfacePlane && (time - state.surfacePlane.timestamp <= 500);
+    const sampleCount = state.surfacePlane?.sampleCount || 0;
+    const isSettled = sampleCount >= 15;
+    const isSteady = state.camMovement < 0.015;
+
     if (isPlaneFresh) {
-      state.scanRequested = false;
-      state.scanRequestTime = 0;
-      handleOneShotFrameCapture(session, frame, view, time);
+      if (!state.scanRequestTime) {
+        state.scanRequestTime = time;
+      }
+      const elapsedWait = time - state.scanRequestTime;
+
+      // Settle plane height through 15 EMA frames or 1200ms timeout before capturing
+      if ((isSettled && isSteady) || elapsedWait > 1200) {
+        state.scanRequested = false;
+        state.scanRequestTime = 0;
+        handleOneShotFrameCapture(session, frame, view, time);
+      } else {
+        // Inform user that plane height is settling to eliminate depth jitter
+        showToast(`Locking surface height (${Math.min(sampleCount, 15)}/15 frames)...`);
+      }
     } else {
-      // If plane was momentarily lost right at tap, wait up to 500ms for fresh hit-test results
+      // If plane was momentarily lost right at tap, wait up to 1000ms for fresh hit-test results
       if (!state.scanRequestTime) state.scanRequestTime = time;
-      if (time - state.scanRequestTime > 500) {
+      if (time - state.scanRequestTime > 1000) {
         state.scanRequested = false;
         state.scanRequestTime = 0;
         showErrorBanner('Surface tracking lost. Hold camera steady over trousers to relock.');
@@ -1615,9 +1644,18 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
   // 6. Orient unit normal towards camera so fabricOffset elevates towards the viewer
   const pnLen = Math.hypot(planeNormal.x, planeNormal.y, planeNormal.z);
   if (!Number.isFinite(pnLen) || pnLen < 1e-6) return null;
-  const unx = planeNormal.x / pnLen;
-  const uny = planeNormal.y / pnLen;
-  const unz = planeNormal.z / pnLen;
+  let unx = planeNormal.x / pnLen;
+  let uny = planeNormal.y / pnLen;
+  let unz = planeNormal.z / pnLen;
+
+  // Regularize near-horizontal surface planes (within ~28 deg of gravity-aligned vertical):
+  // Tables, desks, and floors are physically horizontal planes in WebXR's gravity space.
+  // Snapping near-vertical normals to [0, 1, 0] eliminates SLAM hit-test tilt noise and prevents asymmetric depth distortion.
+  if (Math.abs(uny) >= 0.88) {
+    unx = 0.0;
+    uny = uny > 0 ? 1.0 : -1.0;
+    unz = 0.0;
+  }
 
   const camToPlaneX = origin.x - planePoint.x;
   const camToPlaneY = origin.y - planePoint.y;
@@ -1652,6 +1690,29 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
     rayOrigin: origin,
     denom: hit.denom
   };
+}
+
+/**
+ * Computes the inverse of a 4x4 column-major rigid body transformation matrix (R^T, -R^T * T).
+ * Used to convert camera-to-world pose into world-to-camera viewMatrix for 3D reprojection.
+ */
+function invertRigidTransformMatrix(m) {
+  if (!m || m.length < 16) return null;
+  const r00 = m[0], r01 = m[4], r02 = m[8];
+  const r10 = m[1], r11 = m[5], r12 = m[9];
+  const r20 = m[2], r21 = m[6], r22 = m[10];
+  const tx = m[12], ty = m[13], tz = m[14];
+
+  const itx = -(r00 * tx + r10 * ty + r20 * tz);
+  const ity = -(r01 * tx + r11 * ty + r21 * tz);
+  const itz = -(r02 * tx + r12 * ty + r22 * tz);
+
+  return new Float32Array([
+    r00, r01, r02, 0,
+    r10, r11, r12, 0,
+    r20, r21, r22, 0,
+    itx, ity, itz, 1
+  ]);
 }
 
 /**
@@ -1705,7 +1766,8 @@ function triggerScanCapture() {
   }
   hideErrorBanner();
   state.scanRequested = true;
-  logMsg('Scan triggered. Freezing calibration on next XR frame...', 'info');
+  state.scanRequestTime = 0;
+  logMsg('Scan triggered. Stabilizing surface height and freezing calibration...', 'info');
 }
 
 /**
@@ -1768,6 +1830,7 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
     const snapshot = {
       captureSource: captureSource,
       camMatrix: new Float32Array(view.transform.matrix),
+      viewMatrix: view.transform?.inverse?.matrix ? new Float32Array(view.transform.inverse.matrix) : null,
       projMatrix: new Float32Array(view.projectionMatrix),
       surfacePlane: {
         point: { ...state.surfacePlane.point },
@@ -2503,8 +2566,23 @@ function renderGarmentHUD(view, width, height) {
 }
 
 function showGarmentResults(backendData, snapshot) {
+  // Exit WebXR immersive session so browser releases full-screen touch lock and restores natural scrolling
+  if (state.xrSession) {
+    try {
+      state.xrSession.end().catch(() => {});
+    } catch (e) {
+      console.warn('XR session end note:', e);
+    }
+  }
+  if (state.isSimulator) {
+    stopSimulator();
+  }
+
   elements.arContainer.classList.add('hidden');
   elements.screenResults.classList.remove('hidden');
+  window.scrollTo(0, 0);
+  document.body.scrollTop = 0;
+  document.documentElement.scrollTop = 0;
 
   const m = state.calculatedMeasurements;
 
@@ -2578,7 +2656,9 @@ function showGarmentResults(backendData, snapshot) {
 }
 
 /**
- * Draws the captured JPEG with the returned 2D keypoints, labels, and waist measurement line
+ * Draws the captured JPEG with both:
+ * 1. 2D Blue/Cyan points directly from HRNet inference.
+ * 2. 3D Red points computed from 3D world plane intersection and reprojected to the camera view.
  */
 function renderDebug2DView(snapshot, backendData) {
   const canvas = elements.debugCanvas;
@@ -2591,51 +2671,196 @@ function renderDebug2DView(snapshot, backendData) {
     ctx.drawImage(img, 0, 0);
 
     const keypoints = backendData.keypoints || [];
-    let wLeft = null;
-    let wRight = null;
+    const kpMap = state.detectedKeypointsMap || {};
+    const crop = snapshot.crop || {
+      cropX: 0, cropY: 0, cropW: canvas.width, cropH: canvas.height,
+      rawWidth: canvas.width, rawHeight: canvas.height
+    };
 
-    ctx.font = 'bold 14px monospace';
+    // Camera viewMatrix for projecting 3D world points back onto this frozen frame
+    const viewMatrix = snapshot.viewMatrix || (snapshot.camMatrix ? invertRigidTransformMatrix(snapshot.camMatrix) : null);
+    const projMatrix = snapshot.projMatrix;
+
+    let wLeft2D = null;
+    let wRight2D = null;
+    let wLeft3DProj = null;
+    let wRight3DProj = null;
+
+    // 1. Project 3D points to 2D canvas coordinates
+    for (const kp of keypoints) {
+      if (kp.name === 'waist_left') wLeft2D = kp;
+      if (kp.name === 'waist_right') wRight2D = kp;
+
+      const kpData = kpMap[kp.name];
+      if (kpData && kpData.p3D && viewMatrix && projMatrix) {
+        const proj = projectPointToPixel(kpData.p3D, viewMatrix, projMatrix, crop.rawWidth, crop.rawHeight);
+        if (proj.valid) {
+          const u3D = ((proj.xPixel - crop.cropX) / crop.cropW) * canvas.width;
+          const v3D = ((proj.yPixel - crop.cropY) / crop.cropH) * canvas.height;
+          kpData.proj2D = { u: u3D, v: v3D };
+
+          if (kp.name === 'waist_left') wLeft3DProj = { u: u3D, v: v3D, p3D: kpData.p3D };
+          if (kp.name === 'waist_right') wRight3DProj = { u: u3D, v: v3D, p3D: kpData.p3D };
+
+          // Thin connector if 2D and 3D differ by > 2 pixels
+          const diffDist = Math.hypot(kp.u - u3D, kp.v - v3D);
+          if (diffDist > 2) {
+            ctx.beginPath();
+            ctx.setLineDash([3, 3]);
+            ctx.moveTo(kp.u, kp.v);
+            ctx.lineTo(u3D, v3D);
+            ctx.strokeStyle = 'rgba(255, 235, 59, 0.75)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+      }
+    }
+
+    // 2. Connect 2D Waistband (Cyan/Blue dashed line)
+    if (wLeft2D && wRight2D) {
+      ctx.beginPath();
+      ctx.setLineDash([6, 6]);
+      ctx.moveTo(wLeft2D.u, wLeft2D.v);
+      ctx.lineTo(wRight2D.u, wRight2D.v);
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = '#00e5ff';
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // 3. Connect 3D Waistband (Solid Red line with metric 3D distance label)
+    if (wLeft3DProj && wRight3DProj) {
+      ctx.beginPath();
+      ctx.moveTo(wLeft3DProj.u, wLeft3DProj.v);
+      ctx.lineTo(wRight3DProj.u, wRight3DProj.v);
+      ctx.lineWidth = 3.5;
+      ctx.strokeStyle = '#ff2a4b';
+      ctx.stroke();
+
+      const m = state.calculatedMeasurements?.waist_width;
+      if (m && m.valid) {
+        const midX = (wLeft3DProj.u + wRight3DProj.u) / 2;
+        const midY = (wLeft3DProj.v + wRight3DProj.v) / 2;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.90)';
+        ctx.strokeStyle = '#ff2a4b';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(midX - 70, midY - 32, 140, 26, 6);
+        } else {
+          ctx.rect(midX - 70, midY - 32, 140, 26);
+        }
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#ff2a4b';
+        ctx.font = 'bold 13px monospace';
+        ctx.fillText(`3D: ${m.distCm.toFixed(1)} cm`, midX - 58, midY - 15);
+      }
+    }
+
+    // 4. Draw 2D Keypoints (BLUE / CYAN from HRNet)
     for (const kp of keypoints) {
       const isWaist = (kp.name === 'waist_left' || kp.name === 'waist_right');
-      if (kp.name === 'waist_left') wLeft = kp;
-      if (kp.name === 'waist_right') wRight = kp;
 
       ctx.beginPath();
-      ctx.arc(kp.u, kp.v, isWaist ? 8 : 5, 0, Math.PI * 2);
-      ctx.fillStyle = isWaist ? '#00e5ff' : '#4ade80';
+      ctx.arc(kp.u, kp.v, isWaist ? 7 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = isWaist ? '#00e5ff' : '#38bdf8';
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#000000';
       ctx.stroke();
 
+      ctx.font = 'bold 12px monospace';
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(`${kp.name.replace(/_/g, ' ')}`, kp.u + 10, kp.v - 4);
+      ctx.fillText(`${kp.name.replace(/_/g, ' ')} (2D)`, kp.u + 12, kp.v - 4);
     }
 
-    // Connect waist_left and waist_right with a prominent line and distance label
-    if (wLeft && wRight) {
-      ctx.beginPath();
-      ctx.setLineDash([8, 6]);
-      ctx.moveTo(wLeft.u, wLeft.v);
-      ctx.lineTo(wRight.u, wRight.v);
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = '#00e5ff';
-      ctx.stroke();
-      ctx.setLineDash([]);
+    // 5. Draw 3D Landmarks (RED converted 3D points)
+    for (const kp of keypoints) {
+      const kpData = kpMap[kp.name];
+      if (kpData && kpData.proj2D) {
+        const u = kpData.proj2D.u;
+        const v = kpData.proj2D.v;
+        const isWaist = (kp.name === 'waist_left' || kp.name === 'waist_right');
 
-      const m = state.calculatedMeasurements.waist_width;
-      if (m && m.valid) {
-        const midX = (wLeft.u + wRight.u) / 2;
-        const midY = (wLeft.v + wRight.v) / 2;
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-        ctx.fillRect(midX - 50, midY - 24, 100, 26);
-        ctx.fillStyle = '#00e5ff';
-        ctx.font = 'bold 16px sans-serif';
-        ctx.fillText(`${m.distCm.toFixed(1)} cm`, midX - 35, midY - 6);
+        // Outer red target ring
+        ctx.beginPath();
+        ctx.arc(u, v, isWaist ? 11 : 8, 0, Math.PI * 2);
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = '#ff2a4b'; // Vivid Red
+        ctx.stroke();
+
+        // Inner solid red dot
+        ctx.beginPath();
+        ctx.arc(u, v, isWaist ? 4.5 : 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff2a4b';
+        ctx.fill();
+
+        // 3D coordinate tag
+        if (isWaist && kpData.p3D) {
+          ctx.font = 'bold 11px monospace';
+          ctx.fillStyle = '#ff2a4b';
+          ctx.fillText(`(3D) ${kpData.p3D.x.toFixed(2)}, ${kpData.p3D.y.toFixed(2)}, ${kpData.p3D.z.toFixed(2)}m`, u + 12, v + 12);
+        }
       }
     }
+
+    // 6. Draw Visual Legend Banner
+    drawDebugCanvasLegend(ctx, canvas.width);
   };
   img.src = snapshot.dataUrl;
+}
+
+/**
+ * Renders an informative visual color legend on top of the debug canvas
+ */
+function drawDebugCanvasLegend(ctx, canvasWidth) {
+  const boxW = Math.min(380, canvasWidth - 20);
+  const boxH = 48;
+  const startX = 10;
+  const startY = 10;
+
+  ctx.fillStyle = 'rgba(10, 15, 29, 0.88)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(startX, startY, boxW, boxH, 8);
+  } else {
+    ctx.rect(startX, startY, boxW, boxH);
+  }
+  ctx.fill();
+  ctx.stroke();
+
+  // 2D Blue Point Item
+  ctx.beginPath();
+  ctx.arc(startX + 18, startY + 16, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#00e5ff';
+  ctx.fill();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.font = 'bold 11px sans-serif';
+  ctx.fillStyle = '#38bdf8';
+  ctx.fillText('● 2D HRNet Keypoints (AI detected)', startX + 30, startY + 20);
+
+  // 3D Red Point Item
+  ctx.beginPath();
+  ctx.arc(startX + 18, startY + 34, 5, 0, Math.PI * 2);
+  ctx.strokeStyle = '#ff2a4b';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(startX + 18, startY + 34, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#ff2a4b';
+  ctx.fill();
+
+  ctx.fillStyle = '#ff2a4b';
+  ctx.fillText('● 3D World Points (Plane-unprojected)', startX + 30, startY + 38);
 }
 
 function resetToScanning() {
@@ -3111,23 +3336,23 @@ function setupEventListeners() {
     resetToScanning();
   });
 
-  elements.btnBackScan.addEventListener('click', () => {
+  elements.btnBackScan.addEventListener('click', async () => {
     elements.screenResults.classList.add('hidden');
-    if (state.xrSession || state.isSimulator) {
+    if (state.isSimulator) {
       elements.arContainer.classList.remove('hidden');
       resetToScanning();
     } else {
-      elements.screenLanding.classList.remove('hidden');
+      await startARSession();
     }
   });
 
-  elements.btnNewMeasure.addEventListener('click', () => {
+  elements.btnNewMeasure.addEventListener('click', async () => {
     elements.screenResults.classList.add('hidden');
-    if (state.xrSession || state.isSimulator) {
+    if (state.isSimulator) {
       elements.arContainer.classList.remove('hidden');
       resetToScanning();
     } else {
-      elements.screenLanding.classList.remove('hidden');
+      await startARSession();
     }
   });
 

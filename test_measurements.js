@@ -256,9 +256,18 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
   // 6. Orient unit normal towards camera so fabricOffset elevates towards the viewer
   const pnLen = Math.hypot(planeNormal.x, planeNormal.y, planeNormal.z);
   if (!Number.isFinite(pnLen) || pnLen < 1e-6) return null;
-  const unx = planeNormal.x / pnLen;
-  const uny = planeNormal.y / pnLen;
-  const unz = planeNormal.z / pnLen;
+  let unx = planeNormal.x / pnLen;
+  let uny = planeNormal.y / pnLen;
+  let unz = planeNormal.z / pnLen;
+
+  // Regularize near-horizontal surface planes (within ~28 deg of gravity-aligned vertical):
+  // Tables, desks, and floors are physically horizontal planes in WebXR's gravity space.
+  // Snapping near-vertical normals to [0, 1, 0] eliminates SLAM hit-test tilt noise and prevents asymmetric depth distortion.
+  if (Math.abs(uny) >= 0.88) {
+    unx = 0.0;
+    uny = uny > 0 ? 1.0 : -1.0;
+    unz = 0.0;
+  }
 
   const camToPlaneX = origin.x - planePoint.x;
   const camToPlaneY = origin.y - planePoint.y;
