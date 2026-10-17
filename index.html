@@ -38,25 +38,15 @@
           </p>
         </div>
 
-        <!-- Mode Selector Card: HRNet AI vs OpenCV + AR Live -->
-        <div class="card mode-card">
-          <h2>Measurement Mode</h2>
-          <div class="mode-toggle-group">
-            <button type="button" id="btn-mode-hrnet" class="mode-btn active" data-mode="HRNET">
-              <span class="mode-icon">📸</span>
-              <div class="mode-info">
-                <span class="mode-name">HRNet AI Mode</span>
-                <span class="mode-desc">Snapshot scan &bull; DeepFashion2 14-Keypoints</span>
-              </div>
-            </button>
-            <button type="button" id="btn-mode-opencv" class="mode-btn" data-mode="OPENCV_LIVE">
-              <span class="mode-icon">⚡</span>
-              <div class="mode-info">
-                <span class="mode-name">OpenCV + AR Mode</span>
-                <span class="mode-desc">Live camera feed &bull; Continuous real-time 3D distance</span>
-              </div>
-            </button>
+        <!-- Mode 1: OpenCV Live Automatic 2-Point Mode -->
+        <div class="card mode-card opencv-card">
+          <div class="card-header-row">
+            <h2 class="mode-card-title">⚡ OpenCV Live Automatic 2-Point Mode</h2>
+            <span class="badge success">Live On-Device</span>
           </div>
+          <p class="mode-summary">
+            On-device edge &amp; contour detection continuously tracks your trousers and <strong>automatically plots Point 1 and Point 2</strong> on the waistband in real-time 3D, calculating distance with zero cloud delay.
+          </p>
 
           <!-- 44 cm Calibration Benchmark Toggle -->
           <div class="calibration-toggle-row">
@@ -64,33 +54,39 @@
               <input type="checkbox" id="chk-calib-44">
               <span class="toggle-slider"></span>
             </label>
-            <span class="toggle-label">🎯 44 cm Rigid Calibration Test Benchmark</span>
+            <span class="toggle-label">🎯 44 cm Rigid Calibration Benchmark Test</span>
           </div>
-        </div>
 
-        <!-- How It Works Card -->
-        <div class="card info-card">
-          <h3>How It Works (No Reference Objects Needed)</h3>
-          <ul class="specs-list">
-            <li><strong>1. Scan Surrounding:</strong> Aim camera at trouser or surface. AR locks to the surface automatically.</li>
-            <li><strong>2. Tap Point 1 on Screen:</strong> Directly tap anywhere on the screen (e.g. left waistband) to anchor Point 1.</li>
-            <li><strong>3. Tap Point 2 on Screen:</strong> Directly tap the second point on the screen (e.g. right waistband). No need to move the phone!</li>
-            <li><strong>4. 100% Metric Accuracy:</strong> Real-world physical distance is calculated instantly in 3D coordinates (cm &amp; inches).</li>
-          </ul>
-        </div>
-
-        <!-- Action Area -->
-        <div class="action-card">
-          <button id="btn-start-scan" class="btn btn-primary btn-large" disabled>
-            <span class="btn-icon">📏</span>
-            <span class="btn-text">Start AR Measurement</span>
+          <button type="button" id="btn-start-opencv" class="btn btn-opencv btn-large" disabled>
+            <span class="btn-icon">⚡</span>
+            <span class="btn-text">Start OpenCV Automatic 2-Point AR</span>
           </button>
-          <button id="btn-start-sim" class="btn btn-secondary">
+        </div>
+
+        <!-- Mode 2: HRNet AI Mode (Cloud Deep Learning) -->
+        <div class="card mode-card hrnet-card">
+          <div class="card-header-row">
+            <h2 class="mode-card-title">📸 HRNet AI Trouser Scan Mode</h2>
+            <span class="badge checking">Cloud AI</span>
+          </div>
+          <p class="mode-summary">
+            Snapshot capture sent to DeepFashion2 AI backend. Calculates Waist width, Circumference, Inseam, Outseam, Thigh &amp; Hem width.
+          </p>
+
+          <button type="button" id="btn-start-hrnet" class="btn btn-primary btn-large" disabled>
+            <span class="btn-icon">📸</span>
+            <span class="btn-text">Start HRNet AI Scan</span>
+          </button>
+        </div>
+
+        <!-- Action Area (Emulator) -->
+        <div class="action-card emulator-card">
+          <button type="button" id="btn-start-sim" class="btn btn-secondary">
             <span class="btn-icon">💻</span>
             <span class="btn-text">Test in WebXR Emulator Mode</span>
           </button>
           <input type="file" id="sim-file-input" accept="image/*" style="display:none;">
-          <p class="footnote">Requires Android Chrome 81+ with Google Play Services for AR (ARCore), or WebXR desktop emulator.</p>
+          <p class="footnote">Requires Android Chrome with Google Play Services for AR (ARCore), or WebXR desktop emulator.</p>
         </div>
 
         <!-- Diagnostics Log -->

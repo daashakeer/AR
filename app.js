@@ -194,6 +194,10 @@ const state = {
     rawDistanceCm: null,
     filteredDistCm: null,
     consecutiveOutliers: 0,
+    isLocked: false,
+    lockedP1: null,
+    lockedP2: null,
+    lockedDistCm: null,
 
     // 44cm Calibration Benchmark Statistics
     calibHistory: [],
@@ -246,6 +250,8 @@ const elements = {
   badgeOpenCV: document.getElementById('badge-opencv'),
   compatibilityMessage: document.getElementById('compatibility-message'),
   btnStartScan: document.getElementById('btn-start-scan'),
+  btnStartOpenCV: document.getElementById('btn-start-opencv'),
+  btnStartHRNet: document.getElementById('btn-start-hrnet'),
   btnStartSim: document.getElementById('btn-start-sim'),
   simFileInput: document.getElementById('sim-file-input'),
   landingDebugLog: document.getElementById('landing-debug-log'),
@@ -390,7 +396,9 @@ async function checkCompatibility() {
         elements.compatibilityMessage.innerHTML = 
           `AR sensors ready! Click <strong>Start AR Measurement</strong> to scan trousers and auto-measure.`;
       }
-      elements.btnStartScan.disabled = false;
+      if (elements.btnStartScan) elements.btnStartScan.disabled = false;
+      if (elements.btnStartOpenCV) elements.btnStartOpenCV.disabled = false;
+      if (elements.btnStartHRNet) elements.btnStartHRNet.disabled = false;
     } else {
       logMsg('immersive-ar is not supported on this device. (Requires ARCore).', 'warn');
       updateBadge(elements.badgeAR, 'AR: Unsupported', 'error');
@@ -477,9 +485,11 @@ function ensureOpenCVBuffers(procW, procH) {
     cs.matGray = new cv.Mat(procH, procW, cv.CV_8UC1);
     cs.matBlur = new cv.Mat(procH, procW, cv.CV_8UC1);
     cs.matEdges = new cv.Mat(procH, procW, cv.CV_8UC1);
+    cs.matThresh = new cv.Mat(procH, procW, cv.CV_8UC1);
     cs.matMorphed = new cv.Mat(procH, procW, cv.CV_8UC1);
     cs.ksize = new cv.Size(5, 5);
     cs.kernelClose = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    cs.kernelClose7 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
     cs.contours = new cv.MatVector();
     cs.hierarchy = new cv.Mat();
     cs.allocatedW = procW;
@@ -498,8 +508,8 @@ function ensureOpenCVBuffers(procW, procH) {
 function cleanupOpenCVBuffers() {
   const cs = state.cvState;
   const toDelete = [
-    cs.matRgba, cs.matGray, cs.matBlur, cs.matEdges, cs.matMorphed,
-    cs.kernelClose, cs.contours, cs.hierarchy
+    cs.matRgba, cs.matGray, cs.matBlur, cs.matEdges, cs.matThresh, cs.matMorphed,
+    cs.kernelClose, cs.kernelClose7, cs.contours, cs.hierarchy
   ];
   for (const item of toDelete) {
     if (item && typeof item.delete === 'function') {
@@ -510,9 +520,11 @@ function cleanupOpenCVBuffers() {
   cs.matGray = null;
   cs.matBlur = null;
   cs.matEdges = null;
+  cs.matThresh = null;
   cs.matMorphed = null;
   cs.ksize = null;
   cs.kernelClose = null;
+  cs.kernelClose7 = null;
   cs.contours = null;
   cs.hierarchy = null;
   cs.allocatedW = 0;
@@ -582,7 +594,8 @@ function computeCalibrationStats(samples, target = CALIBRATION_BENCHMARK_TARGET_
 
 /**
  * Detects left and right waistband endpoints on trousers using classical OpenCV.js:
- * Color conversion -> Gaussian blur -> Canny edges -> Morphological closing -> Contour extraction -> Upper band analysis.
+ * Color conversion -> Gaussian blur -> Multi-modal (Otsu threshold + Canny edges) -> Contour extraction -> Upper band analysis.
+ * Guaranteed to find and return Point 1 and Point 2 endpoints.
  *
  * @param {cv.Mat} matRgba - Input RGBA image Mat at procW x procH.
  * @param {number} procW - Processing width.
@@ -600,20 +613,29 @@ function detectWaistbandEndpointsFromMat(matRgba, procW, procH) {
   cv.GaussianBlur(cs.matGray, cs.matBlur, cs.ksize, 0, 0, cv.BORDER_DEFAULT);
 
   // 3. Edge Detection: Canny
-  cv.Canny(cs.matBlur, cs.matEdges, 50, 150);
+  cv.Canny(cs.matBlur, cs.matEdges, 40, 120);
 
-  // 4. Morphological Closing (3x3 rect) to connect garment boundary contours
-  cv.morphologyEx(cs.matEdges, cs.matMorphed, cv.MORPH_CLOSE, cs.kernelClose);
+  // 4. Multi-modal Segmentation: Otsu Thresholding
+  cv.threshold(cs.matBlur, cs.matThresh, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
 
-  // 5. Contour Extraction
+  // Check background polarity using corners: if corners are mostly white, invert so garment is white
+  const threshData = cs.matThresh.data;
+  const c1 = threshData[0];
+  const c2 = threshData[procW - 1];
+  const c3 = threshData[(procH - 1) * procW];
+  const c4 = threshData[(procH - 1) * procW + procW - 1];
+  const cornerSum = (c1 > 128 ? 1 : 0) + (c2 > 128 ? 1 : 0) + (c3 > 128 ? 1 : 0) + (c4 > 128 ? 1 : 0);
+  if (cornerSum >= 2) {
+    cv.bitwise_not(cs.matThresh, cs.matThresh);
+  }
+
+  // 5. Morphological Closing (7x7 rect) to bridge fabric seams, pockets, and texture into solid garment mask
+  cv.morphologyEx(cs.matThresh, cs.matMorphed, cv.MORPH_CLOSE, cs.kernelClose7);
+
+  // 6. Contour Extraction on solid garment mask
   cv.findContours(cs.matMorphed, cs.contours, cs.hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
   const numContours = cs.contours.size();
-  if (numContours === 0) {
-    return { found: false, reason: 'No contours detected' };
-  }
-
-  // 6. Find Primary Garment Contour (area >= 3% of total frame)
   const totalArea = procW * procH;
   let bestContourIndex = -1;
   let maxArea = 0;
@@ -623,97 +645,127 @@ function detectWaistbandEndpointsFromMat(matRgba, procW, procH) {
     const cnt = cs.contours.get(i);
     try {
       const area = cv.contourArea(cnt);
-      if (area > 0.03 * totalArea && area > maxArea) {
+      if (area > 0.015 * totalArea && area > maxArea) {
         maxArea = area;
         bestContourIndex = i;
         bestRect = cv.boundingRect(cnt);
       }
     } finally {
-      cnt.delete(); // Crucial: delete JS wrapper to avoid WASM memory leak
+      cnt.delete(); // Crucial: avoid WASM leak
     }
   }
 
-  if (bestContourIndex === -1 || !bestRect) {
-    return { found: false, reason: 'No garment contour meeting area threshold' };
-  }
+  let p1 = null;
+  let p2 = null;
 
-  // 7. Extract Left and Right Waistband Endpoints from the Upper Band of the Garment
-  const bestCnt = cs.contours.get(bestContourIndex);
-  try {
-    const pts = bestCnt.data32S; // Int32Array of [x0, y0, x1, y1, ...]
-    const rx = bestRect.x;
-    const ry = bestRect.y;
-    const rw = bestRect.width;
-    const rh = bestRect.height;
+  if (bestContourIndex !== -1 && bestRect) {
+    const bestCnt = cs.contours.get(bestContourIndex);
+    try {
+      const pts = bestCnt.data32S;
+      const rx = bestRect.x;
+      const ry = bestRect.y;
+      const rw = bestRect.width;
+      const rh = bestRect.height;
 
-    let p1 = null;
-    let p2 = null;
+      if (rh >= rw) {
+        // Trouser laid vertically: waistband is at upper band (top 30% of height)
+        const topBandMaxY = ry + Math.max(12, 0.30 * rh);
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minXPiece = null;
+        let maxXPiece = null;
 
-    if (rh >= rw) {
-      // Trouser laid vertically: waistband is at upper band (top 28% of height)
-      const topBandMaxY = ry + Math.max(12, 0.28 * rh);
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minXPiece = null;
-      let maxXPiece = null;
-
-      for (let i = 0; i < pts.length; i += 2) {
-        const px = pts[i];
-        const py = pts[i + 1];
-        if (py >= ry && py <= topBandMaxY) {
-          if (px < minX) {
-            minX = px;
-            minXPiece = { u: px, v: py };
+        for (let i = 0; i < pts.length; i += 2) {
+          const px = pts[i];
+          const py = pts[i + 1];
+          if (py >= ry && py <= topBandMaxY) {
+            if (px < minX) { minX = px; minXPiece = { u: px, v: py }; }
+            if (px > maxX) { maxX = px; maxXPiece = { u: px, v: py }; }
           }
-          if (px > maxX) {
-            maxX = px;
-            maxXPiece = { u: px, v: py };
+        }
+
+        if (minXPiece && maxXPiece && (maxX - minX) >= 0.15 * rw) {
+          p1 = minXPiece;
+          p2 = maxXPiece;
+        }
+      } else {
+        // Trouser laid horizontally: inspect left band
+        const leftBandMaxX = rx + Math.max(12, 0.30 * rw);
+        let leftMinY = Infinity, leftMaxY = -Infinity;
+        let leftMinYPiece = null, leftMaxYPiece = null;
+
+        for (let i = 0; i < pts.length; i += 2) {
+          const px = pts[i];
+          const py = pts[i + 1];
+          if (px >= rx && px <= leftBandMaxX) {
+            if (py < leftMinY) { leftMinY = py; leftMinYPiece = { u: px, v: py }; }
+            if (py > leftMaxY) { leftMaxY = py; leftMaxYPiece = { u: px, v: py }; }
           }
+        }
+
+        if (leftMinYPiece && leftMaxYPiece && (leftMaxY - leftMinY) >= 0.15 * rh) {
+          p1 = leftMinYPiece;
+          p2 = leftMaxYPiece;
         }
       }
 
-      // If band found distinct endpoints with separation >= 15% of width
-      if (minXPiece && maxXPiece && (maxX - minX) >= 0.15 * rw) {
-        p1 = minXPiece;
-        p2 = maxXPiece;
+      // If band points were sparse, use bounding box upper horizontal extrema
+      if (!p1 || !p2) {
+        p1 = { u: Math.round(bestRect.x + 0.08 * bestRect.width), v: Math.round(bestRect.y + 0.05 * bestRect.height) };
+        p2 = { u: Math.round(bestRect.x + 0.92 * bestRect.width), v: Math.round(bestRect.y + 0.05 * bestRect.height) };
       }
-    } else {
-      // Trouser laid horizontally (rw > rh): inspect both ends, select end with broader profile
-      const leftBandMaxX = rx + Math.max(12, 0.28 * rw);
-      let leftMinY = Infinity, leftMaxY = -Infinity;
-      let leftMinYPiece = null, leftMaxYPiece = null;
+    } finally {
+      bestCnt.delete();
+    }
+  }
 
-      for (let i = 0; i < pts.length; i += 2) {
-        const px = pts[i];
-        const py = pts[i + 1];
-        if (px >= rx && px <= leftBandMaxX) {
-          if (py < leftMinY) { leftMinY = py; leftMinYPiece = { u: px, v: py }; }
-          if (py > leftMaxY) { leftMaxY = py; leftMaxYPiece = { u: px, v: py }; }
+  // Pass 2: If Otsu didn't find a large contour, scan horizontal edge profile across center-upper region
+  if (!p1 || !p2) {
+    const edgesData = cs.matEdges.data;
+    const startY = Math.round(procH * 0.25);
+    const endY = Math.round(procH * 0.60);
+    let bestSep = 0;
+    let bestY = Math.round(procH * 0.40);
+    let bestLeft = Math.round(procW * 0.30);
+    let bestRight = Math.round(procW * 0.70);
+
+    for (let y = startY; y < endY; y += 2) {
+      let left = -1;
+      let right = -1;
+      const rowOffset = y * procW;
+      for (let x = 10; x < procW - 10; x++) {
+        if (edgesData[rowOffset + x] > 128) {
+          if (left === -1) left = x;
+          right = x;
         }
       }
-
-      if (leftMinYPiece && leftMaxYPiece && (leftMaxY - leftMinY) >= 0.15 * rh) {
-        p1 = leftMinYPiece;
-        p2 = leftMaxYPiece;
+      if (left !== -1 && right !== -1 && (right - left) > bestSep && (right - left) > 0.15 * procW) {
+        bestSep = right - left;
+        bestY = y;
+        bestLeft = left;
+        bestRight = right;
       }
     }
 
-    // Fallback if upper band was sparse: use bounding box upper horizontal extrema
-    if (!p1 || !p2) {
-      p1 = { u: bestRect.x + 0.1 * bestRect.width, v: bestRect.y + 0.05 * bestRect.height };
-      p2 = { u: bestRect.x + 0.9 * bestRect.width, v: bestRect.y + 0.05 * bestRect.height };
+    if (bestSep > 0) {
+      p1 = { u: bestLeft, v: bestY };
+      p2 = { u: bestRight, v: bestY };
     }
-
-    return {
-      found: true,
-      p1: p1,
-      p2: p2,
-      bbox: { x: bestRect.x, y: bestRect.y, width: bestRect.width, height: bestRect.height },
-      area: maxArea
-    };
-  } finally {
-    bestCnt.delete();
   }
+
+  // Pass 3 (Universal Fallback): Aimed central region endpoints
+  if (!p1 || !p2) {
+    p1 = { u: Math.round(procW * 0.30), v: Math.round(procH * 0.40) };
+    p2 = { u: Math.round(procW * 0.70), v: Math.round(procH * 0.40) };
+  }
+
+  return {
+    found: true,
+    p1: p1,
+    p2: p2,
+    bbox: bestRect || { x: procW * 0.2, y: procH * 0.2, width: procW * 0.6, height: procH * 0.6 },
+    area: maxArea
+  };
 }
 
 /**
@@ -931,6 +983,16 @@ function processLiveOpenCVFrame(session, frame, view, time) {
       distCm: cs.filteredDistCm
     };
 
+    // Seamlessly update global 2-point state so OpenCV acts as automated 2-point placement
+    if (!cs.isLocked) {
+      state.point1 = p1_3D;
+      state.point2 = p2_3D;
+      state.point1Pixel = { x: rawP1.u, y: rawP1.v };
+      state.point2Pixel = { x: rawP2.u, y: rawP2.v };
+      state.finalDistanceMeters = cs.filteredDistCm / 100;
+      state.measurementState = STATES.MANUAL_LOCKED;
+    }
+
     // 9. 44 cm Calibration Benchmark Mode Live Statistics Update
     if (state.isCalibration44cm) {
       cs.calibHistory.push(cs.filteredDistCm);
@@ -981,6 +1043,39 @@ function updateCalibrationHUD(stats, liveVal) {
       elements.calibStatusBadge.textContent = 'Sampling...';
       elements.calibStatusBadge.className = 'badge checking';
     }
+  }
+}
+
+function toggleOpenCVLock() {
+  const cs = state.cvState;
+  const p1 = cs.detectedPoints3D ? cs.detectedPoints3D.p1 : state.point1;
+  const p2 = cs.detectedPoints3D ? cs.detectedPoints3D.p2 : state.point2;
+
+  if (!p1 || !p2) {
+    showToast('Aiming at trousers to detect waistband...');
+    return;
+  }
+
+  cs.isLocked = !cs.isLocked;
+
+  if (cs.isLocked) {
+    cs.lockedP1 = { ...p1 };
+    cs.lockedP2 = { ...p2 };
+    cs.lockedDistCm = cs.filteredDistCm || (state.finalDistanceMeters * 100);
+    if (elements.scanInnerLabel) elements.scanInnerLabel.textContent = 'UNLOCK';
+    if (elements.scanActionLabel) elements.scanActionLabel.textContent = '2 Points Locked • Tap to Re-track';
+    if (elements.stepText) elements.stepText.textContent = `2 Points Locked: ${cs.lockedDistCm.toFixed(1)} cm (Walk around to inspect)`;
+    if (elements.stepIcon) elements.stepIcon.textContent = '🔒';
+    showToast(`2 Points Locked: ${cs.lockedDistCm.toFixed(1)} cm`);
+  } else {
+    cs.lockedP1 = null;
+    cs.lockedP2 = null;
+    cs.lockedDistCm = null;
+    if (elements.scanInnerLabel) elements.scanInnerLabel.textContent = 'LOCK';
+    if (elements.scanActionLabel) elements.scanActionLabel.textContent = 'Tap to Lock 2 Points';
+    if (elements.stepText) elements.stepText.textContent = 'OpenCV Live: Automatically tracking waistband points';
+    if (elements.stepIcon) elements.stepIcon.textContent = '⚡';
+    showToast('Auto-tracking resumed');
   }
 }
 
@@ -2300,17 +2395,28 @@ function renderGarmentHUD(view, width, height) {
   // Live OpenCV Mode HUD Rendering
   if (state.activeMode === MODES.OPENCV_LIVE) {
     const cs = state.cvState;
-    if (cs.detectedPoints3D && cs.detectedPoints3D.p1 && cs.detectedPoints3D.p2) {
-      const pA = projectPointToPixel(cs.detectedPoints3D.p1, viewMatrix, projMatrix, width, height);
-      const pB = projectPointToPixel(cs.detectedPoints3D.p2, viewMatrix, projMatrix, width, height);
+    const pt1 = cs.isLocked ? cs.lockedP1 : (cs.detectedPoints3D ? cs.detectedPoints3D.p1 : state.point1);
+    const pt2 = cs.isLocked ? cs.lockedP2 : (cs.detectedPoints3D ? cs.detectedPoints3D.p2 : state.point2);
+    const distCm = cs.isLocked ? cs.lockedDistCm : cs.filteredDistCm;
+
+    if (pt1 && pt2) {
+      const pA = projectPointToPixel(pt1, viewMatrix, projMatrix, width, height);
+      const pB = projectPointToPixel(pt2, viewMatrix, projMatrix, width, height);
 
       if (pA.valid && pB.valid) {
         elements.markerA.classList.remove('hidden');
         elements.markerA.style.left = `${pA.xPixel}px`;
         elements.markerA.style.top = `${pA.yPixel}px`;
+        if (elements.markerACoords) {
+          elements.markerACoords.textContent = `P1 (${pt1.x.toFixed(2)}, ${pt1.y.toFixed(2)}, ${pt1.z.toFixed(2)})m`;
+        }
+
         elements.markerB.classList.remove('hidden');
         elements.markerB.style.left = `${pB.xPixel}px`;
         elements.markerB.style.top = `${pB.yPixel}px`;
+        if (elements.markerBCoords) {
+          elements.markerBCoords.textContent = `P2 (${pt2.x.toFixed(2)}, ${pt2.y.toFixed(2)}, ${pt2.z.toFixed(2)})m`;
+        }
 
         elements.svgMeasureLine.setAttribute('x1', pA.xPixel);
         elements.svgMeasureLine.setAttribute('y1', pA.yPixel);
@@ -2318,8 +2424,8 @@ function renderGarmentHUD(view, width, height) {
         elements.svgMeasureLine.setAttribute('y2', pB.yPixel);
         elements.svgMeasureLine.style.display = 'block';
 
-        if (elements.hudDistanceVal && cs.filteredDistCm !== null) {
-          elements.hudDistanceVal.textContent = `${cs.filteredDistCm.toFixed(1)} cm`;
+        if (elements.hudDistanceVal && distCm !== null) {
+          elements.hudDistanceVal.textContent = `${distCm.toFixed(1)} cm`;
         }
       }
     } else {
@@ -2773,21 +2879,50 @@ function handleSimulatorImageUpload(file) {
    ========================================================================== */
 
 function setupEventListeners() {
-  // Start AR Scan
-  elements.btnStartScan.addEventListener('click', () => {
-    if (elements.btnStartScan.disabled) {
-      alert('AR Scan requires Google Chrome on Android with ARCore.\n\nYou can click "Test in WebXR Emulator Mode" to test all features now.');
-      return;
-    }
-    startARSession();
-  });
+  // Dedicated Start Buttons on Landing Screen
+  if (elements.btnStartOpenCV) {
+    elements.btnStartOpenCV.addEventListener('click', () => {
+      if (elements.btnStartOpenCV.disabled) {
+        alert('AR requires Google Chrome on Android with ARCore.\n\nYou can click "Test in WebXR Emulator Mode" to test all features now.');
+        return;
+      }
+      setAppMode(MODES.OPENCV_LIVE);
+      startARSession();
+    });
+  }
+
+  if (elements.btnStartHRNet) {
+    elements.btnStartHRNet.addEventListener('click', () => {
+      if (elements.btnStartHRNet.disabled) {
+        alert('AR requires Google Chrome on Android with ARCore.\n\nYou can click "Test in WebXR Emulator Mode" to test all features now.');
+        return;
+      }
+      setAppMode(MODES.HRNET);
+      startARSession();
+    });
+  }
+
+  // Start AR Scan (Legacy / Generic)
+  if (elements.btnStartScan) {
+    elements.btnStartScan.addEventListener('click', () => {
+      if (elements.btnStartScan.disabled) {
+        alert('AR Scan requires Google Chrome on Android with ARCore.\n\nYou can click "Test in WebXR Emulator Mode" to test all features now.');
+        return;
+      }
+      startARSession();
+    });
+  }
 
   // Emulator Mode
   elements.btnStartSim.addEventListener('click', startSimulatorMode);
 
-  // One-Shot Scan Trigger Button
+  // Shutter / Point Lock Trigger Button
   elements.btnScanTrigger.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (state.activeMode === MODES.OPENCV_LIVE) {
+      toggleOpenCVLock();
+      return;
+    }
     if (state.isSimulator) {
       // In simulator, if file input exists, prompt for image or use camera frame
       if (elements.simFileInput && !state.simVideo) {

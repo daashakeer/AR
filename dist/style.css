@@ -1249,13 +1249,95 @@ body, html {
 .mode-card {
   border: 1px solid rgba(0, 229, 255, 0.25);
   background: linear-gradient(180deg, #161c28 0%, #10141f 100%);
+  margin-bottom: 16px;
+  padding: 18px 20px;
 }
 
-.mode-toggle-group {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.opencv-card {
+  border: 1px solid rgba(0, 230, 118, 0.45);
+  background: linear-gradient(180deg, #0f1f1a 0%, #0a1415 100%);
+  box-shadow: 0 4px 24px rgba(0, 230, 118, 0.12);
+}
+
+.hrnet-card {
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  background: linear-gradient(180deg, #131b29 0%, #0c121c 100%);
+  box-shadow: 0 4px 20px rgba(0, 229, 255, 0.08);
+}
+
+.card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.mode-card-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 0;
+  color: #fff;
+}
+
+.opencv-card .mode-card-title {
+  color: var(--accent-green);
+}
+
+.hrnet-card .mode-card-title {
+  color: var(--accent-cyan);
+}
+
+.mode-summary {
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin-bottom: 16px;
+}
+
+.mode-summary strong {
+  color: #fff;
+}
+
+.btn-opencv {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   gap: 10px;
-  margin-bottom: 14px;
+  background: linear-gradient(135deg, #00e676 0%, #00b0ff 100%);
+  color: #06111a;
+  font-family: var(--font-family);
+  font-size: 1.05rem;
+  font-weight: 800;
+  padding: 16px 20px;
+  border-radius: var(--radius-md);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0, 230, 118, 0.4);
+  transition: all 0.2s ease;
+  margin-top: 14px;
+}
+
+.btn-opencv:hover:not(:disabled) {
+  background: linear-gradient(135deg, #00ff88 0%, #33c9ff 100%);
+  box-shadow: 0 6px 28px rgba(0, 230, 118, 0.6);
+  transform: translateY(-2px);
+}
+
+.btn-opencv:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn-opencv:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.emulator-card {
+  margin-top: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .mode-btn {
