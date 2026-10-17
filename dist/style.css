@@ -1334,6 +1334,52 @@ body, html {
   box-shadow: none;
 }
 
+.manual-card {
+  border: 1px solid rgba(0, 229, 255, 0.45);
+  background: linear-gradient(180deg, #101c2b 0%, #0a1320 100%);
+  box-shadow: 0 4px 24px rgba(0, 229, 255, 0.12);
+}
+
+.manual-card .mode-card-title {
+  color: var(--accent-cyan);
+}
+
+.btn-manual {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: linear-gradient(135deg, #00e5ff 0%, #2979ff 100%);
+  color: #06111a;
+  font-family: var(--font-family);
+  font-size: 1.05rem;
+  font-weight: 800;
+  padding: 16px 20px;
+  border-radius: var(--radius-md);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0, 229, 255, 0.4);
+  transition: all 0.2s ease;
+  margin-top: 14px;
+}
+
+.btn-manual:hover:not(:disabled) {
+  background: linear-gradient(135deg, #33ebff 0%, #448aff 100%);
+  box-shadow: 0 6px 28px rgba(0, 229, 255, 0.6);
+  transform: translateY(-2px);
+}
+
+.btn-manual:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn-manual:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 .emulator-card {
   margin-top: 6px;
   background: rgba(255, 255, 255, 0.02);

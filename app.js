@@ -25,7 +25,8 @@ const BACKEND_URL = 'https://dashgaming-slytear.hf.space';
 // Operational Modes
 const MODES = {
   HRNET: 'HRNET',
-  OPENCV_LIVE: 'OPENCV_LIVE'
+  OPENCV_LIVE: 'OPENCV_LIVE',
+  MANUAL_2POINT: 'MANUAL_2POINT'
 };
 
 // Known Calibration Reference (44.0 cm rigid object)
@@ -252,6 +253,7 @@ const elements = {
   btnStartScan: document.getElementById('btn-start-scan'),
   btnStartOpenCV: document.getElementById('btn-start-opencv'),
   btnStartHRNet: document.getElementById('btn-start-hrnet'),
+  btnStartManual: document.getElementById('btn-start-manual'),
   btnStartSim: document.getElementById('btn-start-sim'),
   simFileInput: document.getElementById('sim-file-input'),
   landingDebugLog: document.getElementById('landing-debug-log'),
@@ -399,6 +401,7 @@ async function checkCompatibility() {
       if (elements.btnStartScan) elements.btnStartScan.disabled = false;
       if (elements.btnStartOpenCV) elements.btnStartOpenCV.disabled = false;
       if (elements.btnStartHRNet) elements.btnStartHRNet.disabled = false;
+      if (elements.btnStartManual) elements.btnStartManual.disabled = false;
     } else {
       logMsg('immersive-ar is not supported on this device. (Requires ARCore).', 'warn');
       updateBadge(elements.badgeAR, 'AR: Unsupported', 'error');
@@ -1098,6 +1101,14 @@ function setAppMode(newMode) {
       elements.hudCalibrationCard.classList.remove('hidden');
       if (elements.btnToggleARCalib) elements.btnToggleARCalib.classList.remove('hidden');
     }
+  } else if (newMode === MODES.MANUAL_2POINT) {
+    if (elements.btnModeHRNet) elements.btnModeHRNet.classList.remove('active');
+    if (elements.btnModeOpenCV) elements.btnModeOpenCV.classList.remove('active');
+    if (elements.hudModeIcon) elements.hudModeIcon.textContent = '📍';
+    if (elements.hudModeText) elements.hudModeText.textContent = 'Mode: Manual 2-Point';
+    if (elements.hudCalibrationCard) elements.hudCalibrationCard.classList.add('hidden');
+    if (elements.btnToggleARCalib) elements.btnToggleARCalib.classList.add('hidden');
+    updateManualHUDControls();
   } else {
     // HRNet Mode
     if (elements.btnModeHRNet) elements.btnModeHRNet.classList.add('active');
@@ -1415,35 +1426,44 @@ function updateTrackingUI(hasSurface, isStable) {
   if (!elements.hudTrackingDot || !elements.hudTrackingText) return;
 
   const isOpenCV = state.activeMode === MODES.OPENCV_LIVE;
+  const isManual = state.activeMode === MODES.MANUAL_2POINT;
 
   if (hasSurface && isStable) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : 'Surface ready (Phone steady)';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : 'Hold steady, tap Scan';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Phone steady)';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Hold steady, tap Scan';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
-      elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Hold steady, tap Scan';
-      elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Hold steady, tap Scan & Measure';
-      elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
+      if (isManual) {
+        updateManualHUDControls();
+      } else {
+        elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Hold steady, tap Scan';
+        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Hold steady, tap Scan & Measure';
+        elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
+      }
     }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : 'Surface locked - hold phone steady';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Stabilize phone over trousers';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - tap to place points' : 'Surface locked - hold phone steady';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : 'Stabilize phone over trousers';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
-      elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Tap Scan & Measure';
-      elements.stepText.textContent = isOpenCV ? 'Aim at waistband to track live' : 'Aim at flat trousers, tap Scan';
-      elements.stepIcon.textContent = isOpenCV ? '⚡' : '🎯';
+      if (isManual) {
+        updateManualHUDControls();
+      } else {
+        elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Tap Scan & Measure';
+        elements.stepText.textContent = isOpenCV ? 'Aim at waistband to track live' : 'Aim at flat trousers, tap Scan';
+        elements.stepIcon.textContent = isOpenCV ? '⚡' : '🎯';
+      }
     }
   } else {
     elements.hudTrackingDot.className = 'dot amber';
     elements.hudTrackingText.textContent = 'Scanning surrounding surface...';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move camera slowly over trousers';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move camera slowly over surface';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = true;
-      elements.scanActionLabel.textContent = 'Aim at trousers...';
-      elements.stepText.textContent = 'Scan trousers until surface locks';
+      elements.scanActionLabel.textContent = 'Aim at surface...';
+      elements.stepText.textContent = 'Scan surface until tracking locks';
       elements.stepIcon.textContent = '🔍';
     }
   }
@@ -2392,6 +2412,12 @@ function renderGarmentHUD(view, width, height) {
   const projMatrix = view ? view.projectionMatrix : state.lastProjMatrix;
   if (!viewMatrix || !projMatrix) return;
 
+  // Manual 2-Point Mode HUD Rendering
+  if (state.activeMode === MODES.MANUAL_2POINT) {
+    renderManualHUD(view, width, height);
+    return;
+  }
+
   // Live OpenCV Mode HUD Rendering
   if (state.activeMode === MODES.OPENCV_LIVE) {
     const cs = state.cvState;
@@ -2614,16 +2640,24 @@ function renderDebug2DView(snapshot, backendData) {
 
 function resetToScanning() {
   state.flowState = STATES.SCANNING;
+  state.measurementState = STATES.SCANNING;
   state.frozenSnapshot = null;
   state.detectedKeypointsMap = {};
   state.calculatedMeasurements = {};
   state.measurementNotices = [];
   state.scanRequested = false;
+  state.point1 = null;
+  state.point2 = null;
+  state.point1Pixel = null;
+  state.point2Pixel = null;
+  state.finalDistanceMeters = null;
 
   hideToast();
   hideErrorBanner();
   if (elements.garmentPinsContainer) elements.garmentPinsContainer.innerHTML = '';
   if (elements.svgMeasureLine) elements.svgMeasureLine.style.display = 'none';
+  if (elements.markerA) elements.markerA.classList.add('hidden');
+  if (elements.markerB) elements.markerB.classList.add('hidden');
   if (elements.hudReticleContainer) elements.hudReticleContainer.classList.remove('hidden');
 
   updateTrackingUI(state.surfacePlane !== null, false);
@@ -2652,7 +2686,7 @@ function hideErrorBanner() {
 }
 
 /* ==========================================================================
-   9. Preserved Manual 2-Point Mode Engine
+   9. Manual 2-Point AR Measurement Mode Engine
    ========================================================================== */
 
 function handleManualPlacePoint(tapX, tapY) {
@@ -2661,31 +2695,91 @@ function handleManualPlacePoint(tapX, tapY) {
   const posX = (tapX !== undefined) ? tapX : (screenW / 2);
   const posY = (tapY !== undefined) ? tapY : (screenH / 2);
 
+  if (!state.lastProjMatrix || !state.lastCameraMatrix) {
+    showToast('AR tracking not ready yet. Point camera at surface.');
+    return;
+  }
+
+  const planePoint = state.surfacePlane ? state.surfacePlane.point : { x: 0, y: 0, z: -1 };
+  const planeNormal = state.surfacePlane ? state.surfacePlane.normal : { x: 0, y: 0, z: 1 };
+
   if (state.measurementState === STATES.SCANNING) {
     const pt3D = unprojectKeypointTo3D(
       posX, posY, screenW, screenH,
       state.lastProjMatrix, state.lastCameraMatrix,
-      state.surfacePlane ? state.surfacePlane.point : { x: 0, y: 0, z: -1 },
-      state.surfacePlane ? state.surfacePlane.normal : { x: 0, y: 0, z: 1 },
+      planePoint, planeNormal,
       0.0
     );
-    if (!pt3D) return;
+    if (!pt3D) {
+      showToast('Surface not detected at point. Aim camera over table/garment.');
+      return;
+    }
     state.point1 = pt3D;
     state.point1Pixel = { x: posX, y: posY };
     state.measurementState = STATES.MANUAL_P1;
+    logMsg(`Point 1 placed at (${pt3D.x.toFixed(2)}, ${pt3D.y.toFixed(2)}, ${pt3D.z.toFixed(2)})m`, 'success');
+    showToast('Point 1 placed! Tap screen or click shutter for Point 2.');
+    updateManualHUDControls();
   } else if (state.measurementState === STATES.MANUAL_P1) {
     const pt3D = unprojectKeypointTo3D(
       posX, posY, screenW, screenH,
       state.lastProjMatrix, state.lastCameraMatrix,
-      state.surfacePlane ? state.surfacePlane.point : { x: 0, y: 0, z: -1 },
-      state.surfacePlane ? state.surfacePlane.normal : { x: 0, y: 0, z: 1 },
+      planePoint, planeNormal,
       0.0
     );
-    if (!pt3D) return;
+    if (!pt3D) {
+      showToast('Surface not detected at point. Aim camera over table/garment.');
+      return;
+    }
     state.point2 = pt3D;
     state.point2Pixel = { x: posX, y: posY };
     state.finalDistanceMeters = calculate3DDistance(state.point1, state.point2);
     state.measurementState = STATES.MANUAL_LOCKED;
+    const distCm = state.finalDistanceMeters * 100;
+    logMsg(`Point 2 placed! Distance: ${distCm.toFixed(1)} cm`, 'success');
+    showToast(`Distance: ${distCm.toFixed(1)} cm locked!`);
+    updateManualHUDControls();
+  } else if (state.measurementState === STATES.MANUAL_LOCKED) {
+    // If user taps again after locking, reset and immediately place P1
+    resetManualPoints();
+    handleManualPlacePoint(tapX, tapY);
+  }
+}
+
+function resetManualPoints() {
+  state.point1 = null;
+  state.point2 = null;
+  state.point1Pixel = null;
+  state.point2Pixel = null;
+  state.finalDistanceMeters = null;
+  state.measurementState = STATES.SCANNING;
+  if (elements.markerA) elements.markerA.classList.add('hidden');
+  if (elements.markerB) elements.markerB.classList.add('hidden');
+  if (elements.svgMeasureLine) elements.svgMeasureLine.style.display = 'none';
+  if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '-- cm';
+  updateManualHUDControls();
+}
+
+function updateManualHUDControls() {
+  if (state.activeMode !== MODES.MANUAL_2POINT) return;
+  if (!elements.btnScanTrigger) return;
+
+  if (state.measurementState === STATES.SCANNING) {
+    elements.scanInnerLabel.textContent = 'P1';
+    elements.scanActionLabel.textContent = 'Tap to place Point 1';
+    elements.stepText.textContent = 'Manual 2-Point: Tap screen or click P1 to place Point 1';
+    elements.stepIcon.textContent = '📍';
+  } else if (state.measurementState === STATES.MANUAL_P1) {
+    elements.scanInnerLabel.textContent = 'P2';
+    elements.scanActionLabel.textContent = 'Tap to place Point 2';
+    elements.stepText.textContent = 'Point 1 placed. Tap screen or click P2 to place Point 2';
+    elements.stepIcon.textContent = '📏';
+  } else if (state.measurementState === STATES.MANUAL_LOCKED) {
+    const distCm = state.finalDistanceMeters ? (state.finalDistanceMeters * 100).toFixed(1) : '--';
+    elements.scanInnerLabel.textContent = '⟲';
+    elements.scanActionLabel.textContent = `${distCm} cm (Tap to Rescan)`;
+    elements.stepText.textContent = `Measured: ${distCm} cm. Tap ⟲ or screen to measure again`;
+    elements.stepIcon.textContent = '✅';
   }
 }
 
@@ -2700,6 +2794,25 @@ function renderManualHUD(view, width, height) {
       elements.markerA.classList.remove('hidden');
       elements.markerA.style.left = `${proj1.xPixel}px`;
       elements.markerA.style.top = `${proj1.yPixel}px`;
+      if (elements.markerACoords) {
+        elements.markerACoords.textContent = `P1 (${state.point1.x.toFixed(2)}, ${state.point1.y.toFixed(2)}, ${state.point1.z.toFixed(2)})m`;
+      }
+      elements.markerB.classList.add('hidden');
+
+      // Live guide line from P1 to screen center reticle
+      const reticleX = width / 2;
+      const reticleY = height / 2;
+      elements.svgMeasureLine.setAttribute('x1', proj1.xPixel);
+      elements.svgMeasureLine.setAttribute('y1', proj1.yPixel);
+      elements.svgMeasureLine.setAttribute('x2', reticleX);
+      elements.svgMeasureLine.setAttribute('y2', reticleY);
+      elements.svgMeasureLine.style.display = 'block';
+
+      // Live prospective distance estimation to current reticle pose if available
+      if (state.currentReticlePose && elements.hudDistanceVal) {
+        const liveDistM = calculate3DDistance(state.point1, state.currentReticlePose);
+        elements.hudDistanceVal.textContent = `${(liveDistM * 100).toFixed(1)} cm`;
+      }
     }
   } else if (state.measurementState === STATES.MANUAL_LOCKED && state.point1 && state.point2) {
     const proj1 = projectPointToPixel(state.point1, viewMatrix, projMatrix, width, height);
@@ -2708,18 +2821,31 @@ function renderManualHUD(view, width, height) {
       elements.markerA.classList.remove('hidden');
       elements.markerA.style.left = `${proj1.xPixel}px`;
       elements.markerA.style.top = `${proj1.yPixel}px`;
+      if (elements.markerACoords) {
+        elements.markerACoords.textContent = `P1 (${state.point1.x.toFixed(2)}, ${state.point1.y.toFixed(2)}, ${state.point1.z.toFixed(2)})m`;
+      }
+
       elements.markerB.classList.remove('hidden');
       elements.markerB.style.left = `${proj2.xPixel}px`;
       elements.markerB.style.top = `${proj2.yPixel}px`;
+      if (elements.markerBCoords) {
+        elements.markerBCoords.textContent = `P2 (${state.point2.x.toFixed(2)}, ${state.point2.y.toFixed(2)}, ${state.point2.z.toFixed(2)})m`;
+      }
+
       elements.svgMeasureLine.setAttribute('x1', proj1.xPixel);
       elements.svgMeasureLine.setAttribute('y1', proj1.yPixel);
       elements.svgMeasureLine.setAttribute('x2', proj2.xPixel);
       elements.svgMeasureLine.setAttribute('y2', proj2.yPixel);
       elements.svgMeasureLine.style.display = 'block';
+
+      if (elements.hudDistanceVal && state.finalDistanceMeters !== null) {
+        elements.hudDistanceVal.textContent = `${(state.finalDistanceMeters * 100).toFixed(1)} cm`;
+      }
     }
   } else {
     elements.markerA.classList.add('hidden');
     elements.markerB.classList.add('hidden');
+    if (elements.svgMeasureLine) elements.svgMeasureLine.style.display = 'none';
   }
 }
 
@@ -2902,6 +3028,17 @@ function setupEventListeners() {
     });
   }
 
+  if (elements.btnStartManual) {
+    elements.btnStartManual.addEventListener('click', () => {
+      if (elements.btnStartManual.disabled) {
+        alert('AR requires Google Chrome on Android with ARCore.\n\nYou can click "Test in WebXR Emulator Mode" to test all features now.');
+        return;
+      }
+      setAppMode(MODES.MANUAL_2POINT);
+      startARSession();
+    });
+  }
+
   // Start AR Scan (Legacy / Generic)
   if (elements.btnStartScan) {
     elements.btnStartScan.addEventListener('click', () => {
@@ -2921,6 +3058,15 @@ function setupEventListeners() {
     e.stopPropagation();
     if (state.activeMode === MODES.OPENCV_LIVE) {
       toggleOpenCVLock();
+      return;
+    }
+    if (state.activeMode === MODES.MANUAL_2POINT) {
+      if (state.measurementState === STATES.MANUAL_LOCKED) {
+        resetManualPoints();
+        showToast('Points reset. Tap or click to place Point 1.');
+      } else {
+        handleManualPlacePoint(window.innerWidth / 2, window.innerHeight / 2);
+      }
       return;
     }
     if (state.isSimulator) {
@@ -2952,6 +3098,16 @@ function setupEventListeners() {
   // Rescan / Reset Buttons
   elements.btnResetPoints.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (state.activeMode === MODES.MANUAL_2POINT) {
+      resetManualPoints();
+      showToast('Points reset. Tap or click to place Point 1.');
+      return;
+    }
+    if (state.activeMode === MODES.OPENCV_LIVE) {
+      unlockOpenCVPoints();
+      showToast('OpenCV tracking reset.');
+      return;
+    }
     resetToScanning();
   });
 
@@ -2981,9 +3137,13 @@ function setupEventListeners() {
     exitAR();
   });
 
-  // Tap anywhere on overlay for fallback manual plotting
+  // Tap anywhere on overlay for manual plotting
   elements.arOverlay.addEventListener('pointerdown', (e) => {
     if (e.target.closest('button')) return;
+    if (state.activeMode === MODES.MANUAL_2POINT) {
+      handleManualPlacePoint(e.clientX, e.clientY);
+      return;
+    }
     if (state.flowState === STATES.SCANNING) {
       handleManualPlacePoint(e.clientX, e.clientY);
     }
@@ -2997,11 +3157,18 @@ function setupEventListeners() {
     elements.btnModeOpenCV.addEventListener('click', () => setAppMode(MODES.OPENCV_LIVE));
   }
 
-  // In-AR Mode Pill Toggle
+  // In-AR Mode Pill Toggle (Cycles OpenCV -> HRNet -> Manual 2-Point -> OpenCV)
   if (elements.btnToggleARMode) {
     elements.btnToggleARMode.addEventListener('click', (e) => {
       e.stopPropagation();
-      const nextMode = state.activeMode === MODES.HRNET ? MODES.OPENCV_LIVE : MODES.HRNET;
+      let nextMode;
+      if (state.activeMode === MODES.OPENCV_LIVE) {
+        nextMode = MODES.HRNET;
+      } else if (state.activeMode === MODES.HRNET) {
+        nextMode = MODES.MANUAL_2POINT;
+      } else {
+        nextMode = MODES.OPENCV_LIVE;
+      }
       setAppMode(nextMode);
     });
   }

@@ -580,5 +580,116 @@ assert.strictEqual(singleStats.meanErrorCm, 0.5);
 assert.strictEqual(singleStats.stdDevCm, 0);
 console.log('✓ Acceptance Test 11 Passed: 44cm calibration benchmark statistics (ME, MAE, Range, StdDev, edge cases) verified mathematically');
 
+// Acceptance Test 12: Manual 2-Point Precision AR Mode
+// Verifies manual tap unprojection, Euclidean 3D distance, state transitions, and point reset logic
+const screenWidth = 1080;
+const screenHeight = 2400;
+const testAspect = screenWidth / screenHeight;
+const testFovRad = (60 * Math.PI) / 180;
+const fManual = 1 / Math.tan(testFovRad / 2);
+const manualProj = [
+  fManual / testAspect, 0, 0, 0,
+  0, fManual, 0, 0,
+  0, 0, -1.002, -1,
+  0, 0, -0.2002, 0
+];
+const manualCam = [
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1
+];
+const testSurfacePlane = {
+  point: { x: 0, y: 0, z: -1.0 },
+  normal: { x: 0, y: 0, z: 1.0 }
+};
+
+// Simulate manual state container
+const manualState = {
+  measurementState: 'SCANNING',
+  point1: null,
+  point2: null,
+  finalDistanceMeters: null
+};
+
+function simulateManualTap(tapX, tapY) {
+  if (manualState.measurementState === 'SCANNING') {
+    const pt3D = unprojectKeypointTo3D(
+      tapX, tapY, screenWidth, screenHeight,
+      manualProj, manualCam,
+      testSurfacePlane.point, testSurfacePlane.normal,
+      0.0
+    );
+    if (!pt3D) return false;
+    manualState.point1 = pt3D;
+    manualState.measurementState = 'MANUAL_P1';
+    return true;
+  } else if (manualState.measurementState === 'MANUAL_P1') {
+    const pt3D = unprojectKeypointTo3D(
+      tapX, tapY, screenWidth, screenHeight,
+      manualProj, manualCam,
+      testSurfacePlane.point, testSurfacePlane.normal,
+      0.0
+    );
+    if (!pt3D) return false;
+    manualState.point2 = pt3D;
+    manualState.finalDistanceMeters = calculate3DDistance(manualState.point1, manualState.point2);
+    manualState.measurementState = 'MANUAL_LOCKED';
+    return true;
+  }
+  return false;
+}
+
+function simulateManualReset() {
+  manualState.point1 = null;
+  manualState.point2 = null;
+  manualState.finalDistanceMeters = null;
+  manualState.measurementState = 'SCANNING';
+}
+
+// 1. Calculate screen coordinates that correspond exactly to a 44.0 cm width at Z = -1.0m
+// At Z = -1.0m, physical width W = 0.44m (from X = -0.22 to X = +0.22)
+// ndcX = X * (fManual / testAspect) / (-Z) = X * (fManual / testAspect)
+// u = (ndcX + 1) / 2 * screenWidth
+const ndcX1 = (-0.22) * (fManual / testAspect);
+const u1 = ((ndcX1 + 1) / 2) * screenWidth;
+const ndcX2 = (0.22) * (fManual / testAspect);
+const u2 = ((ndcX2 + 1) / 2) * screenWidth;
+const midY = screenHeight / 2;
+
+// Tap 1: Place Point 1
+const tap1Success = simulateManualTap(u1, midY);
+assert.ok(tap1Success, 'Point 1 placement should succeed');
+assert.strictEqual(manualState.measurementState, 'MANUAL_P1');
+assert.ok(manualState.point1 !== null);
+assert.ok(Math.abs(manualState.point1.x - (-0.22)) < 1e-4);
+
+// Tap 2: Place Point 2
+const tap2Success = simulateManualTap(u2, midY);
+assert.ok(tap2Success, 'Point 2 placement should succeed');
+assert.strictEqual(manualState.measurementState, 'MANUAL_LOCKED');
+assert.ok(manualState.point2 !== null);
+assert.ok(Math.abs(manualState.point2.x - 0.22) < 1e-4);
+
+// Verify calculated distance is 44.0 cm (0.44 m)
+assert.ok(manualState.finalDistanceMeters !== null);
+const measuredCm = manualState.finalDistanceMeters * 100;
+assert.ok(Math.abs(measuredCm - 44.0) < 0.01, `Manual measurement should equal 44.00 cm, got ${measuredCm.toFixed(2)} cm`);
+
+// Test reset
+simulateManualReset();
+assert.strictEqual(manualState.measurementState, 'SCANNING');
+assert.strictEqual(manualState.point1, null);
+assert.strictEqual(manualState.point2, null);
+assert.strictEqual(manualState.finalDistanceMeters, null);
+
+// Test out-of-bounds tap rejection
+const oobTap = simulateManualTap(-500, midY);
+assert.strictEqual(oobTap, false, 'Out-of-bounds tap must be rejected');
+assert.strictEqual(manualState.measurementState, 'SCANNING');
+
+console.log(`✓ Acceptance Test 12 Passed: Manual 2-Point AR Mode verified (44.0 cm physical reconstruction, state transitions, reset, bounds validation)`);
+
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
+
 
