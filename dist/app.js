@@ -2034,12 +2034,12 @@ async function dispatchToBackend(snapshot) {
   hideErrorBanner();
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s timeout for ZeroGPU queue
+  const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout for ZeroGPU cold start / scheduling
 
-  // If taking > 3.5s, update toast to inform about server wake up / GPU queue
+  // If taking > 4s, update toast to inform about server wake up / GPU queue
   const wakeNoticeTimer = setTimeout(() => {
-    showToast('Allocating GPU & detecting...');
-  }, 3500);
+    showToast('Waking up Hugging Face GPU container...');
+  }, 4000);
 
   try {
     let data = null;
@@ -2168,7 +2168,11 @@ async function predictViaGradioQueue(jpegBlob, debug, signal) {
       if (!trimmed.startsWith('data:')) continue;
       try {
         const payload = JSON.parse(trimmed.slice(5).trim());
-        if (payload.msg === 'process_starts') {
+        if (payload.msg === 'estimation') {
+          const rank = typeof payload.rank === 'number' ? payload.rank + 1 : 1;
+          const eta = payload.rank_eta ? ` (~${Math.round(payload.rank_eta)}s)` : '';
+          showToast(`Allocating GPU (Queue #${rank}${eta})...`);
+        } else if (payload.msg === 'process_starts') {
           showToast('Processing keypoints with ZeroGPU...');
         } else if (payload.msg === 'process_completed') {
           reader.cancel().catch(() => {});
