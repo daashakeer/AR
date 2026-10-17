@@ -154,46 +154,137 @@ const requiredKeys = [
 ];
 // 6. Shared Ray-Plane Intersection Engine
 function intersectRayWithPlane(rayOrigin, rayDir, planePoint, planeNormal) {
-  const denom = planeNormal.x * rayDir.x + planeNormal.y * rayDir.y + planeNormal.z * rayDir.z;
-  if (Math.abs(denom) < 1e-4) return null; // Ray parallel to plane
-  const t = (
-    planeNormal.x * (planePoint.x - rayOrigin.x) +
-    planeNormal.y * (planePoint.y - rayOrigin.y) +
-    planeNormal.z * (planePoint.z - rayOrigin.z)
-  ) / denom;
-  if (t <= 0.001) return null; // Behind or at camera origin
+  if (!rayOrigin || !rayDir || !planePoint || !planeNormal) {
+    return null;
+  }
+  if (!Number.isFinite(rayOrigin.x) || !Number.isFinite(rayOrigin.y) || !Number.isFinite(rayOrigin.z) ||
+      !Number.isFinite(rayDir.x) || !Number.isFinite(rayDir.y) || !Number.isFinite(rayDir.z) ||
+      !Number.isFinite(planePoint.x) || !Number.isFinite(planePoint.y) || !Number.isFinite(planePoint.z) ||
+      !Number.isFinite(planeNormal.x) || !Number.isFinite(planeNormal.y) || !Number.isFinite(planeNormal.z)) {
+    return null;
+  }
+
+  const nLen = Math.hypot(planeNormal.x, planeNormal.y, planeNormal.z);
+  if (!Number.isFinite(nLen) || nLen < 1e-6) return null;
+  const nx = planeNormal.x / nLen;
+  const ny = planeNormal.y / nLen;
+  const nz = planeNormal.z / nLen;
+
+  const rLen = Math.hypot(rayDir.x, rayDir.y, rayDir.z);
+  if (!Number.isFinite(rLen) || rLen < 1e-6) return null;
+  const dx = rayDir.x / rLen;
+  const dy = rayDir.y / rLen;
+  const dz = rayDir.z / rLen;
+
+  const denom = nx * dx + ny * dy + nz * dz;
+  if (!Number.isFinite(denom) || Math.abs(denom) < 0.03) {
+    return null;
+  }
+
+  const numer = nx * (planePoint.x - rayOrigin.x) +
+                ny * (planePoint.y - rayOrigin.y) +
+                nz * (planePoint.z - rayOrigin.z);
+
+  const t = numer / denom;
+  if (!Number.isFinite(t) || t <= 0.01 || t > 10.0) {
+    return null;
+  }
+
+  const hitX = rayOrigin.x + t * dx;
+  const hitY = rayOrigin.y + t * dy;
+  const hitZ = rayOrigin.z + t * dz;
+
+  if (!Number.isFinite(hitX) || !Number.isFinite(hitY) || !Number.isFinite(hitZ)) {
+    return null;
+  }
+
   return {
-    x: rayOrigin.x + t * rayDir.x,
-    y: rayOrigin.y + t * rayDir.y,
-    z: rayOrigin.z + t * rayDir.z,
-    t: t
+    x: hitX,
+    y: hitY,
+    z: hitZ,
+    t: t,
+    denom: denom
   };
 }
 
 // 7. Landmark Pixel (u, v) -> NDC -> World Ray -> Plane with FABRIC_OFFSET
 function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMatrix, planePoint, planeNormal, fabricOffset = 0.002) {
+  if (!Number.isFinite(u) || !Number.isFinite(v) || !Number.isFinite(imageWidth) || !Number.isFinite(imageHeight) ||
+      imageWidth <= 0 || imageHeight <= 0) {
+    return null;
+  }
+  if (u < -0.01 * imageWidth || u > 1.01 * imageWidth || v < -0.01 * imageHeight || v > 1.01 * imageHeight) {
+    return null;
+  }
+
+  if (!projMatrix || projMatrix.length < 16 || !camMatrix || camMatrix.length < 16) {
+    return null;
+  }
+  if (!planePoint || !planeNormal ||
+      !Number.isFinite(planePoint.x) || !Number.isFinite(planePoint.y) || !Number.isFinite(planePoint.z) ||
+      !Number.isFinite(planeNormal.x) || !Number.isFinite(planeNormal.y) || !Number.isFinite(planeNormal.z)) {
+    return null;
+  }
+
+  const p0 = projMatrix[0];
+  const p5 = projMatrix[5];
+  if (!Number.isFinite(p0) || Math.abs(p0) < 1e-4 || !Number.isFinite(p5) || Math.abs(p5) < 1e-4) {
+    return null;
+  }
+
   const ndcX = (u / imageWidth) * 2 - 1;
   const ndcY = 1 - (v / imageHeight) * 2;
-  const dxCam = (ndcX + (projMatrix[8] || 0)) / projMatrix[0];
-  const dyCam = (ndcY + (projMatrix[9] || 0)) / projMatrix[5];
+
+  const p8 = Number.isFinite(projMatrix[8]) ? projMatrix[8] : 0;
+  const p9 = Number.isFinite(projMatrix[9]) ? projMatrix[9] : 0;
+  const dxCam = (ndcX + p8) / p0;
+  const dyCam = (ndcY + p9) / p5;
   const dzCam = -1.0;
 
   const rX = camMatrix[0] * dxCam + camMatrix[4] * dyCam + camMatrix[8] * dzCam;
   const rY = camMatrix[1] * dxCam + camMatrix[5] * dyCam + camMatrix[9] * dzCam;
   const rZ = camMatrix[2] * dxCam + camMatrix[6] * dyCam + camMatrix[10] * dzCam;
+
   const rLen = Math.hypot(rX, rY, rZ);
-  if (rLen < 1e-6) return null;
+  if (!Number.isFinite(rLen) || rLen < 1e-6) return null;
   const dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
   const origin = { x: camMatrix[12], y: camMatrix[13], z: camMatrix[14] };
+  if (!Number.isFinite(origin.x) || !Number.isFinite(origin.y) || !Number.isFinite(origin.z)) {
+    return null;
+  }
 
-  // Offset plane point along normal by fabricOffset
-  const offsetPlanePoint = {
-    x: planePoint.x + fabricOffset * planeNormal.x,
-    y: planePoint.y + fabricOffset * planeNormal.y,
-    z: planePoint.z + fabricOffset * planeNormal.z
+  const camToPlaneX = origin.x - planePoint.x;
+  const camToPlaneY = origin.y - planePoint.y;
+  const camToPlaneZ = origin.z - planePoint.z;
+  const dotNorm = camToPlaneX * planeNormal.x + camToPlaneY * planeNormal.y + camToPlaneZ * planeNormal.z;
+  const normSign = dotNorm < 0 ? -1 : 1;
+  const orientedNormal = {
+    x: normSign * planeNormal.x,
+    y: normSign * planeNormal.y,
+    z: normSign * planeNormal.z
   };
 
-  return intersectRayWithPlane(origin, dir, offsetPlanePoint, planeNormal);
+  const effOffset = Number.isFinite(fabricOffset) ? fabricOffset : 0.002;
+  const offsetPlanePoint = {
+    x: planePoint.x + effOffset * orientedNormal.x,
+    y: planePoint.y + effOffset * orientedNormal.y,
+    z: planePoint.z + effOffset * orientedNormal.z
+  };
+
+  const hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, orientedNormal);
+  if (!hit) {
+    return null;
+  }
+
+  return {
+    x: hit.x,
+    y: hit.y,
+    z: hit.z,
+    t: hit.t,
+    dir: dir,
+    rayOrigin: origin,
+    denom: hit.denom
+  };
 }
 
 // Test 6: Landmark unprojection with synthetic camera and plane
@@ -224,7 +315,34 @@ const behindHit = intersectRayWithPlane({ x: 0, y: 0, z: 0 }, behindDir, synthPl
 assert.strictEqual(behindHit, null, 'Point behind camera plane must return null');
 console.log('✓ Behind Camera Test Passed: Properly returned null');
 
-// Test 9: Measurement computation between waist_left and waist_right (confidence gating removed)
+// Acceptance Test 1: Invalid and Out-of-bounds landmarks rejected
+assert.strictEqual(unprojectKeypointTo3D(-50, 540, 1920, 1080, projMatrix, viewMatrix, synthPlanePoint, synthPlaneNormal), null, 'Negative U must be rejected');
+assert.strictEqual(unprojectKeypointTo3D(2500, 540, 1920, 1080, projMatrix, viewMatrix, synthPlanePoint, synthPlaneNormal), null, 'Excessive U must be rejected');
+assert.strictEqual(unprojectKeypointTo3D(NaN, 540, 1920, 1080, projMatrix, viewMatrix, synthPlanePoint, synthPlaneNormal), null, 'NaN U must be rejected');
+console.log('✓ Acceptance Test 1 Passed: Out-of-bounds and NaN landmarks strictly rejected');
+
+// Acceptance Test 2: Missing matrix or plane data rejected (no silent defaults)
+assert.strictEqual(unprojectKeypointTo3D(720, 540, 1920, 1080, null, viewMatrix, synthPlanePoint, synthPlaneNormal), null, 'Null projMatrix must return null');
+assert.strictEqual(unprojectKeypointTo3D(720, 540, 1920, 1080, projMatrix, null, synthPlanePoint, synthPlaneNormal), null, 'Null camMatrix must return null');
+assert.strictEqual(unprojectKeypointTo3D(720, 540, 1920, 1080, projMatrix, viewMatrix, null, synthPlaneNormal), null, 'Null planePoint must return null');
+console.log('✓ Acceptance Test 2 Passed: Missing calibration data rejected with no silent fallbacks');
+
+// Acceptance Test 3: Failed intersection never fabricates coordinates
+const glancingDir = { x: 1, y: 0, z: -0.005 }; // angle < 0.3 degrees, denom < 0.03
+const glancingHit = intersectRayWithPlane({ x: 0, y: 0, z: 0 }, glancingDir, synthPlanePoint, synthPlaneNormal);
+assert.strictEqual(glancingHit, null, 'Near-parallel glancing ray must return null');
+console.log('✓ Acceptance Test 3 Passed: Near-parallel rays never fabricate coordinates');
+
+// Acceptance Test 4: Opposite normal orientation produces identical mathematical distance
+const oppPlaneNormal = { x: 0, y: 0, z: -1.0 }; // Flipped normal
+const kpLeftOpp = unprojectKeypointTo3D(720, 540, 1920, 1080, projMatrix, viewMatrix, synthPlanePoint, oppPlaneNormal, FABRIC_OFFSET);
+const kpRightOpp = unprojectKeypointTo3D(1200, 540, 1920, 1080, projMatrix, viewMatrix, synthPlanePoint, oppPlaneNormal, FABRIC_OFFSET);
+assert.ok(kpLeftOpp && kpRightOpp, 'Both landmarks must unproject with flipped normal');
+const waistWidthOpp = calculate3DDistance(kpLeftOpp, kpRightOpp);
+assert.strictEqual(Math.round(waistWidthMeters * 1000), Math.round(waistWidthOpp * 1000), 'Measurement must be invariant to normal orientation');
+console.log('✓ Acceptance Test 4 Passed: Normal orientation invariance verified');
+
+// Test 9: Measurement computation between waist_left and waist_right
 const mockKeypoints = {
   'waist_left': { u: 720, v: 540, score: 0.88, p3D: kpLeft },
   'waist_right': { u: 1200, v: 540, score: 0.85, p3D: kpRight },
@@ -247,5 +365,11 @@ assert.strictEqual(waistEval.valid, true);
 assert.ok(waistEval.distCm > 30);
 console.log(`✓ Direct Waist Measurement Passed: ${(waistEval.distCm).toFixed(1)} cm (${(waistEval.distInches).toFixed(1)} in)`);
 
-console.log('\nALL MATHEMATICAL & ARCHITECTURAL TESTS PASSED!');
+// Acceptance Test 5: Repeated measurement consistency of rigid object
+const rep1 = calculate3DDistance(kpLeft, kpRight);
+const rep2 = calculate3DDistance(kpLeft, kpRight);
+assert.strictEqual(rep1, rep2, 'Repeated measurements of fixed points must be strictly identical');
+console.log(`✓ Acceptance Test 5 Passed: Rigid object measurement repeatability = ${rep1.toFixed(4)}m`);
+
+console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
 

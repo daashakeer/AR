@@ -598,11 +598,15 @@ function updateTrackingUI(hasSurface, isStable) {
    ========================================================================== */
 
 /**
- * 100% Accurate 3D Physical Euclidean Distance
+ * 3D Physical Euclidean Distance
  * D = sqrt((X2 - X1)^2 + (Y2 - Y1)^2 + (Z2 - Z1)^2)
  */
 function calculate3DDistance(p1, p2) {
   if (!p1 || !p2) return 0;
+  if (!Number.isFinite(p1.x) || !Number.isFinite(p1.y) || !Number.isFinite(p1.z) ||
+      !Number.isFinite(p2.x) || !Number.isFinite(p2.y) || !Number.isFinite(p2.z)) {
+    return 0;
+  }
   return Math.sqrt(
     (p2.x - p1.x) ** 2 +
     (p2.y - p1.y) ** 2 +
@@ -613,103 +617,159 @@ function calculate3DDistance(p1, p2) {
 /**
  * Shared Ray-Plane Intersection Engine
  * Given a 3D ray (origin, dir) and a plane (point, normal), computes intersection.
- * Returns null if ray is parallel to plane (|denom| < 1e-4) or behind camera (t <= 0).
+ * Returns null if ray is parallel, near-parallel (|denom| < 0.03), behind camera (t <= 0.01),
+ * unreasonably far (t > 10.0), or contains non-finite numbers.
  */
 function intersectRayWithPlane(rayOrigin, rayDir, planePoint, planeNormal) {
-  const denom = planeNormal.x * rayDir.x + planeNormal.y * rayDir.y + planeNormal.z * rayDir.z;
-  if (Math.abs(denom) < 1e-4) {
-    return null; // Ray parallel to surface
+  if (!rayOrigin || !rayDir || !planePoint || !planeNormal) {
+    return null;
+  }
+  if (!Number.isFinite(rayOrigin.x) || !Number.isFinite(rayOrigin.y) || !Number.isFinite(rayOrigin.z) ||
+      !Number.isFinite(rayDir.x) || !Number.isFinite(rayDir.y) || !Number.isFinite(rayDir.z) ||
+      !Number.isFinite(planePoint.x) || !Number.isFinite(planePoint.y) || !Number.isFinite(planePoint.z) ||
+      !Number.isFinite(planeNormal.x) || !Number.isFinite(planeNormal.y) || !Number.isFinite(planeNormal.z)) {
+    return null;
   }
 
-  const t = (
-    planeNormal.x * (planePoint.x - rayOrigin.x) +
-    planeNormal.y * (planePoint.y - rayOrigin.y) +
-    planeNormal.z * (planePoint.z - rayOrigin.z)
-  ) / denom;
+  // Ensure normal is normalized
+  const nLen = Math.hypot(planeNormal.x, planeNormal.y, planeNormal.z);
+  if (!Number.isFinite(nLen) || nLen < 1e-6) return null;
+  const nx = planeNormal.x / nLen;
+  const ny = planeNormal.y / nLen;
+  const nz = planeNormal.z / nLen;
 
-  if (t <= 0.001) {
-    return null; // Behind or at camera plane
+  // Ensure ray direction is normalized
+  const rLen = Math.hypot(rayDir.x, rayDir.y, rayDir.z);
+  if (!Number.isFinite(rLen) || rLen < 1e-6) return null;
+  const dx = rayDir.x / rLen;
+  const dy = rayDir.y / rLen;
+  const dz = rayDir.z / rLen;
+
+  const denom = nx * dx + ny * dy + nz * dz;
+  // Reject near-parallel ray-plane intersections (grazing angle < ~1.7 degrees, |cos theta| < 0.03)
+  if (!Number.isFinite(denom) || Math.abs(denom) < 0.03) {
+    return null;
+  }
+
+  const numer = nx * (planePoint.x - rayOrigin.x) +
+                ny * (planePoint.y - rayOrigin.y) +
+                nz * (planePoint.z - rayOrigin.z);
+
+  const t = numer / denom;
+
+  // Reject intersections behind camera, too close (<= 0.01m), or unreasonably far (> 10.0m)
+  if (!Number.isFinite(t) || t <= 0.01 || t > 10.0) {
+    return null;
+  }
+
+  const hitX = rayOrigin.x + t * dx;
+  const hitY = rayOrigin.y + t * dy;
+  const hitZ = rayOrigin.z + t * dz;
+
+  if (!Number.isFinite(hitX) || !Number.isFinite(hitY) || !Number.isFinite(hitZ)) {
+    return null;
   }
 
   return {
-    x: rayOrigin.x + t * rayDir.x,
-    y: rayOrigin.y + t * rayDir.y,
-    z: rayOrigin.z + t * rayDir.z,
-    t: t
+    x: hitX,
+    y: hitY,
+    z: hitZ,
+    t: t,
+    denom: denom
   };
 }
 
 /**
  * Unprojects a 2D image landmark coordinate (u, v in pixels) into a physical 3D world point.
  * Uses the frozen camera matrix, projection matrix, and surface plane with FABRIC_OFFSET.
+ * Strictly rejects invalid geometry, non-finite values, and out-of-bounds coordinates.
+ * Returns null on failure with no fabricated points.
  */
 function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMatrix, planePoint, planeNormal, fabricOffset = FABRIC_OFFSET) {
-  const pPoint = (planePoint && typeof planePoint.x === 'number') ? planePoint : { x: 0, y: -0.5, z: -0.8 };
-  const pNorm = (planeNormal && typeof planeNormal.x === 'number') ? planeNormal : { x: 0, y: 1.0, z: 0 };
-  const imgW = imageWidth || 576;
-  const imgH = imageHeight || 1280;
-  const pMat = (projMatrix && projMatrix.length >= 16) ? projMatrix : new Float32Array([1.8, 0, 0, 0,  0, 0.9, 0, 0,  0, 0, -1, -1,  0, 0, -0.2, 0]);
-  const cMat = (camMatrix && camMatrix.length >= 16) ? camMatrix : new Float32Array([1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]);
+  // 1. Strict validation of input coordinates
+  if (!Number.isFinite(u) || !Number.isFinite(v) || !Number.isFinite(imageWidth) || !Number.isFinite(imageHeight) ||
+      imageWidth <= 0 || imageHeight <= 0) {
+    return null;
+  }
+  // Reject out-of-bounds coordinates (allow 1% margin for rounding at edge)
+  if (u < -0.01 * imageWidth || u > 1.01 * imageWidth || v < -0.01 * imageHeight || v > 1.01 * imageHeight) {
+    return null;
+  }
 
-  // 1. Normalized Device Coordinates (NDC) [-1, 1], top-left pixel origin
-  const ndcX = (u / imgW) * 2 - 1;
-  const ndcY = 1 - (v / imgH) * 2;
+  // 2. Strict validation of matrices and plane - NO SILENT FABRICATED DEFAULTS!
+  if (!projMatrix || projMatrix.length < 16 || !camMatrix || camMatrix.length < 16) {
+    return null;
+  }
+  if (!planePoint || !planeNormal ||
+      !Number.isFinite(planePoint.x) || !Number.isFinite(planePoint.y) || !Number.isFinite(planePoint.z) ||
+      !Number.isFinite(planeNormal.x) || !Number.isFinite(planeNormal.y) || !Number.isFinite(planeNormal.z)) {
+    return null;
+  }
 
-  // 2. Camera View Space Ray Direction
-  const dxCam = (ndcX + (pMat[8] || 0)) / (pMat[0] || 1.8);
-  const dyCam = (ndcY + (pMat[9] || 0)) / (pMat[5] || 0.9);
+  const p0 = projMatrix[0];
+  const p5 = projMatrix[5];
+  if (!Number.isFinite(p0) || Math.abs(p0) < 1e-4 || !Number.isFinite(p5) || Math.abs(p5) < 1e-4) {
+    return null;
+  }
+
+  // 3. Normalized Device Coordinates (NDC) [-1, 1], top-left pixel origin
+  const ndcX = (u / imageWidth) * 2 - 1;
+  const ndcY = 1 - (v / imageHeight) * 2;
+
+  // 4. Camera View Space Ray Direction
+  const p8 = Number.isFinite(projMatrix[8]) ? projMatrix[8] : 0;
+  const p9 = Number.isFinite(projMatrix[9]) ? projMatrix[9] : 0;
+  const dxCam = (ndcX + p8) / p0;
+  const dyCam = (ndcY + p9) / p5;
   const dzCam = -1.0;
 
-  // 3. Transform Ray Direction to World Space
-  const rX = cMat[0] * dxCam + cMat[4] * dyCam + cMat[8] * dzCam;
-  const rY = cMat[1] * dxCam + cMat[5] * dyCam + cMat[9] * dzCam;
-  const rZ = cMat[2] * dxCam + cMat[6] * dyCam + cMat[10] * dzCam;
+  // 5. Transform Ray Direction to World Space using camMatrix (camera-to-world pose)
+  const rX = camMatrix[0] * dxCam + camMatrix[4] * dyCam + camMatrix[8] * dzCam;
+  const rY = camMatrix[1] * dxCam + camMatrix[5] * dyCam + camMatrix[9] * dzCam;
+  const rZ = camMatrix[2] * dxCam + camMatrix[6] * dyCam + camMatrix[10] * dzCam;
 
   const rLen = Math.hypot(rX, rY, rZ);
-  if (rLen < 1e-6) return null;
+  if (!Number.isFinite(rLen) || rLen < 1e-6) return null;
   const dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
-  const origin = { x: cMat[12], y: cMat[13], z: cMat[14] };
+  const origin = { x: camMatrix[12], y: camMatrix[13], z: camMatrix[14] };
+  if (!Number.isFinite(origin.x) || !Number.isFinite(origin.y) || !Number.isFinite(origin.z)) {
+    return null;
+  }
 
-  // 4. Elevate surface plane by FABRIC_OFFSET (0.002m) along the normal
-  const offsetPlanePoint = {
-    x: pPoint.x + fabricOffset * pNorm.x,
-    y: pPoint.y + fabricOffset * pNorm.y,
-    z: pPoint.z + fabricOffset * pNorm.z
+  // 6. Orient normal towards camera so fabricOffset elevates towards the viewer
+  const camToPlaneX = origin.x - planePoint.x;
+  const camToPlaneY = origin.y - planePoint.y;
+  const camToPlaneZ = origin.z - planePoint.z;
+  const dotNorm = camToPlaneX * planeNormal.x + camToPlaneY * planeNormal.y + camToPlaneZ * planeNormal.z;
+  const normSign = dotNorm < 0 ? -1 : 1;
+  const orientedNormal = {
+    x: normSign * planeNormal.x,
+    y: normSign * planeNormal.y,
+    z: normSign * planeNormal.z
   };
 
-  let hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, pNorm);
+  const effOffset = Number.isFinite(fabricOffset) ? fabricOffset : FABRIC_OFFSET;
+  const offsetPlanePoint = {
+    x: planePoint.x + effOffset * orientedNormal.x,
+    y: planePoint.y + effOffset * orientedNormal.y,
+    z: planePoint.z + effOffset * orientedNormal.z
+  };
 
-  // Fallback 1: Check two-sided plane (opposite normal orientation)
+  // 7. Ray-plane intersection - strictly no fabricated fallbacks!
+  const hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, orientedNormal);
   if (!hit) {
-    const oppNormal = { x: -pNorm.x, y: -pNorm.y, z: -pNorm.z };
-    hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, oppNormal);
+    return null;
   }
 
-  // Fallback 2: Horizontal plane intersection at surface elevation
-  if (!hit && Math.abs(dir.y) > 1e-4) {
-    const tHoriz = (offsetPlanePoint.y - origin.y) / dir.y;
-    if (tHoriz > 0.05 && tHoriz < 5.0) {
-      hit = {
-        x: origin.x + tHoriz * dir.x,
-        y: origin.y + tHoriz * dir.y,
-        z: origin.z + tHoriz * dir.z,
-        t: tHoriz
-      };
-    }
-  }
-
-  // Fallback 3: Project along camera ray at the depth of the detected surface
-  if (!hit) {
-    const planeDepth = Math.hypot(offsetPlanePoint.x - origin.x, offsetPlanePoint.y - origin.y, offsetPlanePoint.z - origin.z) || 0.6;
-    hit = {
-      x: origin.x + planeDepth * dir.x,
-      y: origin.y + planeDepth * dir.y,
-      z: origin.z + planeDepth * dir.z,
-      t: planeDepth
-    };
-  }
-
-  return hit;
+  return {
+    x: hit.x,
+    y: hit.y,
+    z: hit.z,
+    t: hit.t,
+    dir: dir,
+    rayOrigin: origin,
+    denom: hit.denom
+  };
 }
 
 /**
@@ -777,8 +837,56 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
 
     const gl = state.gl;
 
+    // Validate plane data before capture
+    if (!state.surfacePlane || !state.surfacePlane.point || !state.surfacePlane.normal ||
+        !Number.isFinite(state.surfacePlane.point.x) || !Number.isFinite(state.surfacePlane.point.y) || !Number.isFinite(state.surfacePlane.point.z) ||
+        !Number.isFinite(state.surfacePlane.normal.x) || !Number.isFinite(state.surfacePlane.normal.y) || !Number.isFinite(state.surfacePlane.normal.z)) {
+      throw new Error('Surface plane not detected or invalid. Scan the surface until locked before measuring.');
+    }
+
+    // Target aspect ratio from WebXR projection matrix: fy / fx = P[5] / P[0]
+    const pMat = view.projectionMatrix;
+    const targetAspect = (pMat && pMat[0] && pMat[5]) ? Math.abs(pMat[5] / pMat[0]) : null;
+
+    let frameData = null;
+    let captureSource = '';
+
+    // Primary capture path: WebXR raw camera texture
+    if (state.glBinding && view.camera) {
+      try {
+        const tex = state.glBinding.getCameraImage(view.camera);
+        if (tex) {
+          const vp = session.renderState.baseLayer ? session.renderState.baseLayer.getViewport(view) : null;
+          const texW = view.camera.width || (vp ? vp.width : 1280);
+          const texH = view.camera.height || (vp ? vp.height : 720);
+          frameData = readWebGLTextureToJpeg(gl, tex, texW, texH, targetAspect);
+          captureSource = 'WebXR raw camera texture (XRCamera)';
+          logMsg(`Camera frame captured via XRWebGLBinding: ${frameData.width}x${frameData.height} (source: ${texW}x${texH})`, 'success');
+        }
+      } catch (texErr) {
+        console.warn('getCameraImage error:', texErr);
+      }
+    }
+
+    // Secondary capture path: Simulator mode only
+    if (!frameData) {
+      if (state.isSimulator) {
+        logMsg('Capturing simulator camera frame...', 'info');
+        frameData = await captureFallbackCameraFrame();
+        captureSource = 'WebXR desktop simulator stream';
+      } else {
+        // In native WebXR, fallback camera stream cannot be calibrated to WebXR tracking
+        throw new Error('WebXR raw camera access (XRCamera) is unavailable. Fallback camera stream cannot be calibrated to WebXR tracking.');
+      }
+    }
+
+    if (!frameData || !frameData.blob) {
+      throw new Error('Failed to capture camera frame. Ensure camera permission is granted.');
+    }
+
     // 1. Snapshot the camera state at this exact instant
     const snapshot = {
+      captureSource: captureSource,
       camMatrix: new Float32Array(view.transform.matrix),
       projMatrix: new Float32Array(view.projectionMatrix),
       surfacePlane: {
@@ -786,46 +894,28 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
         normal: { ...state.surfacePlane.normal }
       },
       timestamp: time,
-      imageWidth: 0,
-      imageHeight: 0,
-      jpegBlob: null,
-      dataUrl: null
+      imageWidth: frameData.width,
+      imageHeight: frameData.height,
+      jpegBlob: frameData.blob,
+      dataUrl: frameData.dataUrl
     };
 
-    // 2. Capture Camera Frame via XRWebGLBinding.getCameraImage
-    let frameData = null;
-    if (state.glBinding && view.camera) {
-      try {
-        const tex = state.glBinding.getCameraImage(view.camera);
-        if (tex) {
-          const vp = session.renderState.baseLayer.getViewport(view);
-          const texW = view.camera.width || vp.width || 1280;
-          const texH = view.camera.height || vp.height || 720;
-          frameData = readWebGLTextureToJpeg(gl, tex, texW, texH);
-          logMsg(`Camera frame captured via XRWebGLBinding: ${frameData.width}x${frameData.height}`, 'success');
-        }
-      } catch (texErr) {
-        console.warn('getCameraImage error, trying video fallback:', texErr);
-      }
+    // If in simulator mode, ensure projection matrix aspect ratio matches simulator frame
+    if (state.isSimulator && frameData.width && frameData.height) {
+      const simAspect = frameData.width / frameData.height;
+      const fovRad = (60 * Math.PI) / 180;
+      const f = 1 / Math.tan(fovRad / 2);
+      snapshot.projMatrix = new Float32Array([
+        f / simAspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, -1.002, -1,
+        0, 0, -0.2002, 0
+      ]);
     }
 
-    // Fallback: If camera-access texture is not provided by browser
-    if (!frameData) {
-      logMsg('Using high-res camera sensor fallback...', 'info');
-      frameData = await captureFallbackCameraFrame();
-    }
-
-    if (!frameData || !frameData.blob) {
-      throw new Error('Failed to capture camera frame. Ensure camera permission is granted.');
-    }
-
-    snapshot.imageWidth = frameData.width;
-    snapshot.imageHeight = frameData.height;
-    snapshot.jpegBlob = frameData.blob;
-    snapshot.dataUrl = frameData.dataUrl;
     state.frozenSnapshot = snapshot;
 
-    // 3. Dispatch to HRNet Backend for garment keypoint detection
+    // 2. Dispatch to HRNet Backend for garment keypoint detection
     await dispatchToBackend(snapshot);
 
   } catch (err) {
@@ -837,10 +927,11 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
 }
 
 /**
- * Reads a WebGL camera texture into a 2D canvas, flips Y, downscales if > 1280px,
- * and exports as JPEG quality 0.9.
+ * Reads a WebGL camera texture into a 2D canvas, flips Y,
+ * applies target aspect ratio center-cropping if targetAspectRatio is specified,
+ * downscales if longest side > 1280px, and exports as JPEG quality 0.9.
  */
-function readWebGLTextureToJpeg(gl, texture, width, height) {
+function readWebGLTextureToJpeg(gl, texture, width, height, targetAspectRatio = null) {
   const fb = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
@@ -851,18 +942,7 @@ function readWebGLTextureToJpeg(gl, texture, width, height) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.deleteFramebuffer(fb);
 
-  // Downscale if longest side > 1280px
-  const maxDim = 1280;
-  let targetW = width;
-  let targetH = height;
-  const longest = Math.max(width, height);
-  if (longest > maxDim) {
-    const scale = maxDim / longest;
-    targetW = Math.round(width * scale);
-    targetH = Math.round(height * scale);
-  }
-
-  // Create canvas for 2D image data with flipped Y
+  // Create canvas for 2D image data with flipped Y (WebGL bottom-left to 2D top-left)
   const rawCanvas = document.createElement('canvas');
   rawCanvas.width = width;
   rawCanvas.height = height;
@@ -876,15 +956,45 @@ function readWebGLTextureToJpeg(gl, texture, width, height) {
   }
   rawCtx.putImageData(imgData, 0, 0);
 
-  // Scaled canvas if needed
-  let finalCanvas = rawCanvas;
-  if (targetW !== width || targetH !== height) {
-    finalCanvas = document.createElement('canvas');
-    finalCanvas.width = targetW;
-    finalCanvas.height = targetH;
-    const ctx = finalCanvas.getContext('2d');
-    ctx.drawImage(rawCanvas, 0, 0, targetW, targetH);
+  // Center-crop to targetAspectRatio if provided and differs from raw aspect ratio
+  let cropX = 0;
+  let cropY = 0;
+  let cropW = width;
+  let cropH = height;
+
+  if (targetAspectRatio && Number.isFinite(targetAspectRatio) && targetAspectRatio > 0) {
+    const srcAspect = width / height;
+    if (Math.abs(srcAspect - targetAspectRatio) / targetAspectRatio > 0.01) {
+      if (srcAspect > targetAspectRatio) {
+        // Raw texture is wider than viewport: crop sides
+        cropH = height;
+        cropW = Math.round(height * targetAspectRatio);
+        cropX = Math.round((width - cropW) / 2);
+      } else {
+        // Raw texture is taller than viewport: crop top/bottom
+        cropW = width;
+        cropH = Math.round(width / targetAspectRatio);
+        cropY = Math.round((height - cropH) / 2);
+      }
+    }
   }
+
+  // Downscale cropped area if longest side > 1280px
+  const maxDim = 1280;
+  let targetW = cropW;
+  let targetH = cropH;
+  const longest = Math.max(cropW, cropH);
+  if (longest > maxDim) {
+    const scale = maxDim / longest;
+    targetW = Math.round(cropW * scale);
+    targetH = Math.round(cropH * scale);
+  }
+
+  const finalCanvas = document.createElement('canvas');
+  finalCanvas.width = targetW;
+  finalCanvas.height = targetH;
+  const ctx = finalCanvas.getContext('2d');
+  ctx.drawImage(rawCanvas, cropX, cropY, cropW, cropH, 0, 0, targetW, targetH);
 
   const dataUrl = finalCanvas.toDataURL('image/jpeg', 0.9);
   const binStr = atob(dataUrl.split(',')[1]);
@@ -895,7 +1005,13 @@ function readWebGLTextureToJpeg(gl, texture, width, height) {
   }
   const blob = new Blob([u8Arr], { type: 'image/jpeg' });
 
-  return { width: targetW, height: targetH, blob, dataUrl };
+  return {
+    width: targetW,
+    height: targetH,
+    blob,
+    dataUrl,
+    crop: { cropX, cropY, cropW, cropH, rawWidth: width, rawHeight: height }
+  };
 }
 
 /**
@@ -1132,14 +1248,37 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
   const keypointsMap = {};
   const unprojectedPoints = [];
 
-  const planePoint = snapshot.surfacePlane?.point || state.surfacePlane?.point || { x: 0, y: -0.5, z: -0.8 };
-  const planeNormal = snapshot.surfacePlane?.normal || state.surfacePlane?.normal || { x: 0, y: 1.0, z: 0 };
+  // Strict validation of plane data from snapshot - NO SILENT FAKE DEFAULTS
+  const planePoint = snapshot.surfacePlane?.point;
+  const planeNormal = snapshot.surfacePlane?.normal;
+
+  if (!planePoint || !planeNormal ||
+      !Number.isFinite(planePoint.x) || !Number.isFinite(planePoint.y) || !Number.isFinite(planePoint.z) ||
+      !Number.isFinite(planeNormal.x) || !Number.isFinite(planeNormal.y) || !Number.isFinite(planeNormal.z)) {
+    showErrorBanner('Measurement failed: Surface plane data missing or invalid in snapshot.');
+    state.flowState = STATES.SCANNING;
+    return;
+  }
+
+  // Check if backend returned explicit image dimensions for inverse coordinate mapping
+  const backendW = Number.isFinite(backendData.image_width) ? backendData.image_width
+                 : Number.isFinite(backendData.width) ? backendData.width
+                 : snapshot.imageWidth;
+  const backendH = Number.isFinite(backendData.image_height) ? backendData.image_height
+                 : Number.isFinite(backendData.height) ? backendData.height
+                 : snapshot.imageHeight;
+
+  const scaleU = (backendW && backendW !== snapshot.imageWidth) ? (snapshot.imageWidth / backendW) : 1.0;
+  const scaleV = (backendH && backendH !== snapshot.imageHeight) ? (snapshot.imageHeight / backendH) : 1.0;
 
   // Map each landmark using the SAVED snapshot matrices and plane
   for (const kp of backendData.keypoints) {
+    const mappedU = kp.u * scaleU;
+    const mappedV = kp.v * scaleV;
+
     const p3D = unprojectKeypointTo3D(
-      kp.u,
-      kp.v,
+      mappedU,
+      mappedV,
       snapshot.imageWidth,
       snapshot.imageHeight,
       snapshot.projMatrix,
@@ -1150,14 +1289,14 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
     );
 
     if (!p3D) {
-      console.warn(`Landmark ${kp.name} could not be intersected with surface plane.`);
+      logMsg(`[Landmark Rejected] "${kp.name}" at (${Math.round(mappedU)}, ${Math.round(mappedV)}px): Ray-plane intersection failed or out of bounds.`, 'warn');
     } else {
       unprojectedPoints.push({ name: kp.name, score: kp.score, p3D });
     }
 
     keypointsMap[kp.name] = {
-      u: kp.u,
-      v: kp.v,
+      u: mappedU,
+      v: mappedV,
       score: kp.score,
       p3D: p3D
     };
@@ -1165,6 +1304,46 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
 
   state.detectedKeypointsMap = keypointsMap;
   state.measurementNotices = [];
+
+  // Transparent notice regarding surface plane assumption
+  state.measurementNotices.push('Measurements assume garment is laid flat on the detected surface plane (2mm fabric offset applied). Wrinkled fabric or non-planar elevation may cause measurement variance.');
+
+  // Surface-plane assumption validation for waistband
+  const wLeftKp = keypointsMap['waist_left'];
+  const wRightKp = keypointsMap['waist_right'];
+  if (wLeftKp && wRightKp && wLeftKp.p3D && wRightKp.p3D) {
+    const wDist = calculate3DDistance(wLeftKp.p3D, wRightKp.p3D);
+    const depthA = wLeftKp.p3D.t;
+    const depthB = wRightKp.p3D.t;
+    const depthRatio = Math.max(depthA, depthB) / Math.min(depthA, depthB);
+    if (depthRatio > 1.8) {
+      state.measurementNotices.push(`Planar warning: Left/right waist depth disparity is high (${depthA.toFixed(2)}m vs ${depthB.toFixed(2)}m). Trousers may not be flat on the surface.`);
+    }
+    if (wDist < 0.15 || wDist > 0.85) {
+      state.measurementNotices.push(`Waist measurement (${(wDist * 100).toFixed(1)} cm) is outside expected garment range (20–80 cm). Verify surface plane lock.`);
+    }
+  }
+
+  // Focused Diagnostic Logging (Requirement 6)
+  console.group('--- AR Trouser Measurement Scan Diagnostics ---');
+  logMsg(`[Diagnostics] Capture source: ${snapshot.captureSource || 'Unknown'}`, 'info');
+  logMsg(`[Diagnostics] Captured image dimensions: ${snapshot.imageWidth}x${snapshot.imageHeight} px`, 'info');
+  if (backendW !== snapshot.imageWidth || backendH !== snapshot.imageHeight) {
+    logMsg(`[Diagnostics] HRNet input dimensions: ${backendW}x${backendH} px (scaled by ${scaleU.toFixed(3)}, ${scaleV.toFixed(3)})`, 'info');
+  }
+  logMsg(`[Diagnostics] Plane Point: (${planePoint.x.toFixed(3)}, ${planePoint.y.toFixed(3)}, ${planePoint.z.toFixed(3)}), Normal: (${planeNormal.x.toFixed(3)}, ${planeNormal.y.toFixed(3)}, ${planeNormal.z.toFixed(3)})`, 'info');
+  logMsg(`[Diagnostics] Cam Origin: (${snapshot.camMatrix[12].toFixed(3)}, ${snapshot.camMatrix[13].toFixed(3)}, ${snapshot.camMatrix[14].toFixed(3)}), Proj focal [fx, fy]: [${snapshot.projMatrix[0].toFixed(3)}, ${snapshot.projMatrix[5].toFixed(3)}]`, 'info');
+
+  if (wLeftKp && wRightKp) {
+    logMsg(`[Diagnostics] waist_left 2D: (${Math.round(wLeftKp.u)}, ${Math.round(wLeftKp.v)}px) -> ${wLeftKp.p3D ? `3D: (${wLeftKp.p3D.x.toFixed(3)}, ${wLeftKp.p3D.y.toFixed(3)}, ${wLeftKp.p3D.z.toFixed(3)}) [t=${wLeftKp.p3D.t.toFixed(3)}m, rayDir=(${wLeftKp.p3D.dir.x.toFixed(2)}, ${wLeftKp.p3D.dir.y.toFixed(2)}, ${wLeftKp.p3D.dir.z.toFixed(2)})]` : 'REJECTED (Ray-plane intersection failed)'}`, wLeftKp.p3D ? 'info' : 'warn');
+    logMsg(`[Diagnostics] waist_right 2D: (${Math.round(wRightKp.u)}, ${Math.round(wRightKp.v)}px) -> ${wRightKp.p3D ? `3D: (${wRightKp.p3D.x.toFixed(3)}, ${wRightKp.p3D.y.toFixed(3)}, ${wRightKp.p3D.z.toFixed(3)}) [t=${wRightKp.p3D.t.toFixed(3)}m, rayDir=(${wRightKp.p3D.dir.x.toFixed(2)}, ${wRightKp.p3D.dir.y.toFixed(2)}, ${wRightKp.p3D.dir.z.toFixed(2)})]` : 'REJECTED (Ray-plane intersection failed)'}`, wRightKp.p3D ? 'info' : 'warn');
+
+    if (wLeftKp.p3D && wRightKp.p3D) {
+      const wDist = calculate3DDistance(wLeftKp.p3D, wRightKp.p3D);
+      logMsg(`[Diagnostics] Final Waist Width: ${wDist.toFixed(4)} m (${(wDist * 100).toFixed(1)} cm)`, 'success');
+    }
+  }
+  console.groupEnd();
 
   // Evaluate MEASUREMENTS config
   const calculated = {};
@@ -1190,7 +1369,7 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
       continue;
     }
 
-    // Direct pairwise landmarks (confidence gating removed per user instruction)
+    // Direct pairwise landmarks
     let bestPair = null;
     let bestDist = 0;
 
@@ -1232,8 +1411,8 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
         pointB: bestPair[1].p3D
       };
     } else {
-      state.measurementNotices.push(`Keypoints for ${friendlyName} were not found in backend response.`);
-      calculated[m.id] = { id: m.id, label: m.label, valid: false, reason: 'Keypoint missing' };
+      state.measurementNotices.push(`Keypoints for ${friendlyName} could not be reconstructed in 3D.`);
+      calculated[m.id] = { id: m.id, label: m.label, valid: false, reason: 'Keypoint missing or invalid' };
     }
   }
 
@@ -1677,9 +1856,20 @@ function handleSimulatorImageUpload(file) {
       c.getContext('2d').drawImage(img, 0, 0);
       const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.9));
 
+      const imgAspect = img.width / img.height;
+      const fovRad = (60 * Math.PI) / 180;
+      const f = 1 / Math.tan(fovRad / 2);
+      const projMatrix = new Float32Array([
+        f / imgAspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, -1.002, -1,
+        0, 0, -0.2002, 0
+      ]);
+
       const snapshot = {
+        captureSource: 'Simulator image upload',
         camMatrix: state.lastCameraMatrix || new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
-        projMatrix: state.lastProjMatrix || new Float32Array([1,0,0,0, 0,1,0,0, 0,0,-1,-1, 0,0,-0.2,0]),
+        projMatrix: projMatrix,
         surfacePlane: state.surfacePlane || { point: { x: 0, y: 0, z: -1.0 }, normal: { x: 0, y: 0, z: 1.0 } },
         imageWidth: img.width,
         imageHeight: img.height,

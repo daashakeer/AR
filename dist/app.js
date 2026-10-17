@@ -486,7 +486,7 @@ function onXRFrame(time, frame) {
   state.lastProjMatrix = new Float32Array(view.projectionMatrix);
   state.lastCameraMatrix = new Float32Array(view.transform.matrix);
 
-  // 1. Hit-Test against garment/table surface with statistical plane stabilizer
+  // 1. Hit-Test against garment/table surface
   let surfaceHitFound = false;
   if (state.hitTestSource) {
     const hitResults = frame.getHitTestResults(state.hitTestSource);
@@ -497,30 +497,29 @@ function onXRFrame(time, frame) {
         const pos = hitPose.transform.position;
         const matrix = hitPose.transform.matrix;
 
-        // Add to statistical stabilizer to filter jitter and lock horizontal plane
-        state.surfacePlane = planeStabilizer.addHitPose(pos, matrix, time);
-
         state.currentReticlePose = {
           x: pos.x,
-          y: state.surfacePlane.point.y,
+          y: pos.y,
           z: pos.z,
           matrix: matrix
+        };
+
+        const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
+        state.surfacePlane = {
+          point: { x: pos.x, y: pos.y, z: pos.z },
+          normal: { x: matrix[4] / nLen, y: matrix[5] / nLen, z: matrix[6] / nLen },
+          timestamp: time
         };
       }
     }
   }
 
-  // 2. Track Phone Stability & Tilt Angle
+  // 2. Track Phone Stability over ~1.5s
   const camPos = {
     x: view.transform.matrix[12],
     y: view.transform.matrix[13],
     z: view.transform.matrix[14]
   };
-
-  // Optical axis downward alignment (-view.transform.matrix[9] is dot product with gravity down)
-  const lookDown = -view.transform.matrix[9];
-  const tiltDeg = Math.acos(Math.max(-1, Math.min(1, lookDown))) * (180 / Math.PI);
-  state.phoneTiltDeg = tiltDeg;
 
   if (state.lastCamPosition && state.surfacePlane) {
     const moveDist = Math.hypot(
@@ -534,7 +533,7 @@ function onXRFrame(time, frame) {
       if (!state.stabilityTimerStart) {
         state.stabilityTimerStart = time;
       }
-      if (time - state.stabilityTimerStart > 600) {
+      if (time - state.stabilityTimerStart > 800) {
         state.isTrackingStable = true;
       }
     } else {
@@ -546,7 +545,7 @@ function onXRFrame(time, frame) {
   }
   state.lastCamPosition = camPos;
 
-  updateTrackingUI(surfaceHitFound || state.surfacePlane !== null, state.isTrackingStable, state.phoneTiltDeg);
+  updateTrackingUI(surfaceHitFound || state.surfacePlane !== null, state.isTrackingStable);
 
   // 3. Handle One-Shot Scan Trigger inside this exact XR frame callback
   if (state.scanRequested && state.flowState === STATES.SCANNING) {
@@ -558,43 +557,28 @@ function onXRFrame(time, frame) {
   renderGarmentHUD(view, window.innerWidth, window.innerHeight);
 }
 
-function updateTrackingUI(hasSurface, isStable, tiltDeg = 0) {
+function updateTrackingUI(hasSurface, isStable) {
   if (!elements.hudTrackingDot || !elements.hudTrackingText) return;
-
-  const isLevel = (tiltDeg <= 18);
-
-  // Keep manual measurement instructions visible if user is measuring manually
-  if (state.measurementState === STATES.MANUAL_P1) {
-    elements.stepIcon.textContent = '📍';
-    elements.stepText.textContent = 'Point 1 placed. Aim reticle & tap Point 2';
-  } else if (state.measurementState === STATES.MANUAL_LOCKED && state.finalDistanceMeters > 0) {
-    elements.stepIcon.textContent = '✓';
-    elements.stepText.textContent = `Measured: ${(state.finalDistanceMeters * 100).toFixed(1)} cm — Tap ↺ to Rescan`;
-  }
 
   if (hasSurface && isStable) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isLevel ? 'Surface locked & level' : `Level phone flatter (${Math.round(tiltDeg)}° tilt)`;
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isLevel ? 'Surface locked — tap Scan' : 'Tilt phone flatter over surface';
+    elements.hudTrackingText.textContent = 'Surface ready (Phone steady)';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold steady, tap Scan';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
-      elements.scanActionLabel.textContent = isLevel ? 'Hold steady, tap Scan' : 'Level phone & tap Scan';
-      if (state.measurementState === STATES.SCANNING) {
-        elements.stepText.textContent = isLevel ? 'Hold steady, tap Scan & Measure' : 'Level phone flatter over surface';
-        elements.stepIcon.textContent = isLevel ? '📸' : '📱';
-      }
+      elements.scanActionLabel.textContent = 'Hold steady, tap Scan';
+      elements.stepText.textContent = 'Hold steady, tap Scan & Measure';
+      elements.stepIcon.textContent = '📸';
     }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isLevel ? 'Surface locked — hold steady' : `Tilt phone flatter (${Math.round(tiltDeg)}°)`;
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold steady over trousers';
+    elements.hudTrackingText.textContent = 'Surface locked - hold phone steady';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Stabilize phone over trousers';
     if (elements.btnScanTrigger) {
-      elements.btnScanTrigger.disabled = false;
+      elements.btnScanTrigger.disabled = false; // Allow manual tap if user prefers
       elements.scanActionLabel.textContent = 'Tap Scan & Measure';
-      if (state.measurementState === STATES.SCANNING) {
-        elements.stepText.textContent = 'Aim at flat trousers, tap Scan';
-        elements.stepIcon.textContent = '🎯';
-      }
+      elements.stepText.textContent = 'Aim at flat trousers, tap Scan';
+      elements.stepIcon.textContent = '🎯';
     }
   } else {
     elements.hudTrackingDot.className = 'dot amber';
@@ -603,10 +587,8 @@ function updateTrackingUI(hasSurface, isStable, tiltDeg = 0) {
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = true;
       elements.scanActionLabel.textContent = 'Aim at trousers...';
-      if (state.measurementState === STATES.SCANNING) {
-        elements.stepText.textContent = 'Scan trousers until surface locks';
-        elements.stepIcon.textContent = '🔍';
-      }
+      elements.stepText.textContent = 'Scan trousers until surface locks';
+      elements.stepIcon.textContent = '🔍';
     }
   }
 }
@@ -616,129 +598,15 @@ function updateTrackingUI(hasSurface, isStable, tiltDeg = 0) {
    ========================================================================== */
 
 /**
- * True 4x4 Matrix Inversion
- * Handles arbitrary WebXR projection and camera transform matrices without approximations
- */
-function invertMatrix4(out, m) {
-  const m00 = m[0], m01 = m[1], m02 = m[2], m03 = m[3];
-  const m10 = m[4], m11 = m[5], m12 = m[6], m13 = m[7];
-  const m20 = m[8], m21 = m[9], m22 = m[10], m23 = m[11];
-  const m30 = m[12], m31 = m[13], m32 = m[14], m33 = m[15];
-
-  const b00 = m00 * m11 - m01 * m10;
-  const b01 = m00 * m12 - m02 * m10;
-  const b02 = m00 * m13 - m03 * m10;
-  const b03 = m01 * m12 - m02 * m11;
-  const b04 = m01 * m13 - m03 * m11;
-  const b05 = m02 * m13 - m03 * m12;
-  const b06 = m20 * m31 - m21 * m30;
-  const b07 = m20 * m32 - m22 * m30;
-  const b08 = m20 * m33 - m23 * m30;
-  const b09 = m21 * m32 - m22 * m31;
-  const b10 = m21 * m33 - m23 * m31;
-  const b11 = m22 * m33 - m23 * m32;
-
-  let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-  if (!det) return null;
-  const invDet = 1.0 / det;
-
-  out[0] = (m11 * b11 - m12 * b10 + m13 * b09) * invDet;
-  out[1] = (-m01 * b11 + m02 * b10 - m03 * b09) * invDet;
-  out[2] = (m31 * b05 - m32 * b04 + m33 * b03) * invDet;
-  out[3] = (-m21 * b05 + m22 * b04 - m23 * b03) * invDet;
-  out[4] = (-m10 * b11 + m12 * b08 - m13 * b07) * invDet;
-  out[5] = (m00 * b11 - m02 * b08 + m03 * b07) * invDet;
-  out[6] = (-m30 * b05 + m32 * b02 - m33 * b01) * invDet;
-  out[7] = (m20 * b05 - m22 * b02 + m23 * b01) * invDet;
-  out[8] = (m10 * b10 - m11 * b08 + m13 * b06) * invDet;
-  out[9] = (-m00 * b10 + m01 * b08 - m03 * b06) * invDet;
-  out[10] = (m30 * b04 - m31 * b02 + m33 * b00) * invDet;
-  out[11] = (-m20 * b04 + m21 * b02 - m23 * b00) * invDet;
-  out[12] = (-m10 * b09 + m11 * b07 - m12 * b06) * invDet;
-  out[13] = (m00 * b09 - m01 * b07 + m02 * b06) * invDet;
-  out[14] = (-m30 * b03 + m31 * b01 - m32 * b00) * invDet;
-  out[15] = (m20 * b03 - m21 * b01 + m22 * b00) * invDet;
-
-  return out;
-}
-
-/**
- * Surface Plane Stabilizer
- * Uses statistical median filtering on height Y and locks horizontal surfaces (floor/table)
- * to normal (0, 1, 0) to eliminate tilt jitter and perspective noise.
- */
-class SurfacePlaneStabilizer {
-  constructor(maxSamples = 20) {
-    this.maxSamples = maxSamples;
-    this.history = [];
-    this.stablePlane = null;
-  }
-
-  reset() {
-    this.history = [];
-    this.stablePlane = null;
-  }
-
-  addHitPose(pos, matrix, time) {
-    const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
-    let nx = matrix[4] / nLen;
-    let ny = matrix[5] / nLen;
-    let nz = matrix[6] / nLen;
-
-    if (ny < 0) {
-      nx = -nx; ny = -ny; nz = -nz;
-    }
-
-    // Outlier rejection: ignore sudden vertical jumps (> 15cm from established plane)
-    if (this.stablePlane && Math.abs(pos.y - this.stablePlane.point.y) > 0.15) {
-      return this.stablePlane;
-    }
-
-    this.history.push({ x: pos.x, y: pos.y, z: pos.z, nx, ny, nz, time });
-    if (this.history.length > this.maxSamples) {
-      this.history.shift();
-    }
-
-    const sortedY = this.history.map(h => h.y).sort((a, b) => a - b);
-    const mid = Math.floor(sortedY.length / 2);
-    const medianY = (sortedY.length % 2 === 0)
-      ? (sortedY[mid - 1] + sortedY[mid]) / 2
-      : sortedY[mid];
-
-    let sumX = 0, sumZ = 0, sumNx = 0, sumNy = 0, sumNz = 0;
-    for (const h of this.history) {
-      sumX += h.x; sumZ += h.z;
-      sumNx += h.nx; sumNy += h.ny; sumNz += h.nz;
-    }
-    const count = this.history.length;
-    const isHorizontal = (sumNy / count) > 0.65;
-
-    let finalNx = 0, finalNy = 1.0, finalNz = 0;
-    if (!isHorizontal) {
-      finalNx = sumNx / count; finalNy = sumNy / count; finalNz = sumNz / count;
-      const fLen = Math.hypot(finalNx, finalNy, finalNz) || 1;
-      finalNx /= fLen; finalNy /= fLen; finalNz /= fLen;
-    }
-
-    this.stablePlane = {
-      point: { x: sumX / count, y: medianY, z: sumZ / count },
-      normal: { x: finalNx, y: finalNy, z: finalNz },
-      isHorizontal,
-      isStable: this.history.length >= 6,
-      timestamp: time
-    };
-    return this.stablePlane;
-  }
-}
-
-const planeStabilizer = new SurfacePlaneStabilizer(25);
-
-/**
- * 100% Accurate 3D Physical Euclidean Distance
+ * 3D Physical Euclidean Distance
  * D = sqrt((X2 - X1)^2 + (Y2 - Y1)^2 + (Z2 - Z1)^2)
  */
 function calculate3DDistance(p1, p2) {
   if (!p1 || !p2) return 0;
+  if (!Number.isFinite(p1.x) || !Number.isFinite(p1.y) || !Number.isFinite(p1.z) ||
+      !Number.isFinite(p2.x) || !Number.isFinite(p2.y) || !Number.isFinite(p2.z)) {
+    return 0;
+  }
   return Math.sqrt(
     (p2.x - p1.x) ** 2 +
     (p2.y - p1.y) ** 2 +
@@ -749,135 +617,159 @@ function calculate3DDistance(p1, p2) {
 /**
  * Shared Ray-Plane Intersection Engine
  * Given a 3D ray (origin, dir) and a plane (point, normal), computes intersection.
- * Returns null if ray is parallel to plane (|denom| < 1e-4) or behind camera (t <= 0).
+ * Returns null if ray is parallel, near-parallel (|denom| < 0.03), behind camera (t <= 0.01),
+ * unreasonably far (t > 10.0), or contains non-finite numbers.
  */
 function intersectRayWithPlane(rayOrigin, rayDir, planePoint, planeNormal) {
-  const denom = planeNormal.x * rayDir.x + planeNormal.y * rayDir.y + planeNormal.z * rayDir.z;
-  if (Math.abs(denom) < 1e-4) {
-    return null; // Ray parallel to surface
+  if (!rayOrigin || !rayDir || !planePoint || !planeNormal) {
+    return null;
+  }
+  if (!Number.isFinite(rayOrigin.x) || !Number.isFinite(rayOrigin.y) || !Number.isFinite(rayOrigin.z) ||
+      !Number.isFinite(rayDir.x) || !Number.isFinite(rayDir.y) || !Number.isFinite(rayDir.z) ||
+      !Number.isFinite(planePoint.x) || !Number.isFinite(planePoint.y) || !Number.isFinite(planePoint.z) ||
+      !Number.isFinite(planeNormal.x) || !Number.isFinite(planeNormal.y) || !Number.isFinite(planeNormal.z)) {
+    return null;
   }
 
-  const t = (
-    planeNormal.x * (planePoint.x - rayOrigin.x) +
-    planeNormal.y * (planePoint.y - rayOrigin.y) +
-    planeNormal.z * (planePoint.z - rayOrigin.z)
-  ) / denom;
+  // Ensure normal is normalized
+  const nLen = Math.hypot(planeNormal.x, planeNormal.y, planeNormal.z);
+  if (!Number.isFinite(nLen) || nLen < 1e-6) return null;
+  const nx = planeNormal.x / nLen;
+  const ny = planeNormal.y / nLen;
+  const nz = planeNormal.z / nLen;
 
-  if (t <= 0.001) {
-    return null; // Behind or at camera plane
+  // Ensure ray direction is normalized
+  const rLen = Math.hypot(rayDir.x, rayDir.y, rayDir.z);
+  if (!Number.isFinite(rLen) || rLen < 1e-6) return null;
+  const dx = rayDir.x / rLen;
+  const dy = rayDir.y / rLen;
+  const dz = rayDir.z / rLen;
+
+  const denom = nx * dx + ny * dy + nz * dz;
+  // Reject near-parallel ray-plane intersections (grazing angle < ~1.7 degrees, |cos theta| < 0.03)
+  if (!Number.isFinite(denom) || Math.abs(denom) < 0.03) {
+    return null;
+  }
+
+  const numer = nx * (planePoint.x - rayOrigin.x) +
+                ny * (planePoint.y - rayOrigin.y) +
+                nz * (planePoint.z - rayOrigin.z);
+
+  const t = numer / denom;
+
+  // Reject intersections behind camera, too close (<= 0.01m), or unreasonably far (> 10.0m)
+  if (!Number.isFinite(t) || t <= 0.01 || t > 10.0) {
+    return null;
+  }
+
+  const hitX = rayOrigin.x + t * dx;
+  const hitY = rayOrigin.y + t * dy;
+  const hitZ = rayOrigin.z + t * dz;
+
+  if (!Number.isFinite(hitX) || !Number.isFinite(hitY) || !Number.isFinite(hitZ)) {
+    return null;
   }
 
   return {
-    x: rayOrigin.x + t * rayDir.x,
-    y: rayOrigin.y + t * rayDir.y,
-    z: rayOrigin.z + t * rayDir.z,
-    t: t
+    x: hitX,
+    y: hitY,
+    z: hitZ,
+    t: t,
+    denom: denom
   };
 }
 
 /**
  * Unprojects a 2D image landmark coordinate (u, v in pixels) into a physical 3D world point.
- * Uses exact 4x4 matrix inversion and surface plane with FABRIC_OFFSET.
+ * Uses the frozen camera matrix, projection matrix, and surface plane with FABRIC_OFFSET.
+ * Strictly rejects invalid geometry, non-finite values, and out-of-bounds coordinates.
+ * Returns null on failure with no fabricated points.
  */
 function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMatrix, planePoint, planeNormal, fabricOffset = FABRIC_OFFSET) {
-  const pPoint = (planePoint && typeof planePoint.x === 'number') ? planePoint : { x: 0, y: -0.5, z: -0.8 };
-  const pNorm = (planeNormal && typeof planeNormal.x === 'number') ? planeNormal : { x: 0, y: 1.0, z: 0 };
-  const imgW = imageWidth || window.innerWidth || 576;
-  const imgH = imageHeight || window.innerHeight || 1280;
-  const pMat = (projMatrix && projMatrix.length >= 16) ? projMatrix : new Float32Array([1.8, 0, 0, 0,  0, 0.9, 0, 0,  0, 0, -1, -1,  0, 0, -0.2, 0]);
-  const cMat = (camMatrix && camMatrix.length >= 16) ? camMatrix : new Float32Array([1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]);
-
-  // 1. Normalized Device Coordinates (NDC) [-1, 1], top-left pixel origin
-  const ndcX = (u / imgW) * 2 - 1;
-  const ndcY = 1 - (v / imgH) * 2;
-
-  // 2. Exact 4x4 Inverse Projection to View Space Ray
-  const invP = invertMatrix4(new Float32Array(16), pMat);
-  let dir, origin;
-
-  if (invP) {
-    const xc = invP[0] * ndcX + invP[4] * ndcY - invP[8] + invP[12];
-    const yc = invP[1] * ndcX + invP[5] * ndcY - invP[9] + invP[13];
-    const zc = invP[2] * ndcX + invP[6] * ndcY - invP[10] + invP[14];
-    const wc = invP[3] * ndcX + invP[7] * ndcY - invP[11] + invP[15];
-    const invW = (Math.abs(wc) > 1e-6) ? (1.0 / wc) : 1.0;
-    const vx = xc * invW;
-    const vy = yc * invW;
-    const vz = zc * invW;
-
-    const rX = cMat[0] * vx + cMat[4] * vy + cMat[8] * vz;
-    const rY = cMat[1] * vx + cMat[5] * vy + cMat[9] * vz;
-    const rZ = cMat[2] * vx + cMat[6] * vy + cMat[10] * vz;
-    const rLen = Math.hypot(rX, rY, rZ) || 1.0;
-
-    dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
-    origin = { x: cMat[12], y: cMat[13], z: cMat[14] };
-  } else {
-    // Fallback ray calculation
-    const dxCam = (ndcX + (pMat[8] || 0)) / (pMat[0] || 1.8);
-    const dyCam = (ndcY + (pMat[9] || 0)) / (pMat[5] || 0.9);
-    const dzCam = -1.0;
-    const rX = cMat[0] * dxCam + cMat[4] * dyCam + cMat[8] * dzCam;
-    const rY = cMat[1] * dxCam + cMat[5] * dyCam + cMat[9] * dzCam;
-    const rZ = cMat[2] * dxCam + cMat[6] * dyCam + cMat[10] * dzCam;
-    const rLen = Math.hypot(rX, rY, rZ) || 1.0;
-    dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
-    origin = { x: cMat[12], y: cMat[13], z: cMat[14] };
+  // 1. Strict validation of input coordinates
+  if (!Number.isFinite(u) || !Number.isFinite(v) || !Number.isFinite(imageWidth) || !Number.isFinite(imageHeight) ||
+      imageWidth <= 0 || imageHeight <= 0) {
+    return null;
+  }
+  // Reject out-of-bounds coordinates (allow 1% margin for rounding at edge)
+  if (u < -0.01 * imageWidth || u > 1.01 * imageWidth || v < -0.01 * imageHeight || v > 1.01 * imageHeight) {
+    return null;
   }
 
-  // 3. Elevate surface plane by FABRIC_OFFSET along normal
-  const offsetPlanePoint = {
-    x: pPoint.x + fabricOffset * pNorm.x,
-    y: pPoint.y + fabricOffset * pNorm.y,
-    z: pPoint.z + fabricOffset * pNorm.z
+  // 2. Strict validation of matrices and plane - NO SILENT FABRICATED DEFAULTS!
+  if (!projMatrix || projMatrix.length < 16 || !camMatrix || camMatrix.length < 16) {
+    return null;
+  }
+  if (!planePoint || !planeNormal ||
+      !Number.isFinite(planePoint.x) || !Number.isFinite(planePoint.y) || !Number.isFinite(planePoint.z) ||
+      !Number.isFinite(planeNormal.x) || !Number.isFinite(planeNormal.y) || !Number.isFinite(planeNormal.z)) {
+    return null;
+  }
+
+  const p0 = projMatrix[0];
+  const p5 = projMatrix[5];
+  if (!Number.isFinite(p0) || Math.abs(p0) < 1e-4 || !Number.isFinite(p5) || Math.abs(p5) < 1e-4) {
+    return null;
+  }
+
+  // 3. Normalized Device Coordinates (NDC) [-1, 1], top-left pixel origin
+  const ndcX = (u / imageWidth) * 2 - 1;
+  const ndcY = 1 - (v / imageHeight) * 2;
+
+  // 4. Camera View Space Ray Direction
+  const p8 = Number.isFinite(projMatrix[8]) ? projMatrix[8] : 0;
+  const p9 = Number.isFinite(projMatrix[9]) ? projMatrix[9] : 0;
+  const dxCam = (ndcX + p8) / p0;
+  const dyCam = (ndcY + p9) / p5;
+  const dzCam = -1.0;
+
+  // 5. Transform Ray Direction to World Space using camMatrix (camera-to-world pose)
+  const rX = camMatrix[0] * dxCam + camMatrix[4] * dyCam + camMatrix[8] * dzCam;
+  const rY = camMatrix[1] * dxCam + camMatrix[5] * dyCam + camMatrix[9] * dzCam;
+  const rZ = camMatrix[2] * dxCam + camMatrix[6] * dyCam + camMatrix[10] * dzCam;
+
+  const rLen = Math.hypot(rX, rY, rZ);
+  if (!Number.isFinite(rLen) || rLen < 1e-6) return null;
+  const dir = { x: rX / rLen, y: rY / rLen, z: rZ / rLen };
+  const origin = { x: camMatrix[12], y: camMatrix[13], z: camMatrix[14] };
+  if (!Number.isFinite(origin.x) || !Number.isFinite(origin.y) || !Number.isFinite(origin.z)) {
+    return null;
+  }
+
+  // 6. Orient normal towards camera so fabricOffset elevates towards the viewer
+  const camToPlaneX = origin.x - planePoint.x;
+  const camToPlaneY = origin.y - planePoint.y;
+  const camToPlaneZ = origin.z - planePoint.z;
+  const dotNorm = camToPlaneX * planeNormal.x + camToPlaneY * planeNormal.y + camToPlaneZ * planeNormal.z;
+  const normSign = dotNorm < 0 ? -1 : 1;
+  const orientedNormal = {
+    x: normSign * planeNormal.x,
+    y: normSign * planeNormal.y,
+    z: normSign * planeNormal.z
   };
 
-  // 4. If surface is horizontal (floor/table), compute direct stable ground intersection
-  if (Math.abs(pNorm.y) > 0.99 && Math.abs(pNorm.x) < 0.05 && Math.abs(pNorm.z) < 0.05 && Math.abs(dir.y) > 1e-4) {
-    const tH = (offsetPlanePoint.y - origin.y) / dir.y;
-    if (tH > 0.01 && tH < 10.0) {
-      return {
-        x: origin.x + tH * dir.x,
-        y: offsetPlanePoint.y,
-        z: origin.z + tH * dir.z,
-        t: tH
-      };
-    }
-  }
+  const effOffset = Number.isFinite(fabricOffset) ? fabricOffset : FABRIC_OFFSET;
+  const offsetPlanePoint = {
+    x: planePoint.x + effOffset * orientedNormal.x,
+    y: planePoint.y + effOffset * orientedNormal.y,
+    z: planePoint.z + effOffset * orientedNormal.z
+  };
 
-  let hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, pNorm);
-
-  // Fallback 1: Check two-sided plane (opposite normal orientation)
+  // 7. Ray-plane intersection - strictly no fabricated fallbacks!
+  const hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, orientedNormal);
   if (!hit) {
-    const oppNormal = { x: -pNorm.x, y: -pNorm.y, z: -pNorm.z };
-    hit = intersectRayWithPlane(origin, dir, offsetPlanePoint, oppNormal);
+    return null;
   }
 
-  // Fallback 2: Horizontal plane intersection at surface elevation
-  if (!hit && Math.abs(dir.y) > 1e-4) {
-    const tHoriz = (offsetPlanePoint.y - origin.y) / dir.y;
-    if (tHoriz > 0.05 && tHoriz < 5.0) {
-      hit = {
-        x: origin.x + tHoriz * dir.x,
-        y: origin.y + tHoriz * dir.y,
-        z: origin.z + tHoriz * dir.z,
-        t: tHoriz
-      };
-    }
-  }
-
-  // Fallback 3: Project along camera ray at the depth of the detected surface
-  if (!hit) {
-    const planeDepth = Math.hypot(offsetPlanePoint.x - origin.x, offsetPlanePoint.y - origin.y, offsetPlanePoint.z - origin.z) || 0.6;
-    hit = {
-      x: origin.x + planeDepth * dir.x,
-      y: origin.y + planeDepth * dir.y,
-      z: origin.z + planeDepth * dir.z,
-      t: planeDepth
-    };
-  }
-
-  return hit;
+  return {
+    x: hit.x,
+    y: hit.y,
+    z: hit.z,
+    t: hit.t,
+    dir: dir,
+    rayOrigin: origin,
+    denom: hit.denom
+  };
 }
 
 /**
@@ -945,8 +837,56 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
 
     const gl = state.gl;
 
+    // Validate plane data before capture
+    if (!state.surfacePlane || !state.surfacePlane.point || !state.surfacePlane.normal ||
+        !Number.isFinite(state.surfacePlane.point.x) || !Number.isFinite(state.surfacePlane.point.y) || !Number.isFinite(state.surfacePlane.point.z) ||
+        !Number.isFinite(state.surfacePlane.normal.x) || !Number.isFinite(state.surfacePlane.normal.y) || !Number.isFinite(state.surfacePlane.normal.z)) {
+      throw new Error('Surface plane not detected or invalid. Scan the surface until locked before measuring.');
+    }
+
+    // Target aspect ratio from WebXR projection matrix: fy / fx = P[5] / P[0]
+    const pMat = view.projectionMatrix;
+    const targetAspect = (pMat && pMat[0] && pMat[5]) ? Math.abs(pMat[5] / pMat[0]) : null;
+
+    let frameData = null;
+    let captureSource = '';
+
+    // Primary capture path: WebXR raw camera texture
+    if (state.glBinding && view.camera) {
+      try {
+        const tex = state.glBinding.getCameraImage(view.camera);
+        if (tex) {
+          const vp = session.renderState.baseLayer ? session.renderState.baseLayer.getViewport(view) : null;
+          const texW = view.camera.width || (vp ? vp.width : 1280);
+          const texH = view.camera.height || (vp ? vp.height : 720);
+          frameData = readWebGLTextureToJpeg(gl, tex, texW, texH, targetAspect);
+          captureSource = 'WebXR raw camera texture (XRCamera)';
+          logMsg(`Camera frame captured via XRWebGLBinding: ${frameData.width}x${frameData.height} (source: ${texW}x${texH})`, 'success');
+        }
+      } catch (texErr) {
+        console.warn('getCameraImage error:', texErr);
+      }
+    }
+
+    // Secondary capture path: Simulator mode only
+    if (!frameData) {
+      if (state.isSimulator) {
+        logMsg('Capturing simulator camera frame...', 'info');
+        frameData = await captureFallbackCameraFrame();
+        captureSource = 'WebXR desktop simulator stream';
+      } else {
+        // In native WebXR, fallback camera stream cannot be calibrated to WebXR tracking
+        throw new Error('WebXR raw camera access (XRCamera) is unavailable. Fallback camera stream cannot be calibrated to WebXR tracking.');
+      }
+    }
+
+    if (!frameData || !frameData.blob) {
+      throw new Error('Failed to capture camera frame. Ensure camera permission is granted.');
+    }
+
     // 1. Snapshot the camera state at this exact instant
     const snapshot = {
+      captureSource: captureSource,
       camMatrix: new Float32Array(view.transform.matrix),
       projMatrix: new Float32Array(view.projectionMatrix),
       surfacePlane: {
@@ -954,46 +894,28 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
         normal: { ...state.surfacePlane.normal }
       },
       timestamp: time,
-      imageWidth: 0,
-      imageHeight: 0,
-      jpegBlob: null,
-      dataUrl: null
+      imageWidth: frameData.width,
+      imageHeight: frameData.height,
+      jpegBlob: frameData.blob,
+      dataUrl: frameData.dataUrl
     };
 
-    // 2. Capture Camera Frame via XRWebGLBinding.getCameraImage
-    let frameData = null;
-    if (state.glBinding && view.camera) {
-      try {
-        const tex = state.glBinding.getCameraImage(view.camera);
-        if (tex) {
-          const vp = session.renderState.baseLayer.getViewport(view);
-          const texW = view.camera.width || vp.width || 1280;
-          const texH = view.camera.height || vp.height || 720;
-          frameData = readWebGLTextureToJpeg(gl, tex, texW, texH);
-          logMsg(`Camera frame captured via XRWebGLBinding: ${frameData.width}x${frameData.height}`, 'success');
-        }
-      } catch (texErr) {
-        console.warn('getCameraImage error, trying video fallback:', texErr);
-      }
+    // If in simulator mode, ensure projection matrix aspect ratio matches simulator frame
+    if (state.isSimulator && frameData.width && frameData.height) {
+      const simAspect = frameData.width / frameData.height;
+      const fovRad = (60 * Math.PI) / 180;
+      const f = 1 / Math.tan(fovRad / 2);
+      snapshot.projMatrix = new Float32Array([
+        f / simAspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, -1.002, -1,
+        0, 0, -0.2002, 0
+      ]);
     }
 
-    // Fallback: If camera-access texture is not provided by browser
-    if (!frameData) {
-      logMsg('Using high-res camera sensor fallback...', 'info');
-      frameData = await captureFallbackCameraFrame();
-    }
-
-    if (!frameData || !frameData.blob) {
-      throw new Error('Failed to capture camera frame. Ensure camera permission is granted.');
-    }
-
-    snapshot.imageWidth = frameData.width;
-    snapshot.imageHeight = frameData.height;
-    snapshot.jpegBlob = frameData.blob;
-    snapshot.dataUrl = frameData.dataUrl;
     state.frozenSnapshot = snapshot;
 
-    // 3. Dispatch to HRNet Backend for garment keypoint detection
+    // 2. Dispatch to HRNet Backend for garment keypoint detection
     await dispatchToBackend(snapshot);
 
   } catch (err) {
@@ -1005,10 +927,11 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
 }
 
 /**
- * Reads a WebGL camera texture into a 2D canvas, flips Y, downscales if > 1280px,
- * and exports as JPEG quality 0.9.
+ * Reads a WebGL camera texture into a 2D canvas, flips Y,
+ * applies target aspect ratio center-cropping if targetAspectRatio is specified,
+ * downscales if longest side > 1280px, and exports as JPEG quality 0.9.
  */
-function readWebGLTextureToJpeg(gl, texture, width, height) {
+function readWebGLTextureToJpeg(gl, texture, width, height, targetAspectRatio = null) {
   const fb = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
@@ -1019,18 +942,7 @@ function readWebGLTextureToJpeg(gl, texture, width, height) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.deleteFramebuffer(fb);
 
-  // Downscale if longest side > 1280px
-  const maxDim = 1280;
-  let targetW = width;
-  let targetH = height;
-  const longest = Math.max(width, height);
-  if (longest > maxDim) {
-    const scale = maxDim / longest;
-    targetW = Math.round(width * scale);
-    targetH = Math.round(height * scale);
-  }
-
-  // Create canvas for 2D image data with flipped Y
+  // Create canvas for 2D image data with flipped Y (WebGL bottom-left to 2D top-left)
   const rawCanvas = document.createElement('canvas');
   rawCanvas.width = width;
   rawCanvas.height = height;
@@ -1044,15 +956,45 @@ function readWebGLTextureToJpeg(gl, texture, width, height) {
   }
   rawCtx.putImageData(imgData, 0, 0);
 
-  // Scaled canvas if needed
-  let finalCanvas = rawCanvas;
-  if (targetW !== width || targetH !== height) {
-    finalCanvas = document.createElement('canvas');
-    finalCanvas.width = targetW;
-    finalCanvas.height = targetH;
-    const ctx = finalCanvas.getContext('2d');
-    ctx.drawImage(rawCanvas, 0, 0, targetW, targetH);
+  // Center-crop to targetAspectRatio if provided and differs from raw aspect ratio
+  let cropX = 0;
+  let cropY = 0;
+  let cropW = width;
+  let cropH = height;
+
+  if (targetAspectRatio && Number.isFinite(targetAspectRatio) && targetAspectRatio > 0) {
+    const srcAspect = width / height;
+    if (Math.abs(srcAspect - targetAspectRatio) / targetAspectRatio > 0.01) {
+      if (srcAspect > targetAspectRatio) {
+        // Raw texture is wider than viewport: crop sides
+        cropH = height;
+        cropW = Math.round(height * targetAspectRatio);
+        cropX = Math.round((width - cropW) / 2);
+      } else {
+        // Raw texture is taller than viewport: crop top/bottom
+        cropW = width;
+        cropH = Math.round(width / targetAspectRatio);
+        cropY = Math.round((height - cropH) / 2);
+      }
+    }
   }
+
+  // Downscale cropped area if longest side > 1280px
+  const maxDim = 1280;
+  let targetW = cropW;
+  let targetH = cropH;
+  const longest = Math.max(cropW, cropH);
+  if (longest > maxDim) {
+    const scale = maxDim / longest;
+    targetW = Math.round(cropW * scale);
+    targetH = Math.round(cropH * scale);
+  }
+
+  const finalCanvas = document.createElement('canvas');
+  finalCanvas.width = targetW;
+  finalCanvas.height = targetH;
+  const ctx = finalCanvas.getContext('2d');
+  ctx.drawImage(rawCanvas, cropX, cropY, cropW, cropH, 0, 0, targetW, targetH);
 
   const dataUrl = finalCanvas.toDataURL('image/jpeg', 0.9);
   const binStr = atob(dataUrl.split(',')[1]);
@@ -1063,7 +1005,13 @@ function readWebGLTextureToJpeg(gl, texture, width, height) {
   }
   const blob = new Blob([u8Arr], { type: 'image/jpeg' });
 
-  return { width: targetW, height: targetH, blob, dataUrl };
+  return {
+    width: targetW,
+    height: targetH,
+    blob,
+    dataUrl,
+    crop: { cropX, cropY, cropW, cropH, rawWidth: width, rawHeight: height }
+  };
 }
 
 /**
@@ -1083,52 +1031,23 @@ async function captureFallbackCameraFrame() {
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920, min: 1280 }, height: { ideal: 1080, min: 720 } }
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
     });
     const video = document.createElement('video');
     video.srcObject = stream;
     video.playsInline = true;
     await video.play();
 
-    const vidW = video.videoWidth || 1280;
-    const vidH = video.videoHeight || 720;
-
-    // Match exact aspect ratio of active WebXR viewport
-    const targetAspect = window.innerWidth / window.innerHeight;
-    const vidAspect = vidW / vidH;
-
-    let cropX = 0, cropY = 0, cropW = vidW, cropH = vidH;
-
-    if (vidAspect > targetAspect) {
-      // Video is wider than screen: crop sides symmetrically
-      cropW = vidH * targetAspect;
-      cropX = (vidW - cropW) / 2;
-    } else {
-      // Video is taller than screen: crop top and bottom
-      cropH = vidW / targetAspect;
-      cropY = (vidH - cropH) / 2;
-    }
-
-    // Target max 1280 for fast HRNet inference
-    let targetW = Math.round(cropW);
-    let targetH = Math.round(cropH);
-    const maxDim = 1280;
-    if (Math.max(targetW, targetH) > maxDim) {
-      const s = maxDim / Math.max(targetW, targetH);
-      targetW = Math.round(targetW * s);
-      targetH = Math.round(targetH * s);
-    }
-
+    const w = video.videoWidth || 1280;
+    const h = video.videoHeight || 720;
     const c = document.createElement('canvas');
-    c.width = targetW;
-    c.height = targetH;
-    const ctx = c.getContext('2d');
-    ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, targetW, targetH);
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(video, 0, 0);
 
     stream.getTracks().forEach(t => t.stop());
     const dataUrl = c.toDataURL('image/jpeg', 0.9);
     const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
-    return { width: targetW, height: targetH, blob, dataUrl };
+    return { width: w, height: h, blob, dataUrl };
   } catch (camErr) {
     // Canvas fallback: capture the active WebGL AR canvas
     const arCanvas = elements.arCanvas;
@@ -1329,14 +1248,37 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
   const keypointsMap = {};
   const unprojectedPoints = [];
 
-  const planePoint = snapshot.surfacePlane?.point || state.surfacePlane?.point || { x: 0, y: -0.5, z: -0.8 };
-  const planeNormal = snapshot.surfacePlane?.normal || state.surfacePlane?.normal || { x: 0, y: 1.0, z: 0 };
+  // Strict validation of plane data from snapshot - NO SILENT FAKE DEFAULTS
+  const planePoint = snapshot.surfacePlane?.point;
+  const planeNormal = snapshot.surfacePlane?.normal;
+
+  if (!planePoint || !planeNormal ||
+      !Number.isFinite(planePoint.x) || !Number.isFinite(planePoint.y) || !Number.isFinite(planePoint.z) ||
+      !Number.isFinite(planeNormal.x) || !Number.isFinite(planeNormal.y) || !Number.isFinite(planeNormal.z)) {
+    showErrorBanner('Measurement failed: Surface plane data missing or invalid in snapshot.');
+    state.flowState = STATES.SCANNING;
+    return;
+  }
+
+  // Check if backend returned explicit image dimensions for inverse coordinate mapping
+  const backendW = Number.isFinite(backendData.image_width) ? backendData.image_width
+                 : Number.isFinite(backendData.width) ? backendData.width
+                 : snapshot.imageWidth;
+  const backendH = Number.isFinite(backendData.image_height) ? backendData.image_height
+                 : Number.isFinite(backendData.height) ? backendData.height
+                 : snapshot.imageHeight;
+
+  const scaleU = (backendW && backendW !== snapshot.imageWidth) ? (snapshot.imageWidth / backendW) : 1.0;
+  const scaleV = (backendH && backendH !== snapshot.imageHeight) ? (snapshot.imageHeight / backendH) : 1.0;
 
   // Map each landmark using the SAVED snapshot matrices and plane
   for (const kp of backendData.keypoints) {
+    const mappedU = kp.u * scaleU;
+    const mappedV = kp.v * scaleV;
+
     const p3D = unprojectKeypointTo3D(
-      kp.u,
-      kp.v,
+      mappedU,
+      mappedV,
       snapshot.imageWidth,
       snapshot.imageHeight,
       snapshot.projMatrix,
@@ -1347,14 +1289,14 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
     );
 
     if (!p3D) {
-      console.warn(`Landmark ${kp.name} could not be intersected with surface plane.`);
+      logMsg(`[Landmark Rejected] "${kp.name}" at (${Math.round(mappedU)}, ${Math.round(mappedV)}px): Ray-plane intersection failed or out of bounds.`, 'warn');
     } else {
       unprojectedPoints.push({ name: kp.name, score: kp.score, p3D });
     }
 
     keypointsMap[kp.name] = {
-      u: kp.u,
-      v: kp.v,
+      u: mappedU,
+      v: mappedV,
       score: kp.score,
       p3D: p3D
     };
@@ -1362,6 +1304,46 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
 
   state.detectedKeypointsMap = keypointsMap;
   state.measurementNotices = [];
+
+  // Transparent notice regarding surface plane assumption
+  state.measurementNotices.push('Measurements assume garment is laid flat on the detected surface plane (2mm fabric offset applied). Wrinkled fabric or non-planar elevation may cause measurement variance.');
+
+  // Surface-plane assumption validation for waistband
+  const wLeftKp = keypointsMap['waist_left'];
+  const wRightKp = keypointsMap['waist_right'];
+  if (wLeftKp && wRightKp && wLeftKp.p3D && wRightKp.p3D) {
+    const wDist = calculate3DDistance(wLeftKp.p3D, wRightKp.p3D);
+    const depthA = wLeftKp.p3D.t;
+    const depthB = wRightKp.p3D.t;
+    const depthRatio = Math.max(depthA, depthB) / Math.min(depthA, depthB);
+    if (depthRatio > 1.8) {
+      state.measurementNotices.push(`Planar warning: Left/right waist depth disparity is high (${depthA.toFixed(2)}m vs ${depthB.toFixed(2)}m). Trousers may not be flat on the surface.`);
+    }
+    if (wDist < 0.15 || wDist > 0.85) {
+      state.measurementNotices.push(`Waist measurement (${(wDist * 100).toFixed(1)} cm) is outside expected garment range (20–80 cm). Verify surface plane lock.`);
+    }
+  }
+
+  // Focused Diagnostic Logging (Requirement 6)
+  console.group('--- AR Trouser Measurement Scan Diagnostics ---');
+  logMsg(`[Diagnostics] Capture source: ${snapshot.captureSource || 'Unknown'}`, 'info');
+  logMsg(`[Diagnostics] Captured image dimensions: ${snapshot.imageWidth}x${snapshot.imageHeight} px`, 'info');
+  if (backendW !== snapshot.imageWidth || backendH !== snapshot.imageHeight) {
+    logMsg(`[Diagnostics] HRNet input dimensions: ${backendW}x${backendH} px (scaled by ${scaleU.toFixed(3)}, ${scaleV.toFixed(3)})`, 'info');
+  }
+  logMsg(`[Diagnostics] Plane Point: (${planePoint.x.toFixed(3)}, ${planePoint.y.toFixed(3)}, ${planePoint.z.toFixed(3)}), Normal: (${planeNormal.x.toFixed(3)}, ${planeNormal.y.toFixed(3)}, ${planeNormal.z.toFixed(3)})`, 'info');
+  logMsg(`[Diagnostics] Cam Origin: (${snapshot.camMatrix[12].toFixed(3)}, ${snapshot.camMatrix[13].toFixed(3)}, ${snapshot.camMatrix[14].toFixed(3)}), Proj focal [fx, fy]: [${snapshot.projMatrix[0].toFixed(3)}, ${snapshot.projMatrix[5].toFixed(3)}]`, 'info');
+
+  if (wLeftKp && wRightKp) {
+    logMsg(`[Diagnostics] waist_left 2D: (${Math.round(wLeftKp.u)}, ${Math.round(wLeftKp.v)}px) -> ${wLeftKp.p3D ? `3D: (${wLeftKp.p3D.x.toFixed(3)}, ${wLeftKp.p3D.y.toFixed(3)}, ${wLeftKp.p3D.z.toFixed(3)}) [t=${wLeftKp.p3D.t.toFixed(3)}m, rayDir=(${wLeftKp.p3D.dir.x.toFixed(2)}, ${wLeftKp.p3D.dir.y.toFixed(2)}, ${wLeftKp.p3D.dir.z.toFixed(2)})]` : 'REJECTED (Ray-plane intersection failed)'}`, wLeftKp.p3D ? 'info' : 'warn');
+    logMsg(`[Diagnostics] waist_right 2D: (${Math.round(wRightKp.u)}, ${Math.round(wRightKp.v)}px) -> ${wRightKp.p3D ? `3D: (${wRightKp.p3D.x.toFixed(3)}, ${wRightKp.p3D.y.toFixed(3)}, ${wRightKp.p3D.z.toFixed(3)}) [t=${wRightKp.p3D.t.toFixed(3)}m, rayDir=(${wRightKp.p3D.dir.x.toFixed(2)}, ${wRightKp.p3D.dir.y.toFixed(2)}, ${wRightKp.p3D.dir.z.toFixed(2)})]` : 'REJECTED (Ray-plane intersection failed)'}`, wRightKp.p3D ? 'info' : 'warn');
+
+    if (wLeftKp.p3D && wRightKp.p3D) {
+      const wDist = calculate3DDistance(wLeftKp.p3D, wRightKp.p3D);
+      logMsg(`[Diagnostics] Final Waist Width: ${wDist.toFixed(4)} m (${(wDist * 100).toFixed(1)} cm)`, 'success');
+    }
+  }
+  console.groupEnd();
 
   // Evaluate MEASUREMENTS config
   const calculated = {};
@@ -1387,7 +1369,7 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
       continue;
     }
 
-    // Direct pairwise landmarks (confidence gating removed per user instruction)
+    // Direct pairwise landmarks
     let bestPair = null;
     let bestDist = 0;
 
@@ -1429,8 +1411,8 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
         pointB: bestPair[1].p3D
       };
     } else {
-      state.measurementNotices.push(`Keypoints for ${friendlyName} were not found in backend response.`);
-      calculated[m.id] = { id: m.id, label: m.label, valid: false, reason: 'Keypoint missing' };
+      state.measurementNotices.push(`Keypoints for ${friendlyName} could not be reconstructed in 3D.`);
+      calculated[m.id] = { id: m.id, label: m.label, valid: false, reason: 'Keypoint missing or invalid' };
     }
   }
 
@@ -1647,29 +1629,19 @@ function renderDebug2DView(snapshot, backendData) {
 
 function resetToScanning() {
   state.flowState = STATES.SCANNING;
-  state.measurementState = STATES.SCANNING;
   state.frozenSnapshot = null;
   state.detectedKeypointsMap = {};
   state.calculatedMeasurements = {};
   state.measurementNotices = [];
   state.scanRequested = false;
-  state.point1 = null;
-  state.point2 = null;
-  state.point1Pixel = null;
-  state.point2Pixel = null;
-  state.finalDistanceMeters = 0;
-  planeStabilizer.reset();
 
   hideToast();
   hideErrorBanner();
   if (elements.garmentPinsContainer) elements.garmentPinsContainer.innerHTML = '';
   if (elements.svgMeasureLine) elements.svgMeasureLine.style.display = 'none';
-  if (elements.markerA) elements.markerA.classList.add('hidden');
-  if (elements.markerB) elements.markerB.classList.add('hidden');
   if (elements.hudReticleContainer) elements.hudReticleContainer.classList.remove('hidden');
-  if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '--';
 
-  updateTrackingUI(state.surfacePlane !== null, false, state.phoneTiltDeg || 0);
+  updateTrackingUI(state.surfacePlane !== null, false);
 }
 
 function showToast(msg) {
@@ -1704,34 +1676,24 @@ function handleManualPlacePoint(tapX, tapY) {
   const posX = (tapX !== undefined) ? tapX : (screenW / 2);
   const posY = (tapY !== undefined) ? tapY : (screenH / 2);
 
-  if (!state.surfacePlane) {
-    showToast('Scan surface first until surface locks');
-    return;
-  }
-
-  if (state.measurementState === STATES.SCANNING || state.measurementState === STATES.MANUAL_LOCKED) {
+  if (state.measurementState === STATES.SCANNING) {
     const pt3D = unprojectKeypointTo3D(
       posX, posY, screenW, screenH,
       state.lastProjMatrix, state.lastCameraMatrix,
-      state.surfacePlane.point,
-      state.surfacePlane.normal,
+      state.surfacePlane ? state.surfacePlane.point : { x: 0, y: 0, z: -1 },
+      state.surfacePlane ? state.surfacePlane.normal : { x: 0, y: 0, z: 1 },
       0.0
     );
     if (!pt3D) return;
     state.point1 = pt3D;
     state.point1Pixel = { x: posX, y: posY };
-    state.point2 = null;
     state.measurementState = STATES.MANUAL_P1;
-    if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '0.0 cm';
-    if (elements.stepText) elements.stepText.textContent = 'Point 1 placed. Aim reticle & tap Point 2';
-    if (elements.stepIcon) elements.stepIcon.textContent = '📍';
-    if (elements.markerB) elements.markerB.classList.add('hidden');
   } else if (state.measurementState === STATES.MANUAL_P1) {
     const pt3D = unprojectKeypointTo3D(
       posX, posY, screenW, screenH,
       state.lastProjMatrix, state.lastCameraMatrix,
-      state.surfacePlane.point,
-      state.surfacePlane.normal,
+      state.surfacePlane ? state.surfacePlane.point : { x: 0, y: 0, z: -1 },
+      state.surfacePlane ? state.surfacePlane.normal : { x: 0, y: 0, z: 1 },
       0.0
     );
     if (!pt3D) return;
@@ -1739,11 +1701,6 @@ function handleManualPlacePoint(tapX, tapY) {
     state.point2Pixel = { x: posX, y: posY };
     state.finalDistanceMeters = calculate3DDistance(state.point1, state.point2);
     state.measurementState = STATES.MANUAL_LOCKED;
-    const cm = (state.finalDistanceMeters * 100).toFixed(1);
-    const inches = (state.finalDistanceMeters * 39.3701).toFixed(1);
-    if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = `${cm} cm (${inches} in)`;
-    if (elements.stepText) elements.stepText.textContent = `✓ Measured: ${cm} cm (${inches} in) — Tap ↺ to Rescan`;
-    if (elements.stepIcon) elements.stepIcon.textContent = '✓';
   }
 }
 
@@ -1759,36 +1716,6 @@ function renderManualHUD(view, width, height) {
       elements.markerA.style.left = `${proj1.xPixel}px`;
       elements.markerA.style.top = `${proj1.yPixel}px`;
     }
-
-    // Dynamic Live Distance tracking to center reticle
-    let currentReticle3D = null;
-    if (state.surfacePlane) {
-      currentReticle3D = unprojectKeypointTo3D(
-        width / 2, height / 2, width, height,
-        projMatrix, state.lastCameraMatrix,
-        state.surfacePlane.point,
-        state.surfacePlane.normal,
-        0.0
-      );
-    }
-
-    if (currentReticle3D) {
-      const liveDist = calculate3DDistance(state.point1, currentReticle3D);
-      const cm = (liveDist * 100).toFixed(1);
-      const inches = (liveDist * 39.3701).toFixed(1);
-      if (elements.hudDistanceVal) {
-        elements.hudDistanceVal.textContent = `${cm} cm (${inches} in)`;
-      }
-
-      // Draw dynamic measuring line from marker A to center screen
-      if (proj1.valid && elements.svgMeasureLine) {
-        elements.svgMeasureLine.setAttribute('x1', proj1.xPixel);
-        elements.svgMeasureLine.setAttribute('y1', proj1.yPixel);
-        elements.svgMeasureLine.setAttribute('x2', width / 2);
-        elements.svgMeasureLine.setAttribute('y2', height / 2);
-        elements.svgMeasureLine.style.display = 'block';
-      }
-    }
   } else if (state.measurementState === STATES.MANUAL_LOCKED && state.point1 && state.point2) {
     const proj1 = projectPointToPixel(state.point1, viewMatrix, projMatrix, width, height);
     const proj2 = projectPointToPixel(state.point2, viewMatrix, projMatrix, width, height);
@@ -1799,13 +1726,11 @@ function renderManualHUD(view, width, height) {
       elements.markerB.classList.remove('hidden');
       elements.markerB.style.left = `${proj2.xPixel}px`;
       elements.markerB.style.top = `${proj2.yPixel}px`;
-      if (elements.svgMeasureLine) {
-        elements.svgMeasureLine.setAttribute('x1', proj1.xPixel);
-        elements.svgMeasureLine.setAttribute('y1', proj1.yPixel);
-        elements.svgMeasureLine.setAttribute('x2', proj2.xPixel);
-        elements.svgMeasureLine.setAttribute('y2', proj2.yPixel);
-        elements.svgMeasureLine.style.display = 'block';
-      }
+      elements.svgMeasureLine.setAttribute('x1', proj1.xPixel);
+      elements.svgMeasureLine.setAttribute('y1', proj1.yPixel);
+      elements.svgMeasureLine.setAttribute('x2', proj2.xPixel);
+      elements.svgMeasureLine.setAttribute('y2', proj2.yPixel);
+      elements.svgMeasureLine.style.display = 'block';
     }
   } else {
     elements.markerA.classList.add('hidden');
@@ -1931,9 +1856,20 @@ function handleSimulatorImageUpload(file) {
       c.getContext('2d').drawImage(img, 0, 0);
       const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.9));
 
+      const imgAspect = img.width / img.height;
+      const fovRad = (60 * Math.PI) / 180;
+      const f = 1 / Math.tan(fovRad / 2);
+      const projMatrix = new Float32Array([
+        f / imgAspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, -1.002, -1,
+        0, 0, -0.2002, 0
+      ]);
+
       const snapshot = {
+        captureSource: 'Simulator image upload',
         camMatrix: state.lastCameraMatrix || new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
-        projMatrix: state.lastProjMatrix || new Float32Array([1,0,0,0, 0,1,0,0, 0,0,-1,-1, 0,0,-0.2,0]),
+        projMatrix: projMatrix,
         surfacePlane: state.surfacePlane || { point: { x: 0, y: 0, z: -1.0 }, normal: { x: 0, y: 0, z: 1.0 } },
         imageWidth: img.width,
         imageHeight: img.height,
