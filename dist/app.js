@@ -818,17 +818,32 @@ function processLiveOpenCVFrame(session, frame, view, time) {
     if (state.glBinding && view && view.camera) {
       try {
         const tex = state.glBinding.getCameraImage(view.camera);
-        if (tex) {
           const vp = session && session.renderState.baseLayer ? session.renderState.baseLayer.getViewport(view) : null;
           rawW = view.camera.width || (vp ? vp.width : 1280);
           rawH = view.camera.height || (vp ? vp.height : 720);
+          const vpAspect = vp ? (vp.width / vp.height) : (window.innerWidth / window.innerHeight);
 
-          if (rawH > rawW) {
-            procW = 225;
-            procH = 400;
+          // Center-crop raw texture to match viewport aspect ratio so OpenCV detection matches frameProjMatrix
+          let cropX = 0, cropY = 0, cropW = rawW, cropH = rawH;
+          const srcAspect = rawW / rawH;
+          if (Math.abs(srcAspect - vpAspect) / vpAspect > 0.01) {
+            if (srcAspect > vpAspect) {
+              cropW = Math.round(rawH * vpAspect);
+              cropH = rawH;
+              cropX = Math.round((rawW - cropW) / 2);
+            } else {
+              cropW = rawW;
+              cropH = Math.round(rawW / vpAspect);
+              cropY = Math.round((rawH - cropH) / 2);
+            }
+          }
+
+          if (vpAspect < 1.0) {
+            procW = 240;
+            procH = Math.round(procW / vpAspect);
           } else {
-            procW = 400;
-            procH = 225;
+            procH = 240;
+            procW = Math.round(procH * vpAspect);
           }
 
           if (cs.rawCanvas.width !== rawW || cs.rawCanvas.height !== rawH) {
@@ -862,7 +877,7 @@ function processLiveOpenCVFrame(session, frame, view, time) {
             cs.procCanvas.width = procW;
             cs.procCanvas.height = procH;
           }
-          cs.procCtx.drawImage(cs.rawCanvas, 0, 0, procW, procH);
+          cs.procCtx.drawImage(cs.rawCanvas, cropX, cropY, cropW, cropH, 0, 0, procW, procH);
           hasPixels = true;
         }
       } catch (texErr) {
@@ -873,12 +888,13 @@ function processLiveOpenCVFrame(session, frame, view, time) {
       const simCanvas = elements.arCanvas;
       rawW = simCanvas.width || 1280;
       rawH = simCanvas.height || 720;
-      if (rawH > rawW) {
-        procW = 225;
-        procH = 400;
+      const simAspect = rawW / rawH;
+      if (simAspect < 1.0) {
+        procW = 240;
+        procH = Math.round(procW / simAspect);
       } else {
-        procW = 400;
-        procH = 225;
+        procH = 240;
+        procW = Math.round(procH * simAspect);
       }
       if (cs.procCanvas.width !== procW || cs.procCanvas.height !== procH) {
         cs.procCanvas.width = procW;
@@ -910,31 +926,29 @@ function processLiveOpenCVFrame(session, frame, view, time) {
       return;
     }
 
-    // 5. Scale from procW x procH directly to Raw Camera Texture Coordinates
-    const scaleX = rawW / procW;
-    const scaleY = rawH / procH;
-    const rawP1 = { u: det.p1.u * scaleX, v: det.p1.v * scaleY };
-    const rawP2 = { u: det.p2.u * scaleX, v: det.p2.v * scaleY };
-
+    // 5. Store detected 2D points in processing space and scaled viewport space
     cs.detectedPoints2D = {
-      p1: rawP1,
-      p2: rawP2,
+      p1: { u: det.p1.u, v: det.p1.v },
+      p2: { u: det.p2.u, v: det.p2.v },
       procP1: det.p1,
       procP2: det.p2,
+      procW,
+      procH,
       rawW,
       rawH
     };
 
     // 6. Unproject to 3D using the synchronized frame pose and plane
+    // cs.procCanvas has the exact aspect ratio of frameProjMatrix!
     const p1_3D = unprojectKeypointTo3D(
-      rawP1.u, rawP1.v, rawW, rawH,
+      det.p1.u, det.p1.v, procW, procH,
       frameProjMatrix, frameCamMatrix,
       framePlanePoint, framePlaneNormal,
       FABRIC_OFFSET
     );
 
     const p2_3D = unprojectKeypointTo3D(
-      rawP2.u, rawP2.v, rawW, rawH,
+      det.p2.u, det.p2.v, procW, procH,
       frameProjMatrix, frameCamMatrix,
       framePlanePoint, framePlaneNormal,
       FABRIC_OFFSET
@@ -1319,11 +1333,17 @@ function onXRFrame(time, frame) {
         };
 
         const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
-        const rawNormal = {
+        let rawNormal = {
           x: matrix[4] / nLen,
           y: matrix[5] / nLen,
           z: matrix[6] / nLen
         };
+        // Tables, desks, and floors are physically horizontal planes in WebXR's gravity space.
+        // If within 30 degrees of vertical, snap to gravity-up [0, 1, 0] to eliminate SLAM noise.
+        const isHorizontal = Math.abs(rawNormal.y) >= 0.866;
+        if (isHorizontal) {
+          rawNormal = { x: 0, y: rawNormal.y >= 0 ? 1 : -1, z: 0 };
+        }
         const rawPoint = { x: pos.x, y: pos.y, z: pos.z };
 
         if (!state.surfacePlane) {
@@ -1352,14 +1372,22 @@ function onXRFrame(time, frame) {
           const smPtY = (1 - alpha) * state.surfacePlane.point.y + alpha * rawPoint.y;
           const smPtZ = (1 - alpha) * state.surfacePlane.point.z + alpha * rawPoint.z;
 
-          const smNormX = (1 - alpha) * state.surfacePlane.normal.x + alpha * alignedNx;
-          const smNormY = (1 - alpha) * state.surfacePlane.normal.y + alpha * alignedNy;
-          const smNormZ = (1 - alpha) * state.surfacePlane.normal.z + alpha * alignedNz;
-          const smLen = Math.hypot(smNormX, smNormY, smNormZ) || 1;
+          let smNormX = 0, smNormY = 1, smNormZ = 0;
+          if (isHorizontal) {
+            smNormY = alignedNy >= 0 ? 1 : -1;
+          } else {
+            smNormX = (1 - alpha) * state.surfacePlane.normal.x + alpha * alignedNx;
+            smNormY = (1 - alpha) * state.surfacePlane.normal.y + alpha * alignedNy;
+            smNormZ = (1 - alpha) * state.surfacePlane.normal.z + alpha * alignedNz;
+            const smLen = Math.hypot(smNormX, smNormY, smNormZ) || 1;
+            smNormX /= smLen;
+            smNormY /= smLen;
+            smNormZ /= smLen;
+          }
 
           state.surfacePlane = {
             point: { x: smPtX, y: smPtY, z: smPtZ },
-            normal: { x: smNormX / smLen, y: smNormY / smLen, z: smNormZ / smLen },
+            normal: { x: smNormX, y: smNormY, z: smNormZ },
             timestamp: time,
             sampleCount: (state.surfacePlane.sampleCount || 0) + 1
           };
@@ -1595,9 +1623,18 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
   // 6. Orient unit normal towards camera so fabricOffset elevates towards the viewer
   const pnLen = Math.hypot(planeNormal.x, planeNormal.y, planeNormal.z);
   if (!Number.isFinite(pnLen) || pnLen < 1e-6) return null;
-  const unx = planeNormal.x / pnLen;
-  const uny = planeNormal.y / pnLen;
-  const unz = planeNormal.z / pnLen;
+  let unx = planeNormal.x / pnLen;
+  let uny = planeNormal.y / pnLen;
+  let unz = planeNormal.z / pnLen;
+
+  // Regularize near-horizontal surface planes (within ~30 deg of gravity-aligned vertical):
+  // Tables, desks, and floors are physically horizontal planes in WebXR's gravity space.
+  // Snapping near-vertical normals to [0, 1, 0] eliminates SLAM hit-test tilt noise and prevents asymmetric depth distortion.
+  if (Math.abs(uny) >= 0.866) {
+    unx = 0.0;
+    uny = uny > 0 ? 1.0 : -1.0;
+    unz = 0.0;
+  }
 
   const camToPlaneX = origin.x - planePoint.x;
   const camToPlaneY = origin.y - planePoint.y;
@@ -1717,11 +1754,11 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
           const vp = session.renderState.baseLayer ? session.renderState.baseLayer.getViewport(view) : null;
           const texW = view.camera.width || (vp ? vp.width : 1280);
           const texH = view.camera.height || (vp ? vp.height : 720);
-          // Preserve full camera texture without arbitrary center-cropping.
-          // WebXR view.projectionMatrix matches the full view.camera dimensions.
-          frameData = readWebGLTextureToJpeg(gl, tex, texW, texH, null);
+          // Match the display viewport aspect ratio so (u, v) map directly to viewport NDC and projMatrix
+          const targetAspect = vp ? (vp.width / vp.height) : (window.innerWidth / window.innerHeight);
+          frameData = readWebGLTextureToJpeg(gl, tex, texW, texH, targetAspect);
           captureSource = 'WebXR raw camera texture (XRCamera)';
-          logMsg(`Camera frame captured via XRWebGLBinding: ${frameData.width}x${frameData.height} (source: ${texW}x${texH})`, 'success');
+          logMsg(`Camera frame captured via XRWebGLBinding: ${frameData.width}x${frameData.height} (source: ${texW}x${texH}, aspect: ${targetAspect.toFixed(3)})`, 'success');
         }
       } catch (texErr) {
         console.warn('getCameraImage error:', texErr);
@@ -2158,11 +2195,12 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
     const uRaw = crop.cropX + (uInSnapshot / snapshot.imageWidth) * crop.cropW;
     const vRaw = crop.cropY + (vInSnapshot / snapshot.imageHeight) * crop.cropH;
 
+    // Unproject using snapshot dimensions which directly match snapshot.projMatrix aspect ratio
     const p3D = unprojectKeypointTo3D(
-      uRaw,
-      vRaw,
-      crop.rawWidth,
-      crop.rawHeight,
+      uInSnapshot,
+      vInSnapshot,
+      snapshot.imageWidth,
+      snapshot.imageHeight,
       snapshot.projMatrix,
       snapshot.camMatrix,
       planePoint,
