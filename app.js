@@ -128,9 +128,12 @@ const state = {
 
   // Stability Tracking
   lastCamPosition: null,
+  camMovement: 0,
   stabilityTimerStart: 0,
   isTrackingStable: false,
   scanRequested: false,
+  scanRequestTime: 0,
+  scanHistory: [],
 
   // Active Flow State
   flowState: STATES.SCANNING,
@@ -486,7 +489,22 @@ function onXRFrame(time, frame) {
   state.lastProjMatrix = new Float32Array(view.projectionMatrix);
   state.lastCameraMatrix = new Float32Array(view.transform.matrix);
 
-  // 1. Hit-Test against garment/table surface
+  // 1. Track Camera Movement and Phone Stability
+  const camPos = {
+    x: view.transform.matrix[12],
+    y: view.transform.matrix[13],
+    z: view.transform.matrix[14]
+  };
+
+  const moveDist = state.lastCamPosition ? Math.hypot(
+    camPos.x - state.lastCamPosition.x,
+    camPos.y - state.lastCamPosition.y,
+    camPos.z - state.lastCamPosition.z
+  ) : 0;
+  state.camMovement = moveDist;
+  state.lastCamPosition = camPos;
+
+  // 2. Hit-Test against garment/table surface with EMA noise smoothing
   let surfaceHitFound = false;
   if (state.hitTestSource) {
     const hitResults = frame.getHitTestResults(state.hitTestSource);
@@ -505,55 +523,90 @@ function onXRFrame(time, frame) {
         };
 
         const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
-        state.surfacePlane = {
-          point: { x: pos.x, y: pos.y, z: pos.z },
-          normal: { x: matrix[4] / nLen, y: matrix[5] / nLen, z: matrix[6] / nLen },
-          timestamp: time
+        const rawNormal = {
+          x: matrix[4] / nLen,
+          y: matrix[5] / nLen,
+          z: matrix[6] / nLen
         };
+        const rawPoint = { x: pos.x, y: pos.y, z: pos.z };
+
+        if (!state.surfacePlane) {
+          state.surfacePlane = {
+            point: { ...rawPoint },
+            normal: { ...rawNormal },
+            timestamp: time,
+            sampleCount: 1
+          };
+        } else {
+          // Align hemisphere sign with existing plane normal before averaging
+          const dot = rawNormal.x * state.surfacePlane.normal.x +
+                      rawNormal.y * state.surfacePlane.normal.y +
+                      rawNormal.z * state.surfacePlane.normal.z;
+          const sign = dot < 0 ? -1 : 1;
+          const alignedNx = sign * rawNormal.x;
+          const alignedNy = sign * rawNormal.y;
+          const alignedNz = sign * rawNormal.z;
+
+          // When camera is steady (moveDist < 0.008), smooth noise with alpha = 0.25 (EMA window ~10 frames).
+          // When camera is moving fast, adapt quickly with alpha = 0.85.
+          const isMovingFast = moveDist > 0.012;
+          const alpha = isMovingFast ? 0.85 : 0.25;
+
+          const smPtX = (1 - alpha) * state.surfacePlane.point.x + alpha * rawPoint.x;
+          const smPtY = (1 - alpha) * state.surfacePlane.point.y + alpha * rawPoint.y;
+          const smPtZ = (1 - alpha) * state.surfacePlane.point.z + alpha * rawPoint.z;
+
+          const smNormX = (1 - alpha) * state.surfacePlane.normal.x + alpha * alignedNx;
+          const smNormY = (1 - alpha) * state.surfacePlane.normal.y + alpha * alignedNy;
+          const smNormZ = (1 - alpha) * state.surfacePlane.normal.z + alpha * alignedNz;
+          const smLen = Math.hypot(smNormX, smNormY, smNormZ) || 1;
+
+          state.surfacePlane = {
+            point: { x: smPtX, y: smPtY, z: smPtZ },
+            normal: { x: smNormX / smLen, y: smNormY / smLen, z: smNormZ / smLen },
+            timestamp: time,
+            sampleCount: (state.surfacePlane.sampleCount || 0) + 1
+          };
+        }
       }
     }
   }
 
-  // 2. Track Phone Stability over ~1.5s
-  const camPos = {
-    x: view.transform.matrix[12],
-    y: view.transform.matrix[13],
-    z: view.transform.matrix[14]
-  };
-
-  if (state.lastCamPosition && state.surfacePlane) {
-    const moveDist = Math.hypot(
-      camPos.x - state.lastCamPosition.x,
-      camPos.y - state.lastCamPosition.y,
-      camPos.z - state.lastCamPosition.z
-    );
-
-    // If movement is very small (< 0.006m per frame) and plane timestamp is recent (< 1.5s)
-    if (moveDist < 0.006 && (time - state.surfacePlane.timestamp < 1500)) {
-      if (!state.stabilityTimerStart) {
-        state.stabilityTimerStart = time;
-      }
-      if (time - state.stabilityTimerStart > 800) {
-        state.isTrackingStable = true;
-      }
-    } else {
-      state.stabilityTimerStart = 0;
-      state.isTrackingStable = false;
+  // 3. Track Phone Stability over ~800ms
+  if (moveDist < 0.008 && state.surfacePlane && (time - state.surfacePlane.timestamp < 1000)) {
+    if (!state.stabilityTimerStart) {
+      state.stabilityTimerStart = time;
+    }
+    if (time - state.stabilityTimerStart > 800) {
+      state.isTrackingStable = true;
     }
   } else {
+    state.stabilityTimerStart = 0;
     state.isTrackingStable = false;
   }
-  state.lastCamPosition = camPos;
 
   updateTrackingUI(surfaceHitFound || state.surfacePlane !== null, state.isTrackingStable);
 
-  // 3. Handle One-Shot Scan Trigger inside this exact XR frame callback
+  // 4. Handle One-Shot Scan Trigger inside this exact XR frame callback
   if (state.scanRequested && state.flowState === STATES.SCANNING) {
-    state.scanRequested = false;
-    handleOneShotFrameCapture(session, frame, view, time);
+    // Ensure plane timestamp is synchronized with this capture frame (<= 500ms fresh)
+    const isPlaneFresh = state.surfacePlane && (time - state.surfacePlane.timestamp <= 500);
+    if (isPlaneFresh) {
+      state.scanRequested = false;
+      state.scanRequestTime = 0;
+      handleOneShotFrameCapture(session, frame, view, time);
+    } else {
+      // If plane was momentarily lost right at tap, wait up to 500ms for fresh hit-test results
+      if (!state.scanRequestTime) state.scanRequestTime = time;
+      if (time - state.scanRequestTime > 500) {
+        state.scanRequested = false;
+        state.scanRequestTime = 0;
+        showErrorBanner('Surface tracking lost. Hold camera steady over trousers to relock.');
+      }
+    }
   }
 
-  // 4. Update HUD and visual markers
+  // 5. Update HUD and visual markers
   renderGarmentHUD(view, window.innerWidth, window.innerHeight);
 }
 
@@ -736,16 +789,22 @@ function unprojectKeypointTo3D(u, v, imageWidth, imageHeight, projMatrix, camMat
     return null;
   }
 
-  // 6. Orient normal towards camera so fabricOffset elevates towards the viewer
+  // 6. Orient unit normal towards camera so fabricOffset elevates towards the viewer
+  const pnLen = Math.hypot(planeNormal.x, planeNormal.y, planeNormal.z);
+  if (!Number.isFinite(pnLen) || pnLen < 1e-6) return null;
+  const unx = planeNormal.x / pnLen;
+  const uny = planeNormal.y / pnLen;
+  const unz = planeNormal.z / pnLen;
+
   const camToPlaneX = origin.x - planePoint.x;
   const camToPlaneY = origin.y - planePoint.y;
   const camToPlaneZ = origin.z - planePoint.z;
-  const dotNorm = camToPlaneX * planeNormal.x + camToPlaneY * planeNormal.y + camToPlaneZ * planeNormal.z;
+  const dotNorm = camToPlaneX * unx + camToPlaneY * uny + camToPlaneZ * unz;
   const normSign = dotNorm < 0 ? -1 : 1;
   const orientedNormal = {
-    x: normSign * planeNormal.x,
-    y: normSign * planeNormal.y,
-    z: normSign * planeNormal.z
+    x: normSign * unx,
+    y: normSign * uny,
+    z: normSign * unz
   };
 
   const effOffset = Number.isFinite(fabricOffset) ? fabricOffset : FABRIC_OFFSET;
@@ -844,10 +903,6 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
       throw new Error('Surface plane not detected or invalid. Scan the surface until locked before measuring.');
     }
 
-    // Target aspect ratio from WebXR projection matrix: fy / fx = P[5] / P[0]
-    const pMat = view.projectionMatrix;
-    const targetAspect = (pMat && pMat[0] && pMat[5]) ? Math.abs(pMat[5] / pMat[0]) : null;
-
     let frameData = null;
     let captureSource = '';
 
@@ -859,7 +914,9 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
           const vp = session.renderState.baseLayer ? session.renderState.baseLayer.getViewport(view) : null;
           const texW = view.camera.width || (vp ? vp.width : 1280);
           const texH = view.camera.height || (vp ? vp.height : 720);
-          frameData = readWebGLTextureToJpeg(gl, tex, texW, texH, targetAspect);
+          // Preserve full camera texture without arbitrary center-cropping.
+          // WebXR view.projectionMatrix matches the full view.camera dimensions.
+          frameData = readWebGLTextureToJpeg(gl, tex, texW, texH, null);
           captureSource = 'WebXR raw camera texture (XRCamera)';
           logMsg(`Camera frame captured via XRWebGLBinding: ${frameData.width}x${frameData.height} (source: ${texW}x${texH})`, 'success');
         }
@@ -896,6 +953,14 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
       timestamp: time,
       imageWidth: frameData.width,
       imageHeight: frameData.height,
+      crop: frameData.crop || {
+        cropX: 0,
+        cropY: 0,
+        cropW: frameData.width,
+        cropH: frameData.height,
+        rawWidth: frameData.width,
+        rawHeight: frameData.height
+      },
       jpegBlob: frameData.blob,
       dataUrl: frameData.dataUrl
     };
@@ -1260,6 +1325,16 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
     return;
   }
 
+  // Geometry and crop metadata from snapshot
+  const crop = snapshot.crop || {
+    cropX: 0,
+    cropY: 0,
+    cropW: snapshot.imageWidth,
+    cropH: snapshot.imageHeight,
+    rawWidth: snapshot.imageWidth,
+    rawHeight: snapshot.imageHeight
+  };
+
   // Check if backend returned explicit image dimensions for inverse coordinate mapping
   const backendW = Number.isFinite(backendData.image_width) ? backendData.image_width
                  : Number.isFinite(backendData.width) ? backendData.width
@@ -1271,16 +1346,20 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
   const scaleU = (backendW && backendW !== snapshot.imageWidth) ? (snapshot.imageWidth / backendW) : 1.0;
   const scaleV = (backendH && backendH !== snapshot.imageHeight) ? (snapshot.imageHeight / backendH) : 1.0;
 
-  // Map each landmark using the SAVED snapshot matrices and plane
+  // Map each landmark using exact inverse coordinate mapping to raw camera texture space
   for (const kp of backendData.keypoints) {
-    const mappedU = kp.u * scaleU;
-    const mappedV = kp.v * scaleV;
+    const uInSnapshot = kp.u * scaleU;
+    const vInSnapshot = kp.v * scaleV;
+
+    // Inverse map from snapshot image pixels to uncropped raw camera texture pixels:
+    const uRaw = crop.cropX + (uInSnapshot / snapshot.imageWidth) * crop.cropW;
+    const vRaw = crop.cropY + (vInSnapshot / snapshot.imageHeight) * crop.cropH;
 
     const p3D = unprojectKeypointTo3D(
-      mappedU,
-      mappedV,
-      snapshot.imageWidth,
-      snapshot.imageHeight,
+      uRaw,
+      vRaw,
+      crop.rawWidth,
+      crop.rawHeight,
       snapshot.projMatrix,
       snapshot.camMatrix,
       planePoint,
@@ -1289,14 +1368,16 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
     );
 
     if (!p3D) {
-      logMsg(`[Landmark Rejected] "${kp.name}" at (${Math.round(mappedU)}, ${Math.round(mappedV)}px): Ray-plane intersection failed or out of bounds.`, 'warn');
+      logMsg(`[Landmark Rejected] "${kp.name}" at (${Math.round(uInSnapshot)}, ${Math.round(vInSnapshot)}px): Ray-plane intersection failed or out of bounds.`, 'warn');
     } else {
       unprojectedPoints.push({ name: kp.name, score: kp.score, p3D });
     }
 
     keypointsMap[kp.name] = {
-      u: mappedU,
-      v: mappedV,
+      u: uInSnapshot,
+      v: vInSnapshot,
+      uRaw: uRaw,
+      vRaw: vRaw,
       score: kp.score,
       p3D: p3D
     };
@@ -1324,23 +1405,80 @@ function processLandmarksAndMeasurements(backendData, snapshot) {
     }
   }
 
-  // Focused Diagnostic Logging (Requirement 6)
-  console.group('--- AR Trouser Measurement Scan Diagnostics ---');
-  logMsg(`[Diagnostics] Capture source: ${snapshot.captureSource || 'Unknown'}`, 'info');
-  logMsg(`[Diagnostics] Captured image dimensions: ${snapshot.imageWidth}x${snapshot.imageHeight} px`, 'info');
-  if (backendW !== snapshot.imageWidth || backendH !== snapshot.imageHeight) {
-    logMsg(`[Diagnostics] HRNet input dimensions: ${backendW}x${backendH} px (scaled by ${scaleU.toFixed(3)}, ${scaleV.toFixed(3)})`, 'info');
+  // Persistent scan history tracking across repeated scans (Requirement 6)
+  if (!state.scanHistory) state.scanHistory = [];
+  const scanIndex = state.scanHistory.length + 1;
+
+  const camOrigin = {
+    x: snapshot.camMatrix[12],
+    y: snapshot.camMatrix[13],
+    z: snapshot.camMatrix[14]
+  };
+  const camPlaneHeight = Math.abs(
+    (planePoint.x - camOrigin.x) * planeNormal.x +
+    (planePoint.y - camOrigin.y) * planeNormal.y +
+    (planePoint.z - camOrigin.z) * planeNormal.z
+  );
+
+  let finalWaistWidthMeters = null;
+  if (wLeftKp && wRightKp && wLeftKp.p3D && wRightKp.p3D) {
+    finalWaistWidthMeters = calculate3DDistance(wLeftKp.p3D, wRightKp.p3D);
   }
-  logMsg(`[Diagnostics] Plane Point: (${planePoint.x.toFixed(3)}, ${planePoint.y.toFixed(3)}, ${planePoint.z.toFixed(3)}), Normal: (${planeNormal.x.toFixed(3)}, ${planeNormal.y.toFixed(3)}, ${planeNormal.z.toFixed(3)})`, 'info');
-  logMsg(`[Diagnostics] Cam Origin: (${snapshot.camMatrix[12].toFixed(3)}, ${snapshot.camMatrix[13].toFixed(3)}, ${snapshot.camMatrix[14].toFixed(3)}), Proj focal [fx, fy]: [${snapshot.projMatrix[0].toFixed(3)}, ${snapshot.projMatrix[5].toFixed(3)}]`, 'info');
+
+  const prevScan = state.scanHistory.length > 0 ? state.scanHistory[state.scanHistory.length - 1] : null;
+  const deltaCm = (finalWaistWidthMeters !== null && prevScan && prevScan.waistCm !== null)
+    ? ((finalWaistWidthMeters * 100) - prevScan.waistCm).toFixed(2)
+    : null;
+
+  const currentScanRecord = {
+    scanIndex,
+    timestamp: new Date().toISOString(),
+    captureSource: snapshot.captureSource,
+    imageDims: `${snapshot.imageWidth}x${snapshot.imageHeight}`,
+    rawDims: `${crop.rawWidth}x${crop.rawHeight}`,
+    camOrigin: [camOrigin.x.toFixed(3), camOrigin.y.toFixed(3), camOrigin.z.toFixed(3)],
+    camHeightAbovePlaneM: camPlaneHeight.toFixed(3),
+    planeNormal: [planeNormal.x.toFixed(3), planeNormal.y.toFixed(3), planeNormal.z.toFixed(3)],
+    planePoint: [planePoint.x.toFixed(3), planePoint.y.toFixed(3), planePoint.z.toFixed(3)],
+    waistLeft2D: wLeftKp ? `(${Math.round(wLeftKp.u)}, ${Math.round(wLeftKp.v)})` : 'N/A',
+    waistRight2D: wRightKp ? `(${Math.round(wRightKp.u)}, ${Math.round(wRightKp.v)})` : 'N/A',
+    waistLeft3D: wLeftKp?.p3D ? `(${wLeftKp.p3D.x.toFixed(3)}, ${wLeftKp.p3D.y.toFixed(3)}, ${wLeftKp.p3D.z.toFixed(3)}) t=${wLeftKp.p3D.t.toFixed(3)}m` : 'N/A',
+    waistRight3D: wRightKp?.p3D ? `(${wRightKp.p3D.x.toFixed(3)}, ${wRightKp.p3D.y.toFixed(3)}, ${wRightKp.p3D.z.toFixed(3)}) t=${wRightKp.p3D.t.toFixed(3)}m` : 'N/A',
+    waistMeters: finalWaistWidthMeters,
+    waistCm: finalWaistWidthMeters !== null ? finalWaistWidthMeters * 100 : null,
+    deltaCm: deltaCm
+  };
+  state.scanHistory.push(currentScanRecord);
+
+  // Focused Diagnostic Logging (Requirement 6)
+  console.group(`--- AR Trouser Measurement Scan #${scanIndex} Diagnostics ---`);
+  logMsg(`[Diagnostics Scan #${scanIndex}] Source: ${snapshot.captureSource || 'Unknown'}`, 'info');
+  logMsg(`[Diagnostics Scan #${scanIndex}] Captured image: ${snapshot.imageWidth}x${snapshot.imageHeight} px (raw: ${crop.rawWidth}x${crop.rawHeight} px)`, 'info');
+  if (backendW !== snapshot.imageWidth || backendH !== snapshot.imageHeight) {
+    logMsg(`[Diagnostics Scan #${scanIndex}] HRNet input dimensions: ${backendW}x${backendH} px (scaled by ${scaleU.toFixed(3)}, ${scaleV.toFixed(3)})`, 'info');
+  }
+  logMsg(`[Diagnostics Scan #${scanIndex}] Camera Height above Plane: ${camPlaneHeight.toFixed(3)}m (Cam: [${camOrigin.x.toFixed(3)}, ${camOrigin.y.toFixed(3)}, ${camOrigin.z.toFixed(3)}])`, 'info');
+  logMsg(`[Diagnostics Scan #${scanIndex}] Plane Point: [${planePoint.x.toFixed(3)}, ${planePoint.y.toFixed(3)}, ${planePoint.z.toFixed(3)}], Normal: [${planeNormal.x.toFixed(3)}, ${planeNormal.y.toFixed(3)}, ${planeNormal.z.toFixed(3)}]`, 'info');
+  logMsg(`[Diagnostics Scan #${scanIndex}] Proj focal [fx, fy]: [${snapshot.projMatrix[0].toFixed(3)}, ${snapshot.projMatrix[5].toFixed(3)}]`, 'info');
 
   if (wLeftKp && wRightKp) {
-    logMsg(`[Diagnostics] waist_left 2D: (${Math.round(wLeftKp.u)}, ${Math.round(wLeftKp.v)}px) -> ${wLeftKp.p3D ? `3D: (${wLeftKp.p3D.x.toFixed(3)}, ${wLeftKp.p3D.y.toFixed(3)}, ${wLeftKp.p3D.z.toFixed(3)}) [t=${wLeftKp.p3D.t.toFixed(3)}m, rayDir=(${wLeftKp.p3D.dir.x.toFixed(2)}, ${wLeftKp.p3D.dir.y.toFixed(2)}, ${wLeftKp.p3D.dir.z.toFixed(2)})]` : 'REJECTED (Ray-plane intersection failed)'}`, wLeftKp.p3D ? 'info' : 'warn');
-    logMsg(`[Diagnostics] waist_right 2D: (${Math.round(wRightKp.u)}, ${Math.round(wRightKp.v)}px) -> ${wRightKp.p3D ? `3D: (${wRightKp.p3D.x.toFixed(3)}, ${wRightKp.p3D.y.toFixed(3)}, ${wRightKp.p3D.z.toFixed(3)}) [t=${wRightKp.p3D.t.toFixed(3)}m, rayDir=(${wRightKp.p3D.dir.x.toFixed(2)}, ${wRightKp.p3D.dir.y.toFixed(2)}, ${wRightKp.p3D.dir.z.toFixed(2)})]` : 'REJECTED (Ray-plane intersection failed)'}`, wRightKp.p3D ? 'info' : 'warn');
+    logMsg(`[Diagnostics Scan #${scanIndex}] waist_left 2D: (${Math.round(wLeftKp.u)}, ${Math.round(wLeftKp.v)}px) [raw: (${Math.round(wLeftKp.uRaw)}, ${Math.round(wLeftKp.vRaw)})] -> ${wLeftKp.p3D ? `3D: (${wLeftKp.p3D.x.toFixed(3)}, ${wLeftKp.p3D.y.toFixed(3)}, ${wLeftKp.p3D.z.toFixed(3)}) [t=${wLeftKp.p3D.t.toFixed(3)}m, rayDir=(${wLeftKp.p3D.dir.x.toFixed(2)}, ${wLeftKp.p3D.dir.y.toFixed(2)}, ${wLeftKp.p3D.dir.z.toFixed(2)})]` : 'REJECTED (Ray-plane intersection failed)'}`, wLeftKp.p3D ? 'info' : 'warn');
+    logMsg(`[Diagnostics Scan #${scanIndex}] waist_right 2D: (${Math.round(wRightKp.u)}, ${Math.round(wRightKp.v)}px) [raw: (${Math.round(wRightKp.uRaw)}, ${Math.round(wRightKp.vRaw)})] -> ${wRightKp.p3D ? `3D: (${wRightKp.p3D.x.toFixed(3)}, ${wRightKp.p3D.y.toFixed(3)}, ${wRightKp.p3D.z.toFixed(3)}) [t=${wRightKp.p3D.t.toFixed(3)}m, rayDir=(${wRightKp.p3D.dir.x.toFixed(2)}, ${wRightKp.p3D.dir.y.toFixed(2)}, ${wRightKp.p3D.dir.z.toFixed(2)})]` : 'REJECTED (Ray-plane intersection failed)'}`, wRightKp.p3D ? 'info' : 'warn');
 
-    if (wLeftKp.p3D && wRightKp.p3D) {
-      const wDist = calculate3DDistance(wLeftKp.p3D, wRightKp.p3D);
-      logMsg(`[Diagnostics] Final Waist Width: ${wDist.toFixed(4)} m (${(wDist * 100).toFixed(1)} cm)`, 'success');
+    if (finalWaistWidthMeters !== null) {
+      const deltaStr = deltaCm !== null ? ` (Delta from Scan #${scanIndex - 1}: ${deltaCm > 0 ? '+' : ''}${deltaCm} cm)` : '';
+      logMsg(`[Diagnostics Scan #${scanIndex}] Final Waist Width: ${finalWaistWidthMeters.toFixed(4)} m (${(finalWaistWidthMeters * 100).toFixed(1)} cm)${deltaStr}`, 'success');
+    }
+  }
+
+  if (state.scanHistory.length > 1) {
+    const validScans = state.scanHistory.filter(s => s.waistCm !== null);
+    if (validScans.length > 1) {
+      const widths = validScans.map(s => s.waistCm);
+      const minW = Math.min(...widths);
+      const maxW = Math.max(...widths);
+      const rangeW = maxW - minW;
+      logMsg(`[Diagnostics History] ${validScans.length} scans recorded. Range: ${minW.toFixed(1)}–${maxW.toFixed(1)} cm (Spread: ${rangeW.toFixed(1)} cm)`, 'info');
     }
   }
   console.groupEnd();
