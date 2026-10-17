@@ -7,7 +7,9 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>AR 2-Point Distance Calculator</title>
-  <link rel="stylesheet" href="style.css?v=4">
+  <link rel="stylesheet" href="style.css?v=5">
+  <!-- OpenCV.js for real-time live computer vision edge & contour tracking -->
+  <script id="opencv-script" async src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js"></script>
 </head>
 <body>
   <!-- Main Application Container -->
@@ -29,10 +31,41 @@
             <span id="badge-webxr" class="badge checking">WebXR: Checking...</span>
             <span id="badge-ar" class="badge checking">AR Mode: Checking...</span>
             <span id="badge-hittest" class="badge checking">Hit-Test: Checking...</span>
+            <span id="badge-opencv" class="badge checking">OpenCV.js: Checking...</span>
           </div>
           <p id="compatibility-message" class="info-text">
             Checking device sensors and ARCore capability...
           </p>
+        </div>
+
+        <!-- Mode Selector Card: HRNet AI vs OpenCV + AR Live -->
+        <div class="card mode-card">
+          <h2>Measurement Mode</h2>
+          <div class="mode-toggle-group">
+            <button type="button" id="btn-mode-hrnet" class="mode-btn active" data-mode="HRNET">
+              <span class="mode-icon">📸</span>
+              <div class="mode-info">
+                <span class="mode-name">HRNet AI Mode</span>
+                <span class="mode-desc">Snapshot scan &bull; DeepFashion2 14-Keypoints</span>
+              </div>
+            </button>
+            <button type="button" id="btn-mode-opencv" class="mode-btn" data-mode="OPENCV_LIVE">
+              <span class="mode-icon">⚡</span>
+              <div class="mode-info">
+                <span class="mode-name">OpenCV + AR Mode</span>
+                <span class="mode-desc">Live camera feed &bull; Continuous real-time 3D distance</span>
+              </div>
+            </button>
+          </div>
+
+          <!-- 44 cm Calibration Benchmark Toggle -->
+          <div class="calibration-toggle-row">
+            <label class="toggle-switch">
+              <input type="checkbox" id="chk-calib-44">
+              <span class="toggle-slider"></span>
+            </label>
+            <span class="toggle-label">🎯 44 cm Rigid Calibration Test Benchmark</span>
+          </div>
         </div>
 
         <!-- How It Works Card -->
@@ -95,6 +128,44 @@
             <span class="dist-label">Distance:</span>
             <span id="hud-distance-val" class="dist-val">--</span>
           </div>
+        </div>
+
+        <!-- In-AR Mode Switcher & Calibration Indicator -->
+        <div class="ar-mode-pill-bar">
+          <button type="button" id="btn-toggle-ar-mode" class="hud-mode-pill" title="Toggle Mode">
+            <span id="hud-mode-icon">📸</span>
+            <span id="hud-mode-text">Mode: HRNet AI</span>
+          </button>
+          <button type="button" id="btn-toggle-ar-calib" class="hud-calib-pill hidden" title="Toggle 44cm Calibration">
+            <span>🎯 44cm Test</span>
+          </button>
+        </div>
+
+        <!-- Live 44cm Calibration Stats Card (Visible in AR when 44cm mode active) -->
+        <div id="hud-calibration-card" class="hud-calib-card hidden">
+          <div class="calib-header">
+            <span class="calib-title">🎯 44.0 cm BENCHMARK</span>
+            <span id="calib-status-badge" class="badge checking">Tracking</span>
+          </div>
+          <div class="calib-body">
+            <div class="calib-stat-item">
+              <span class="stat-label">Live</span>
+              <span id="calib-live-val" class="stat-val">-- cm</span>
+            </div>
+            <div class="calib-stat-item">
+              <span class="stat-label">Error (&Delta;)</span>
+              <span id="calib-delta-val" class="stat-val">-- cm</span>
+            </div>
+            <div class="calib-stat-item">
+              <span class="stat-label">Mean Err</span>
+              <span id="calib-mean-err" class="stat-val">-- cm</span>
+            </div>
+            <div class="calib-stat-item">
+              <span class="stat-label">Std Dev (&sigma;)</span>
+              <span id="calib-std-val" class="stat-val">-- cm</span>
+            </div>
+          </div>
+          <div class="calib-footer" id="calib-stats-text">Samples: 0 &bull; Range: -- cm</div>
         </div>
 
         <!-- Step Instructions Banner -->

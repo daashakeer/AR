@@ -22,6 +22,15 @@
 // Backend Endpoint (Single constant configurable at top)
 const BACKEND_URL = 'https://dashgaming-slytear.hf.space';
 
+// Operational Modes
+const MODES = {
+  HRNET: 'HRNET',
+  OPENCV_LIVE: 'OPENCV_LIVE'
+};
+
+// Known Calibration Reference (44.0 cm rigid object)
+const CALIBRATION_BENCHMARK_TARGET_CM = 44.0;
+
 // Physical fabric offset along plane normal (2mm cloth thickness)
 const FABRIC_OFFSET = 0.002;
 
@@ -144,6 +153,61 @@ const state = {
   calculatedMeasurements: {},
   measurementNotices: [],
 
+  // Operational Mode & Calibration Benchmark
+  activeMode: MODES.HRNET,
+  isCalibration44cm: false,
+
+  // OpenCV.js Live Processing State
+  cvState: {
+    isInitialized: false,
+    isLoading: false,
+    loadError: null,
+
+    // Reusable Buffers and Canvases (Zero WASM heap allocation loop)
+    rawCanvas: null,
+    rawCtx: null,
+    procCanvas: null,
+    procCtx: null,
+    pixelBuffer: null,
+    offscreenFb: null,
+
+    // Pre-allocated OpenCV Mat pointers
+    matRgba: null,
+    matGray: null,
+    matBlur: null,
+    matEdges: null,
+    matMorphed: null,
+    ksize: null,
+    kernelClose: null,
+    contours: null,
+    hierarchy: null,
+    allocatedW: 0,
+    allocatedH: 0,
+
+    // Live Frame Throttle
+    lastProcessTime: 0,
+    isProcessing: false,
+
+    // Live Detection & 3D Reconstruction
+    detectedPoints2D: null,
+    detectedPoints3D: null,
+    rawDistanceCm: null,
+    filteredDistCm: null,
+    consecutiveOutliers: 0,
+
+    // 44cm Calibration Benchmark Statistics
+    calibHistory: [],
+    calibStats: {
+      samples: 0,
+      meanErrorCm: 0,
+      maeCm: 0,
+      rangeCm: 0,
+      stdDevCm: 0,
+      minCm: 0,
+      maxCm: 0
+    }
+  },
+
   // Legacy Manual 2-Point State (preserved untouched)
   measurementState: STATES.SCANNING,
   point1: null,
@@ -179,12 +243,29 @@ const elements = {
   badgeWebXR: document.getElementById('badge-webxr'),
   badgeAR: document.getElementById('badge-ar'),
   badgeHitTest: document.getElementById('badge-hittest'),
+  badgeOpenCV: document.getElementById('badge-opencv'),
   compatibilityMessage: document.getElementById('compatibility-message'),
   btnStartScan: document.getElementById('btn-start-scan'),
   btnStartSim: document.getElementById('btn-start-sim'),
   simFileInput: document.getElementById('sim-file-input'),
   landingDebugLog: document.getElementById('landing-debug-log'),
   btnClearLog: document.getElementById('btn-clear-log'),
+
+  // Mode Selection & Calibration Toggles
+  btnModeHRNet: document.getElementById('btn-mode-hrnet'),
+  btnModeOpenCV: document.getElementById('btn-mode-opencv'),
+  chkCalib44: document.getElementById('chk-calib-44'),
+  btnToggleARMode: document.getElementById('btn-toggle-ar-mode'),
+  hudModeIcon: document.getElementById('hud-mode-icon'),
+  hudModeText: document.getElementById('hud-mode-text'),
+  btnToggleARCalib: document.getElementById('btn-toggle-ar-calib'),
+  hudCalibrationCard: document.getElementById('hud-calibration-card'),
+  calibStatusBadge: document.getElementById('calib-status-badge'),
+  calibLiveVal: document.getElementById('calib-live-val'),
+  calibDeltaVal: document.getElementById('calib-delta-val'),
+  calibMeanErr: document.getElementById('calib-mean-err'),
+  calibStdVal: document.getElementById('calib-std-val'),
+  calibStatsText: document.getElementById('calib-stats-text'),
 
   // AR HUD Elements
   hudTrackingDot: document.getElementById('hud-tracking-dot'),
@@ -332,6 +413,621 @@ function updateBadge(badgeEl, text, statusClass) {
   badgeEl.className = `badge ${statusClass}`;
 }
 
+// ==============================================================================
+// 2b. OpenCV.js Module Lifecycle, Buffers & 44cm Calibration Engine
+// ==============================================================================
+
+function initOpenCVModule() {
+  const badge = elements.badgeOpenCV;
+  if (typeof cv !== 'undefined' && cv.Mat) {
+    state.cvState.isInitialized = true;
+    updateBadge(badge, 'OpenCV.js: Ready (v4.9)', 'success');
+    logMsg('OpenCV.js runtime initialized and ready.', 'success');
+  } else if (typeof cv !== 'undefined') {
+    updateBadge(badge, 'OpenCV.js: Initializing...', 'checking');
+    cv['onRuntimeInitialized'] = () => {
+      state.cvState.isInitialized = true;
+      updateBadge(badge, 'OpenCV.js: Ready (v4.9)', 'success');
+      logMsg('OpenCV.js runtime initialized and ready.', 'success');
+    };
+  } else {
+    updateBadge(badge, 'OpenCV.js: Loading...', 'checking');
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts++;
+      if (typeof cv !== 'undefined') {
+        if (cv.Mat) {
+          clearInterval(timer);
+          state.cvState.isInitialized = true;
+          updateBadge(badge, 'OpenCV.js: Ready (v4.9)', 'success');
+          logMsg('OpenCV.js loaded and ready.', 'success');
+        } else {
+          cv['onRuntimeInitialized'] = () => {
+            clearInterval(timer);
+            state.cvState.isInitialized = true;
+            updateBadge(badge, 'OpenCV.js: Ready (v4.9)', 'success');
+            logMsg('OpenCV.js runtime initialized.', 'success');
+          };
+        }
+      } else if (attempts > 50) {
+        clearInterval(timer);
+        updateBadge(badge, 'OpenCV.js: CDN Offline', 'amber');
+        logMsg('OpenCV.js script load timed out. Live OpenCV mode will initialize when network is available.', 'warn');
+      }
+    }, 400);
+  }
+}
+
+/**
+ * Ensures persistent, pre-allocated OpenCV WASM Mat buffers at procW x procH.
+ * Reallocates only if processing dimensions change.
+ */
+function ensureOpenCVBuffers(procW, procH) {
+  const cs = state.cvState;
+  if (!cs.isInitialized || typeof cv === 'undefined') return false;
+
+  if (cs.allocatedW === procW && cs.allocatedH === procH && cs.matRgba) {
+    return true; // Already properly allocated
+  }
+
+  cleanupOpenCVBuffers();
+
+  try {
+    cs.matRgba = new cv.Mat(procH, procW, cv.CV_8UC4);
+    cs.matGray = new cv.Mat(procH, procW, cv.CV_8UC1);
+    cs.matBlur = new cv.Mat(procH, procW, cv.CV_8UC1);
+    cs.matEdges = new cv.Mat(procH, procW, cv.CV_8UC1);
+    cs.matMorphed = new cv.Mat(procH, procW, cv.CV_8UC1);
+    cs.ksize = new cv.Size(5, 5);
+    cs.kernelClose = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    cs.contours = new cv.MatVector();
+    cs.hierarchy = new cv.Mat();
+    cs.allocatedW = procW;
+    cs.allocatedH = procH;
+    return true;
+  } catch (err) {
+    console.error('Failed to allocate OpenCV buffers:', err);
+    cleanupOpenCVBuffers();
+    return false;
+  }
+}
+
+/**
+ * Cleanly releases all OpenCV WASM heap allocations to avoid memory leaks.
+ */
+function cleanupOpenCVBuffers() {
+  const cs = state.cvState;
+  const toDelete = [
+    cs.matRgba, cs.matGray, cs.matBlur, cs.matEdges, cs.matMorphed,
+    cs.kernelClose, cs.contours, cs.hierarchy
+  ];
+  for (const item of toDelete) {
+    if (item && typeof item.delete === 'function') {
+      try { item.delete(); } catch (e) {}
+    }
+  }
+  cs.matRgba = null;
+  cs.matGray = null;
+  cs.matBlur = null;
+  cs.matEdges = null;
+  cs.matMorphed = null;
+  cs.ksize = null;
+  cs.kernelClose = null;
+  cs.contours = null;
+  cs.hierarchy = null;
+  cs.allocatedW = 0;
+  cs.allocatedH = 0;
+}
+
+/**
+ * Calculates standard calibration benchmark statistics against a known target (default: 44.0 cm).
+ * @param {Array<number>} samples - Array of measured distance values in cm.
+ * @param {number} target - Known physical target in cm (default: 44.0).
+ * @returns {Object} Statistics object with count, mean, mean error, MAE, range, stdDev, min, max.
+ */
+function computeCalibrationStats(samples, target = CALIBRATION_BENCHMARK_TARGET_CM) {
+  if (!samples || samples.length === 0) {
+    return {
+      samples: 0,
+      meanValCm: 0,
+      meanErrorCm: 0,
+      maeCm: 0,
+      rangeCm: 0,
+      stdDevCm: 0,
+      minCm: 0,
+      maxCm: 0
+    };
+  }
+
+  const n = samples.length;
+  let sum = 0;
+  let sumAbsErr = 0;
+  let min = samples[0];
+  let max = samples[0];
+
+  for (let i = 0; i < n; i++) {
+    const val = samples[i];
+    sum += val;
+    sumAbsErr += Math.abs(val - target);
+    if (val < min) min = val;
+    if (val > max) max = val;
+  }
+
+  const mean = sum / n;
+  const meanError = mean - target;
+  const mae = sumAbsErr / n;
+  const range = max - min;
+
+  let variance = 0;
+  if (n > 1) {
+    let sumSqDiff = 0;
+    for (let i = 0; i < n; i++) {
+      sumSqDiff += (samples[i] - mean) ** 2;
+    }
+    variance = sumSqDiff / (n - 1);
+  }
+  const stdDev = Math.sqrt(variance);
+
+  return {
+    samples: n,
+    meanValCm: mean,
+    meanErrorCm: meanError,
+    maeCm: mae,
+    rangeCm: range,
+    stdDevCm: stdDev,
+    minCm: min,
+    maxCm: max
+  };
+}
+
+/**
+ * Detects left and right waistband endpoints on trousers using classical OpenCV.js:
+ * Color conversion -> Gaussian blur -> Canny edges -> Morphological closing -> Contour extraction -> Upper band analysis.
+ *
+ * @param {cv.Mat} matRgba - Input RGBA image Mat at procW x procH.
+ * @param {number} procW - Processing width.
+ * @param {number} procH - Processing height.
+ * @returns {Object} Detection result { found: boolean, p1: {u, v}, p2: {u, v}, bbox: {x, y, w, h} }
+ */
+function detectWaistbandEndpointsFromMat(matRgba, procW, procH) {
+  const cs = state.cvState;
+  if (!cs.isInitialized || typeof cv === 'undefined') return { found: false, reason: 'OpenCV not ready' };
+
+  // 1. Color Conversion: RGBA to Grayscale
+  cv.cvtColor(matRgba, cs.matGray, cv.COLOR_RGBA2GRAY);
+
+  // 2. Denoising: Gaussian Blur (5x5 kernel)
+  cv.GaussianBlur(cs.matGray, cs.matBlur, cs.ksize, 0, 0, cv.BORDER_DEFAULT);
+
+  // 3. Edge Detection: Canny
+  cv.Canny(cs.matBlur, cs.matEdges, 50, 150);
+
+  // 4. Morphological Closing (3x3 rect) to connect garment boundary contours
+  cv.morphologyEx(cs.matEdges, cs.matMorphed, cv.MORPH_CLOSE, cs.kernelClose);
+
+  // 5. Contour Extraction
+  cv.findContours(cs.matMorphed, cs.contours, cs.hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  const numContours = cs.contours.size();
+  if (numContours === 0) {
+    return { found: false, reason: 'No contours detected' };
+  }
+
+  // 6. Find Primary Garment Contour (area >= 3% of total frame)
+  const totalArea = procW * procH;
+  let bestContourIndex = -1;
+  let maxArea = 0;
+  let bestRect = null;
+
+  for (let i = 0; i < numContours; i++) {
+    const cnt = cs.contours.get(i);
+    try {
+      const area = cv.contourArea(cnt);
+      if (area > 0.03 * totalArea && area > maxArea) {
+        maxArea = area;
+        bestContourIndex = i;
+        bestRect = cv.boundingRect(cnt);
+      }
+    } finally {
+      cnt.delete(); // Crucial: delete JS wrapper to avoid WASM memory leak
+    }
+  }
+
+  if (bestContourIndex === -1 || !bestRect) {
+    return { found: false, reason: 'No garment contour meeting area threshold' };
+  }
+
+  // 7. Extract Left and Right Waistband Endpoints from the Upper Band of the Garment
+  const bestCnt = cs.contours.get(bestContourIndex);
+  try {
+    const pts = bestCnt.data32S; // Int32Array of [x0, y0, x1, y1, ...]
+    const rx = bestRect.x;
+    const ry = bestRect.y;
+    const rw = bestRect.width;
+    const rh = bestRect.height;
+
+    let p1 = null;
+    let p2 = null;
+
+    if (rh >= rw) {
+      // Trouser laid vertically: waistband is at upper band (top 28% of height)
+      const topBandMaxY = ry + Math.max(12, 0.28 * rh);
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minXPiece = null;
+      let maxXPiece = null;
+
+      for (let i = 0; i < pts.length; i += 2) {
+        const px = pts[i];
+        const py = pts[i + 1];
+        if (py >= ry && py <= topBandMaxY) {
+          if (px < minX) {
+            minX = px;
+            minXPiece = { u: px, v: py };
+          }
+          if (px > maxX) {
+            maxX = px;
+            maxXPiece = { u: px, v: py };
+          }
+        }
+      }
+
+      // If band found distinct endpoints with separation >= 15% of width
+      if (minXPiece && maxXPiece && (maxX - minX) >= 0.15 * rw) {
+        p1 = minXPiece;
+        p2 = maxXPiece;
+      }
+    } else {
+      // Trouser laid horizontally (rw > rh): inspect both ends, select end with broader profile
+      const leftBandMaxX = rx + Math.max(12, 0.28 * rw);
+      let leftMinY = Infinity, leftMaxY = -Infinity;
+      let leftMinYPiece = null, leftMaxYPiece = null;
+
+      for (let i = 0; i < pts.length; i += 2) {
+        const px = pts[i];
+        const py = pts[i + 1];
+        if (px >= rx && px <= leftBandMaxX) {
+          if (py < leftMinY) { leftMinY = py; leftMinYPiece = { u: px, v: py }; }
+          if (py > leftMaxY) { leftMaxY = py; leftMaxYPiece = { u: px, v: py }; }
+        }
+      }
+
+      if (leftMinYPiece && leftMaxYPiece && (leftMaxY - leftMinY) >= 0.15 * rh) {
+        p1 = leftMinYPiece;
+        p2 = leftMaxYPiece;
+      }
+    }
+
+    // Fallback if upper band was sparse: use bounding box upper horizontal extrema
+    if (!p1 || !p2) {
+      p1 = { u: bestRect.x + 0.1 * bestRect.width, v: bestRect.y + 0.05 * bestRect.height };
+      p2 = { u: bestRect.x + 0.9 * bestRect.width, v: bestRect.y + 0.05 * bestRect.height };
+    }
+
+    return {
+      found: true,
+      p1: p1,
+      p2: p2,
+      bbox: { x: bestRect.x, y: bestRect.y, width: bestRect.width, height: bestRect.height },
+      area: maxArea
+    };
+  } finally {
+    bestCnt.delete();
+  }
+}
+
+/**
+ * Captures live camera frame, runs throttled OpenCV detection, and unprojects
+ * waistband endpoints to 3D using the matching frame matrices and surface plane.
+ */
+function processLiveOpenCVFrame(session, frame, view, time) {
+  const cs = state.cvState;
+  if (!cs.isInitialized || cs.isProcessing) return;
+
+  // Throttle to ~8 FPS (120ms interval) to keep 60 FPS WebXR animation fluid
+  if (time - cs.lastProcessTime < 120) return;
+  cs.lastProcessTime = time;
+
+  // Require locked surface plane
+  if (!state.surfacePlane || !state.surfacePlane.point || !state.surfacePlane.normal) {
+    if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = 'Scan surface...';
+    return;
+  }
+
+  // Freeze the EXACT frame matrices and plane at this instant for unprojection
+  const frameCamMatrix = view ? new Float32Array(view.transform.matrix) : state.lastCameraMatrix;
+  const frameProjMatrix = view ? new Float32Array(view.projectionMatrix) : state.lastProjMatrix;
+  const framePlanePoint = { ...state.surfacePlane.point };
+  const framePlaneNormal = { ...state.surfacePlane.normal };
+
+  if (!frameCamMatrix || !frameProjMatrix) return;
+
+  cs.isProcessing = true;
+
+  try {
+    const gl = state.gl;
+    let rawW = 1280;
+    let rawH = 720;
+    let hasPixels = false;
+
+    // Fixed processing downsample resolution (max 400px longest dimension)
+    // For 16:9 landscape -> 400x225; for 9:16 portrait -> 225x400
+    let procW = 400;
+    let procH = 225;
+
+    if (!cs.rawCanvas) {
+      cs.rawCanvas = document.createElement('canvas');
+      cs.rawCtx = cs.rawCanvas.getContext('2d');
+      cs.procCanvas = document.createElement('canvas');
+      cs.procCtx = cs.procCanvas.getContext('2d');
+    }
+
+    // 1. Access Camera Frame
+    if (state.glBinding && view && view.camera) {
+      try {
+        const tex = state.glBinding.getCameraImage(view.camera);
+        if (tex) {
+          const vp = session && session.renderState.baseLayer ? session.renderState.baseLayer.getViewport(view) : null;
+          rawW = view.camera.width || (vp ? vp.width : 1280);
+          rawH = view.camera.height || (vp ? vp.height : 720);
+
+          if (rawH > rawW) {
+            procW = 225;
+            procH = 400;
+          } else {
+            procW = 400;
+            procH = 225;
+          }
+
+          if (cs.rawCanvas.width !== rawW || cs.rawCanvas.height !== rawH) {
+            cs.rawCanvas.width = rawW;
+            cs.rawCanvas.height = rawH;
+            cs.pixelBuffer = new Uint8Array(rawW * rawH * 4);
+          }
+
+          if (!cs.offscreenFb) {
+            cs.offscreenFb = gl.createFramebuffer();
+          }
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, cs.offscreenFb);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+          gl.readPixels(0, 0, rawW, rawH, gl.RGBA, gl.UNSIGNED_BYTE, cs.pixelBuffer);
+          if (session && session.renderState.baseLayer) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
+          } else {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          }
+
+          const imgData = cs.rawCtx.createImageData(rawW, rawH);
+          for (let y = 0; y < rawH; y++) {
+            const srcRow = (rawH - 1 - y) * rawW * 4;
+            const dstRow = y * rawW * 4;
+            imgData.data.set(cs.pixelBuffer.subarray(srcRow, srcRow + rawW * 4), dstRow);
+          }
+          cs.rawCtx.putImageData(imgData, 0, 0);
+
+          if (cs.procCanvas.width !== procW || cs.procCanvas.height !== procH) {
+            cs.procCanvas.width = procW;
+            cs.procCanvas.height = procH;
+          }
+          cs.procCtx.drawImage(cs.rawCanvas, 0, 0, procW, procH);
+          hasPixels = true;
+        }
+      } catch (texErr) {
+        console.warn('Live getCameraImage read note:', texErr);
+      }
+    } else if (state.isSimulator) {
+      // Simulator frame access
+      const simCanvas = elements.arCanvas;
+      rawW = simCanvas.width || 1280;
+      rawH = simCanvas.height || 720;
+      if (rawH > rawW) {
+        procW = 225;
+        procH = 400;
+      } else {
+        procW = 400;
+        procH = 225;
+      }
+      if (cs.procCanvas.width !== procW || cs.procCanvas.height !== procH) {
+        cs.procCanvas.width = procW;
+        cs.procCanvas.height = procH;
+      }
+      cs.procCtx.drawImage(simCanvas, 0, 0, procW, procH);
+      hasPixels = true;
+    }
+
+    if (!hasPixels) {
+      cs.isProcessing = false;
+      return;
+    }
+
+    // 2. Ensure OpenCV Pre-allocated Buffers
+    if (!ensureOpenCVBuffers(procW, procH)) {
+      cs.isProcessing = false;
+      return;
+    }
+
+    // 3. Load pixels into pre-allocated matRgba without WASM heap allocation
+    const procImgData = cs.procCtx.getImageData(0, 0, procW, procH);
+    cs.matRgba.data.set(procImgData.data);
+
+    // 4. Run Classical Contour Analysis
+    const det = detectWaistbandEndpointsFromMat(cs.matRgba, procW, procH);
+    if (!det.found) {
+      cs.isProcessing = false;
+      return;
+    }
+
+    // 5. Scale from procW x procH directly to Raw Camera Texture Coordinates
+    const scaleX = rawW / procW;
+    const scaleY = rawH / procH;
+    const rawP1 = { u: det.p1.u * scaleX, v: det.p1.v * scaleY };
+    const rawP2 = { u: det.p2.u * scaleX, v: det.p2.v * scaleY };
+
+    cs.detectedPoints2D = {
+      p1: rawP1,
+      p2: rawP2,
+      procP1: det.p1,
+      procP2: det.p2,
+      rawW,
+      rawH
+    };
+
+    // 6. Unproject to 3D using the synchronized frame pose and plane
+    const p1_3D = unprojectKeypointTo3D(
+      rawP1.u, rawP1.v, rawW, rawH,
+      frameProjMatrix, frameCamMatrix,
+      framePlanePoint, framePlaneNormal,
+      FABRIC_OFFSET
+    );
+
+    const p2_3D = unprojectKeypointTo3D(
+      rawP2.u, rawP2.v, rawW, rawH,
+      frameProjMatrix, frameCamMatrix,
+      framePlanePoint, framePlaneNormal,
+      FABRIC_OFFSET
+    );
+
+    if (!p1_3D || !p2_3D) {
+      cs.isProcessing = false;
+      return;
+    }
+
+    // 7. Calculate 3D Euclidean Distance
+    const rawDistM = calculate3DDistance(p1_3D, p2_3D);
+    let rawDistCm = rawDistM * 100;
+
+    // Physical plausibility check: 10 cm <= distance <= 150 cm
+    if (rawDistCm < 10.0 || rawDistCm > 150.0) {
+      cs.isProcessing = false;
+      return;
+    }
+
+    // 8. Temporal Stabilization & Outlier Rejection
+    if (cs.filteredDistCm !== null) {
+      const jump = Math.abs(rawDistCm - cs.filteredDistCm);
+      if (jump > 15.0 && state.camMovement < 0.02) {
+        // Sudden >15cm jump without camera motion -> reject as unsteady outlier
+        cs.consecutiveOutliers++;
+        if (cs.consecutiveOutliers < 3) {
+          rawDistCm = cs.filteredDistCm;
+        } else {
+          cs.consecutiveOutliers = 0; // Transition confirmed
+        }
+      } else {
+        cs.consecutiveOutliers = 0;
+      }
+      // EMA filter with alpha = 0.25
+      cs.filteredDistCm = 0.25 * rawDistCm + 0.75 * cs.filteredDistCm;
+    } else {
+      cs.filteredDistCm = rawDistCm;
+    }
+
+    cs.rawDistanceCm = rawDistCm;
+    cs.detectedPoints3D = {
+      p1: p1_3D,
+      p2: p2_3D,
+      distanceMeters: cs.filteredDistCm / 100,
+      distCm: cs.filteredDistCm
+    };
+
+    // 9. 44 cm Calibration Benchmark Mode Live Statistics Update
+    if (state.isCalibration44cm) {
+      cs.calibHistory.push(cs.filteredDistCm);
+      if (cs.calibHistory.length > 100) cs.calibHistory.shift();
+
+      const stats = computeCalibrationStats(cs.calibHistory, CALIBRATION_BENCHMARK_TARGET_CM);
+      cs.calibStats = stats;
+      updateCalibrationHUD(stats, cs.filteredDistCm);
+    }
+
+  } catch (err) {
+    console.warn('processLiveOpenCVFrame error:', err);
+  } finally {
+    cs.isProcessing = false;
+  }
+}
+
+function updateCalibrationHUD(stats, liveVal) {
+  if (!elements.hudCalibrationCard) return;
+
+  if (elements.calibLiveVal) {
+    elements.calibLiveVal.textContent = `${liveVal.toFixed(1)} cm`;
+  }
+  if (elements.calibDeltaVal) {
+    const delta = liveVal - CALIBRATION_BENCHMARK_TARGET_CM;
+    const sign = delta >= 0 ? '+' : '';
+    elements.calibDeltaVal.textContent = `${sign}${delta.toFixed(1)} cm`;
+    elements.calibDeltaVal.style.color = Math.abs(delta) < 1.0 ? 'var(--accent-green)' : (Math.abs(delta) < 3.0 ? 'var(--accent-cyan)' : 'var(--accent-red)');
+  }
+  if (elements.calibMeanErr) {
+    const sign = stats.meanErrorCm >= 0 ? '+' : '';
+    elements.calibMeanErr.textContent = `${sign}${stats.meanErrorCm.toFixed(2)} cm`;
+  }
+  if (elements.calibStdVal) {
+    elements.calibStdVal.textContent = `${stats.stdDevCm.toFixed(2)} cm`;
+  }
+  if (elements.calibStatsText) {
+    elements.calibStatsText.innerHTML = `Samples: <strong>${stats.samples}</strong> &bull; Range: <strong>${stats.rangeCm.toFixed(1)} cm</strong> (Min ${stats.minCm.toFixed(1)} / Max ${stats.maxCm.toFixed(1)})`;
+  }
+  if (elements.calibStatusBadge) {
+    if (stats.samples >= 15 && stats.stdDevCm < 1.0) {
+      elements.calibStatusBadge.textContent = 'Stable';
+      elements.calibStatusBadge.className = 'badge success';
+    } else if (stats.samples >= 5) {
+      elements.calibStatusBadge.textContent = 'Measuring';
+      elements.calibStatusBadge.className = 'badge checking';
+    } else {
+      elements.calibStatusBadge.textContent = 'Sampling...';
+      elements.calibStatusBadge.className = 'badge checking';
+    }
+  }
+}
+
+function setAppMode(newMode) {
+  state.activeMode = newMode;
+  logMsg(`Switched mode to: ${newMode}`, 'info');
+
+  if (newMode === MODES.OPENCV_LIVE) {
+    if (elements.btnModeOpenCV) elements.btnModeOpenCV.classList.add('active');
+    if (elements.btnModeHRNet) elements.btnModeHRNet.classList.remove('active');
+    if (elements.hudModeIcon) elements.hudModeIcon.textContent = '⚡';
+    if (elements.hudModeText) elements.hudModeText.textContent = 'Mode: OpenCV Live';
+    if (elements.btnScanTrigger) {
+      elements.scanActionLabel.textContent = '⚡ Live Tracking Active';
+      elements.scanInnerLabel.textContent = 'LIVE';
+    }
+    if (elements.stepText) elements.stepText.textContent = 'OpenCV Live: Aim at trousers to track waistband';
+    if (elements.stepIcon) elements.stepIcon.textContent = '⚡';
+    if (state.isCalibration44cm && elements.hudCalibrationCard) {
+      elements.hudCalibrationCard.classList.remove('hidden');
+      if (elements.btnToggleARCalib) elements.btnToggleARCalib.classList.remove('hidden');
+    }
+  } else {
+    // HRNet Mode
+    if (elements.btnModeHRNet) elements.btnModeHRNet.classList.add('active');
+    if (elements.btnModeOpenCV) elements.btnModeOpenCV.classList.remove('active');
+    if (elements.hudModeIcon) elements.hudModeIcon.textContent = '📸';
+    if (elements.hudModeText) elements.hudModeText.textContent = 'Mode: HRNet AI';
+    if (elements.btnScanTrigger) {
+      elements.scanActionLabel.textContent = 'Tap Scan & Measure';
+      elements.scanInnerLabel.textContent = 'SCAN';
+    }
+    if (elements.stepText) elements.stepText.textContent = 'Aim at flat trousers, tap Scan';
+    if (elements.stepIcon) elements.stepIcon.textContent = '🎯';
+    if (elements.hudCalibrationCard) elements.hudCalibrationCard.classList.add('hidden');
+    if (elements.btnToggleARCalib) elements.btnToggleARCalib.classList.add('hidden');
+
+    // Hide OpenCV markers when switching to HRNet
+    if (state.flowState !== STATES.MEASURED) {
+      if (elements.svgMeasureLine) elements.svgMeasureLine.style.display = 'none';
+      if (elements.markerA) elements.markerA.classList.add('hidden');
+      if (elements.markerB) elements.markerB.classList.add('hidden');
+      if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '-- cm';
+    }
+  }
+}
+
 /* ==========================================================================
    3. WebXR AR Session Lifecycle
    ========================================================================== */
@@ -426,6 +1122,7 @@ async function startARSession() {
     session.addEventListener('end', onSessionEnded);
 
     resetToScanning();
+    setAppMode(state.activeMode);
     session.requestAnimationFrame(onXRFrame);
 
   } catch (err) {
@@ -438,6 +1135,8 @@ async function startARSession() {
 }
 
 function onSessionEnded() {
+  cleanupOpenCVBuffers();
+  state.cvState.isProcessing = false;
   state.xrSession = null;
   state.hitTestSource = null;
   state.glBinding = null;
@@ -448,6 +1147,8 @@ function onSessionEnded() {
 }
 
 function exitAR() {
+  cleanupOpenCVBuffers();
+  state.cvState.isProcessing = false;
   if (state.xrSession) {
     state.xrSession.end();
   } else if (state.isSimulator) {
@@ -587,7 +1288,12 @@ function onXRFrame(time, frame) {
 
   updateTrackingUI(surfaceHitFound || state.surfacePlane !== null, state.isTrackingStable);
 
-  // 4. Handle One-Shot Scan Trigger inside this exact XR frame callback
+  // 4a. Live OpenCV Continuous Frame Processing (when in OpenCV Live Mode)
+  if (state.activeMode === MODES.OPENCV_LIVE && (surfaceHitFound || state.surfacePlane !== null)) {
+    processLiveOpenCVFrame(session, frame, view, time);
+  }
+
+  // 4b. Handle One-Shot Scan Trigger inside this exact XR frame callback (when in HRNet Mode)
   if (state.scanRequested && state.flowState === STATES.SCANNING) {
     // Ensure plane timestamp is synchronized with this capture frame (<= 500ms fresh)
     const isPlaneFresh = state.surfacePlane && (time - state.surfacePlane.timestamp <= 500);
@@ -613,25 +1319,27 @@ function onXRFrame(time, frame) {
 function updateTrackingUI(hasSurface, isStable) {
   if (!elements.hudTrackingDot || !elements.hudTrackingText) return;
 
+  const isOpenCV = state.activeMode === MODES.OPENCV_LIVE;
+
   if (hasSurface && isStable) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = 'Surface ready (Phone steady)';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold steady, tap Scan';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : 'Surface ready (Phone steady)';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : 'Hold steady, tap Scan';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
-      elements.scanActionLabel.textContent = 'Hold steady, tap Scan';
-      elements.stepText.textContent = 'Hold steady, tap Scan & Measure';
-      elements.stepIcon.textContent = '📸';
+      elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Hold steady, tap Scan';
+      elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Hold steady, tap Scan & Measure';
+      elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
     }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = 'Surface locked - hold phone steady';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : 'Surface locked - hold phone steady';
     if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Stabilize phone over trousers';
     if (elements.btnScanTrigger) {
-      elements.btnScanTrigger.disabled = false; // Allow manual tap if user prefers
-      elements.scanActionLabel.textContent = 'Tap Scan & Measure';
-      elements.stepText.textContent = 'Aim at flat trousers, tap Scan';
-      elements.stepIcon.textContent = '🎯';
+      elements.btnScanTrigger.disabled = false;
+      elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Tap Scan & Measure';
+      elements.stepText.textContent = isOpenCV ? 'Aim at waistband to track live' : 'Aim at flat trousers, tap Scan';
+      elements.stepIcon.textContent = isOpenCV ? '⚡' : '🎯';
     }
   } else {
     elements.hudTrackingDot.className = 'dot amber';
@@ -1589,6 +2297,39 @@ function renderGarmentHUD(view, width, height) {
   const projMatrix = view ? view.projectionMatrix : state.lastProjMatrix;
   if (!viewMatrix || !projMatrix) return;
 
+  // Live OpenCV Mode HUD Rendering
+  if (state.activeMode === MODES.OPENCV_LIVE) {
+    const cs = state.cvState;
+    if (cs.detectedPoints3D && cs.detectedPoints3D.p1 && cs.detectedPoints3D.p2) {
+      const pA = projectPointToPixel(cs.detectedPoints3D.p1, viewMatrix, projMatrix, width, height);
+      const pB = projectPointToPixel(cs.detectedPoints3D.p2, viewMatrix, projMatrix, width, height);
+
+      if (pA.valid && pB.valid) {
+        elements.markerA.classList.remove('hidden');
+        elements.markerA.style.left = `${pA.xPixel}px`;
+        elements.markerA.style.top = `${pA.yPixel}px`;
+        elements.markerB.classList.remove('hidden');
+        elements.markerB.style.left = `${pB.xPixel}px`;
+        elements.markerB.style.top = `${pB.yPixel}px`;
+
+        elements.svgMeasureLine.setAttribute('x1', pA.xPixel);
+        elements.svgMeasureLine.setAttribute('y1', pA.yPixel);
+        elements.svgMeasureLine.setAttribute('x2', pB.xPixel);
+        elements.svgMeasureLine.setAttribute('y2', pB.yPixel);
+        elements.svgMeasureLine.style.display = 'block';
+
+        if (elements.hudDistanceVal && cs.filteredDistCm !== null) {
+          elements.hudDistanceVal.textContent = `${cs.filteredDistCm.toFixed(1)} cm`;
+        }
+      }
+    } else {
+      if (elements.svgMeasureLine) elements.svgMeasureLine.style.display = 'none';
+      if (elements.markerA) elements.markerA.classList.add('hidden');
+      if (elements.markerB) elements.markerB.classList.add('hidden');
+    }
+    return;
+  }
+
   // In measured state, project detected 3D landmarks onto live camera view
   if (state.flowState === STATES.MEASURED && state.detectedKeypointsMap) {
     for (const [name, kp] of Object.entries(state.detectedKeypointsMap)) {
@@ -1960,9 +2701,13 @@ async function startSimulatorMode() {
     updateTrackingUI(true, true);
 
     const simulatedView = {
-      transform: { inverse: { matrix: viewMatrix } },
+      transform: { matrix: viewMatrix, inverse: { matrix: viewMatrix } },
       projectionMatrix: projMatrix
     };
+
+    if (state.activeMode === MODES.OPENCV_LIVE) {
+      processLiveOpenCVFrame(null, null, simulatedView, performance.now());
+    }
 
     renderGarmentHUD(simulatedView, canvas.width, canvas.height);
 
@@ -2109,6 +2854,56 @@ function setupEventListeners() {
     }
   });
 
+  // Mode selection buttons on Landing Screen
+  if (elements.btnModeHRNet) {
+    elements.btnModeHRNet.addEventListener('click', () => setAppMode(MODES.HRNET));
+  }
+  if (elements.btnModeOpenCV) {
+    elements.btnModeOpenCV.addEventListener('click', () => setAppMode(MODES.OPENCV_LIVE));
+  }
+
+  // In-AR Mode Pill Toggle
+  if (elements.btnToggleARMode) {
+    elements.btnToggleARMode.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const nextMode = state.activeMode === MODES.HRNET ? MODES.OPENCV_LIVE : MODES.HRNET;
+      setAppMode(nextMode);
+    });
+  }
+
+  // 44cm Calibration Toggle Checkbox on Landing Screen
+  if (elements.chkCalib44) {
+    elements.chkCalib44.addEventListener('change', (e) => {
+      state.isCalibration44cm = e.target.checked;
+      state.cvState.calibHistory = [];
+      logMsg(`44cm Calibration Benchmark: ${state.isCalibration44cm ? 'ENABLED' : 'DISABLED'}`, 'info');
+      if (elements.btnToggleARCalib) {
+        if (state.isCalibration44cm && state.activeMode === MODES.OPENCV_LIVE) {
+          elements.btnToggleARCalib.classList.remove('hidden');
+          if (elements.hudCalibrationCard) elements.hudCalibrationCard.classList.remove('hidden');
+        } else {
+          elements.btnToggleARCalib.classList.add('hidden');
+          if (elements.hudCalibrationCard) elements.hudCalibrationCard.classList.add('hidden');
+        }
+      }
+    });
+  }
+
+  // In-AR 44cm Calibration Pill Toggle
+  if (elements.btnToggleARCalib) {
+    elements.btnToggleARCalib.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.isCalibration44cm = !state.isCalibration44cm;
+      if (elements.chkCalib44) elements.chkCalib44.checked = state.isCalibration44cm;
+      state.cvState.calibHistory = [];
+      if (state.isCalibration44cm) {
+        if (elements.hudCalibrationCard) elements.hudCalibrationCard.classList.remove('hidden');
+      } else {
+        if (elements.hudCalibrationCard) elements.hudCalibrationCard.classList.add('hidden');
+      }
+    });
+  }
+
   // Clear log
   if (elements.btnClearLog) {
     elements.btnClearLog.addEventListener('click', () => {
@@ -2131,6 +2926,7 @@ function setupEventListeners() {
 function init() {
   setupEventListeners();
   checkCompatibility();
+  initOpenCVModule();
 }
 
 if (document.readyState === 'loading') {

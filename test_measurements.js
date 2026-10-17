@@ -456,5 +456,129 @@ const reconWidth = calculate3DDistance(reconLeft, reconRight);
 assert.ok(Math.abs(reconWidth - 0.440) < 0.003, `Reconstructed width must match known 44cm within 3mm pixel quantization, got ${(reconWidth * 100).toFixed(2)} cm`);
 console.log(`✓ Acceptance Test 8 Passed: Known 44cm rigid object unprojects to ${(reconWidth * 100).toFixed(2)} cm (within 0.4mm quantization)`);
 
+// Acceptance Test 9: OpenCV downscaled coordinate mapping to 3D reconstruction
+// Downscaled processing canvas: procW = 400, procH = 225
+// Full camera texture: rawW = 1920, rawH = 1080
+const procW = 400;
+const procH = 225;
+const scaleFactorX = rawW / procW; // 4.8
+const scaleFactorY = rawH / procH; // 4.8
+
+// Known landmark in downscaled OpenCV space:
+// Let ground truth pixel in raw texture be (754, 540)
+// In proc space: u_cv = 754 / 4.8 = 157.0833, v_cv = 540 / 4.8 = 112.5
+const u_cv = 754 / scaleFactorX;
+const v_cv = 540 / scaleFactorY;
+
+// Scale to raw camera texture coordinates
+const u_raw_mapped = u_cv * scaleFactorX;
+const v_raw_mapped = v_cv * scaleFactorY;
+
+assert.strictEqual(Math.round(u_raw_mapped), 754);
+assert.strictEqual(Math.round(v_raw_mapped), 540);
+
+const cvReconLeft = unprojectKeypointTo3D(u_raw_mapped, v_raw_mapped, rawW, rawH, projMatrix, viewMatrix, objPlanePoint, objPlaneNormal, FABRIC_OFFSET);
+assert.ok(cvReconLeft !== null);
+assert.strictEqual(Math.round(cvReconLeft.x * 10000), Math.round(reconLeft.x * 10000));
+assert.strictEqual(Math.round(cvReconLeft.y * 10000), Math.round(reconLeft.y * 10000));
+assert.strictEqual(Math.round(cvReconLeft.z * 10000), Math.round(reconLeft.z * 10000));
+console.log('✓ Acceptance Test 9 Passed: OpenCV downscaled coordinate mapping to raw texture produces identical 3D reconstruction');
+
+// Acceptance Test 10: Live measurement EMA temporal stabilization and outlier rejection
+// Simulate 15 live frames around known 44.0 cm with ±1.0 cm jitter and 1 artificial outlier glitch of 72.0 cm
+const streamRawMeasurements = [
+  44.2, 43.8, 44.1, 44.4, 43.9,
+  72.0, // Single frame outlier glitch (e.g. background edge detected)
+  44.0, 44.3, 43.7, 44.1, 44.2, 43.9, 44.0, 44.3, 43.8
+];
+
+function simulateTemporalFilter(stream) {
+  let filtered = null;
+  let consecutiveOutliers = 0;
+  const filteredOutput = [];
+
+  for (let i = 0; i < stream.length; i++) {
+    let raw = stream[i];
+    if (filtered !== null) {
+      const jump = Math.abs(raw - filtered);
+      if (jump > 15.0) {
+        consecutiveOutliers++;
+        if (consecutiveOutliers < 3) {
+          raw = filtered; // Reject outlier
+        } else {
+          consecutiveOutliers = 0;
+        }
+      } else {
+        consecutiveOutliers = 0;
+      }
+      filtered = 0.25 * raw + 0.75 * filtered;
+    } else {
+      filtered = raw;
+    }
+    filteredOutput.push(filtered);
+  }
+  return filteredOutput;
+}
+
+const filteredStream = simulateTemporalFilter(streamRawMeasurements);
+// At index 5 (where the 72.0 cm outlier occurred), filtered stream must NOT jump to 70+ cm!
+const outlierFrameFiltered = filteredStream[5];
+assert.ok(Math.abs(outlierFrameFiltered - 44.0) < 1.5, `Outlier must be rejected, expected ~44cm, got ${outlierFrameFiltered.toFixed(2)} cm`);
+// Final filtered value should be very close to 44.0 cm
+const finalFilteredVal = filteredStream[filteredStream.length - 1];
+assert.ok(Math.abs(finalFilteredVal - 44.0) < 0.8, `Final filtered value should converge near 44cm, got ${finalFilteredVal.toFixed(2)} cm`);
+console.log(`✓ Acceptance Test 10 Passed: Outlier rejection blocked 72.0cm glitch; EMA filter smoothed stream to ${finalFilteredVal.toFixed(2)} cm`);
+
+// Acceptance Test 11: 44 cm rigid calibration benchmark statistics engine
+function computeCalibrationStatsTest(samples, target = 44.0) {
+  if (!samples || samples.length === 0) {
+    return { samples: 0, meanValCm: 0, meanErrorCm: 0, maeCm: 0, rangeCm: 0, stdDevCm: 0, minCm: 0, maxCm: 0 };
+  }
+  const n = samples.length;
+  let sum = 0, sumAbsErr = 0;
+  let min = samples[0], max = samples[0];
+  for (let i = 0; i < n; i++) {
+    const val = samples[i];
+    sum += val;
+    sumAbsErr += Math.abs(val - target);
+    if (val < min) min = val;
+    if (val > max) max = val;
+  }
+  const mean = sum / n;
+  const meanError = mean - target;
+  const mae = sumAbsErr / n;
+  const range = max - min;
+  let variance = 0;
+  if (n > 1) {
+    let sumSqDiff = 0;
+    for (let i = 0; i < n; i++) sumSqDiff += (samples[i] - mean) ** 2;
+    variance = sumSqDiff / (n - 1);
+  }
+  return { samples: n, meanValCm: mean, meanErrorCm: meanError, maeCm: mae, rangeCm: range, stdDevCm: Math.sqrt(variance), minCm: min, maxCm: max };
+}
+
+// Test with 8 samples from user's physical test: [47, 45, 41, 42, 44, 39, 48, 41]
+const testSamples = [47, 45, 41, 42, 44, 39, 48, 41];
+const stats = computeCalibrationStatsTest(testSamples, 44.0);
+assert.strictEqual(stats.samples, 8);
+assert.strictEqual(stats.minCm, 39);
+assert.strictEqual(stats.maxCm, 48);
+assert.strictEqual(stats.rangeCm, 9);
+assert.strictEqual(Math.round(stats.meanValCm * 100) / 100, 43.38);
+assert.ok(Math.abs(stats.meanErrorCm - (-0.625)) < 1e-4, `Mean error should be -0.625, got ${stats.meanErrorCm}`);
+assert.ok(Math.abs(stats.maeCm - 2.625) < 1e-4, `MAE should be 2.625, got ${stats.maeCm}`);
+assert.ok(Math.abs(stats.stdDevCm - 3.16) < 0.05, `Sample std dev should be ~3.16cm, got ${stats.stdDevCm.toFixed(2)} cm`);
+
+// Empty & 1-sample edge cases:
+const emptyStats = computeCalibrationStatsTest([]);
+assert.strictEqual(emptyStats.samples, 0);
+assert.strictEqual(emptyStats.stdDevCm, 0);
+
+const singleStats = computeCalibrationStatsTest([44.5], 44.0);
+assert.strictEqual(singleStats.samples, 1);
+assert.strictEqual(singleStats.meanErrorCm, 0.5);
+assert.strictEqual(singleStats.stdDevCm, 0);
+console.log('✓ Acceptance Test 11 Passed: 44cm calibration benchmark statistics (ME, MAE, Range, StdDev, edge cases) verified mathematically');
+
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
 
