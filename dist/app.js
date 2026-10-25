@@ -1305,11 +1305,19 @@ function onXRFrame(time, frame) {
   state.lastCameraMatrix = new Float32Array(view.transform.matrix);
 
   // 1. Track Camera Movement and Phone Stability
+  // Extract camera position from the view transform matrix (columns 12–14 = translation)
   const camPos = {
     x: view.transform.matrix[12],
     y: view.transform.matrix[13],
     z: view.transform.matrix[14]
   };
+
+  // Rolling median of camPos.y over 60 frames smooths out ARCore IMU drift on the vertical axis
+  if (!state.camYSamples) state.camYSamples = [];
+  state.camYSamples.push(camPos.y);
+  if (state.camYSamples.length > 60) state.camYSamples.shift();
+  const sortedCamY = [...state.camYSamples].sort((a, b) => a - b);
+  const smoothCamY = sortedCamY[Math.floor(sortedCamY.length / 2)];
 
   const moveDist = state.lastCamPosition ? Math.hypot(
     camPos.x - state.lastCamPosition.x,
@@ -1319,7 +1327,7 @@ function onXRFrame(time, frame) {
   state.camMovement = moveDist;
   state.lastCamPosition = camPos;
 
-  // 2. Hit-Test against garment/table surface with EMA noise smoothing
+  // 2. Hit-Test against garment/table surface with quality-weighted floor elevation
   let surfaceHitFound = false;
   if (state.hitTestSource) {
     const hitResults = frame.getHitTestResults(state.hitTestSource);
@@ -1344,8 +1352,11 @@ function onXRFrame(time, frame) {
           z: matrix[6] / nLen
         };
         // Tables, desks, and floors are physically horizontal planes in WebXR's gravity space.
-        // If within 28 degrees of vertical (|ny| >= 0.88), snap to gravity-up [0, 1, 0] to eliminate SLAM tilt noise:
-        const isHorizontal = Math.abs(rawNormal.y) >= 0.88;
+        // Tightened to |ny| >= 0.95 (within ~18 deg of gravity vertical) for higher quality floor samples only.
+        const rawAbsNy = Math.abs(rawNormal.y);
+        const isHorizontal = rawAbsNy >= 0.88;
+        const isHighQualityHorizontal = rawAbsNy >= 0.95; // Strict quality threshold for elevation samples
+
         if (isHorizontal) {
           rawNormal = { x: 0, y: rawNormal.y >= 0 ? 1 : -1, z: 0 };
         }
@@ -1354,23 +1365,32 @@ function onXRFrame(time, frame) {
         if (!state.planeHeightSamples) state.planeHeightSamples = [];
 
         if (isHorizontal) {
-          // Rolling window of recent floor height samples (last 25 samples)
-          state.planeHeightSamples.push(rawPoint.y);
-          if (state.planeHeightSamples.length > 25) {
-            state.planeHeightSamples.shift();
+          // Only accept high-quality (nearly-perfect horizontal) samples into elevation buffer
+          // This filters out oblique-angle hits that overestimate floor depth
+          if (isHighQualityHorizontal) {
+            // Larger rolling window (60 samples ≈ 2 seconds at 30fps) for more stable median
+            state.planeHeightSamples.push(rawPoint.y);
+            if (state.planeHeightSamples.length > 60) {
+              state.planeHeightSamples.shift();
+            }
           }
-          // Median filter completely rejects sensor noise and single-frame hit-test spikes
-          const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
-          const medianY = sorted[Math.floor(sorted.length / 2)];
 
-          const signY = rawNormal.y >= 0 ? 1 : -1;
-          state.surfacePlane = {
-            point: { x: pos.x, y: medianY, z: pos.z },
-            normal: { x: 0, y: signY, z: 0 },
-            elevationY: medianY,
-            timestamp: time,
-            sampleCount: (state.surfacePlane?.sampleCount || 0) + 1
-          };
+          if (state.planeHeightSamples.length > 0) {
+            // Low-percentile floor elevation: take 20th percentile instead of median.
+            // The floor is the LOWEST surface; higher-elevation samples are from fabric wrinkles or dust.
+            const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
+            const p20idx = Math.max(0, Math.floor(sorted.length * 0.20));
+            const floorElevationY = sorted[p20idx];
+
+            const signY = rawNormal.y >= 0 ? 1 : -1;
+            state.surfacePlane = {
+              point: { x: pos.x, y: floorElevationY, z: pos.z },
+              normal: { x: 0, y: signY, z: 0 },
+              elevationY: floorElevationY,
+              timestamp: time,
+              sampleCount: (state.surfacePlane?.sampleCount || 0) + 1
+            };
+          }
         } else {
           if (!state.surfacePlane) {
             state.surfacePlane = {
@@ -1380,7 +1400,6 @@ function onXRFrame(time, frame) {
               sampleCount: 1
             };
           } else {
-            // Align hemisphere sign with existing plane normal before averaging
             const dot = rawNormal.x * state.surfacePlane.normal.x +
                         rawNormal.y * state.surfacePlane.normal.y +
                         rawNormal.z * state.surfacePlane.normal.z;
@@ -1409,6 +1428,24 @@ function onXRFrame(time, frame) {
             };
           }
         }
+
+        // Also compute the 3D hit-ray distance from camera to surface hit point.
+        // This is more reliable than (camY - floorY) because it avoids depending on
+        // ARCore's absolute Y axis, using the direct spatial distance instead.
+        if (isHorizontal && state.surfacePlane) {
+          const dx = pos.x - camPos.x;
+          const dy = pos.y - camPos.y;
+          const dz = pos.z - camPos.z;
+          const rayDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          // Project ray distance onto vertical axis: vertical_height = rayDist * |dy/rayDist|
+          // This removes the horizontal component that occurs when pointing at an angle
+          const verticalComponent = Math.abs(dy);
+          if (Number.isFinite(rayDist) && rayDist > 0.05 && verticalComponent > 0.01) {
+            if (!state.hitRaySamples) state.hitRaySamples = [];
+            state.hitRaySamples.push(verticalComponent);
+            if (state.hitRaySamples.length > 60) state.hitRaySamples.shift();
+          }
+        }
       }
     }
   }
@@ -1428,36 +1465,63 @@ function onXRFrame(time, frame) {
     state.isTrackingStable = false;
   }
 
-  // Live Y-Distance calculation (distance from mobile camera to floor/pant surface plane)
+  // Live Y-Distance calculation: fuse floor-elevation approach with hit-ray approach,
+  // pick whichever has more samples (more confidence), and lock when phone is stable.
   let yDistCm = null;
-  if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
-    if (Math.abs(state.surfacePlane.normal.y) === 1 && state.surfacePlane.elevationY !== undefined) {
-      // Direct pure vertical distance from camera to horizontal floor elevation
-      const hPerp = Math.abs(camPos.y - state.surfacePlane.elevationY);
-      if (Number.isFinite(hPerp)) {
-        yDistCm = hPerp * 100;
-        state.currentYDistanceCm = yDistCm;
-      }
+
+  if (state.surfacePlane && state.surfacePlane.elevationY !== undefined) {
+    // Method A: smoothed camera Y minus floor elevation (both median-filtered)
+    const methodA = Math.abs(smoothCamY - state.surfacePlane.elevationY) * 100;
+
+    // Method B: direct 3D hit-ray vertical component (median of recent samples)
+    let methodB = null;
+    if (state.hitRaySamples && state.hitRaySamples.length >= 5) {
+      const sortedRay = [...state.hitRaySamples].sort((a, b) => a - b);
+      // Use 30th percentile (floor is minimum vertical component)
+      const p30 = sortedRay[Math.max(0, Math.floor(sortedRay.length * 0.30))];
+      methodB = p30 * 100;
+    }
+
+    if (methodB !== null && state.hitRaySamples.length >= 30) {
+      // Weighted average: B gets more weight with more samples (more confident)
+      const wB = Math.min(1.0, state.hitRaySamples.length / 60);
+      const wA = 1.0 - wB;
+      yDistCm = wA * methodA + wB * methodB;
     } else {
-      const pt = state.surfacePlane.point;
-      const n = state.surfacePlane.normal;
-      const nLen = Math.hypot(n.x, n.y, n.z) || 1;
-      const unx = n.x / nLen;
-      const uny = n.y / nLen;
-      const unz = n.z / nLen;
-      const hPerp = Math.abs((camPos.x - pt.x) * unx + (camPos.y - pt.y) * uny + (camPos.z - pt.z) * unz);
-      if (Number.isFinite(hPerp)) {
-        yDistCm = hPerp * 100;
-        state.currentYDistanceCm = yDistCm;
+      yDistCm = methodA;
+    }
+
+    if (Number.isFinite(yDistCm)) {
+      state.currentYDistanceCm = yDistCm;
+      // Lock Y-distance when phone is steady: prevents jitter from showing on HUD
+      if (state.isTrackingStable) {
+        if (!state.lockedYDistCm) {
+          state.lockedYDistCm = yDistCm;
+        }
+      } else {
+        state.lockedYDistCm = null;
       }
     }
+  } else if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
+    const pt = state.surfacePlane.point;
+    const n = state.surfacePlane.normal;
+    const nLen = Math.hypot(n.x, n.y, n.z) || 1;
+    const unx = n.x / nLen; const uny = n.y / nLen; const unz = n.z / nLen;
+    const hPerp = Math.abs((smoothCamY - pt.y) * uny + (camPos.x - pt.x) * unx + (camPos.z - pt.z) * unz);
+    if (Number.isFinite(hPerp)) {
+      yDistCm = hPerp * 100;
+      state.currentYDistanceCm = yDistCm;
+    }
   }
+
+  // Display locked value when stable, live value when moving
+  const displayYDist = (state.lockedYDistCm && state.isTrackingStable) ? state.lockedYDistCm : yDistCm;
 
   // Update Top Distance Bar for HRNet mode (live Y-distance from mobile to floor/pant)
   if (state.activeMode === MODES.HRNET) {
     if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
     if (elements.hudDistanceVal) {
-      elements.hudDistanceVal.textContent = yDistCm !== null ? `${yDistCm.toFixed(1)} cm` : '-- cm';
+      elements.hudDistanceVal.textContent = displayYDist !== null ? `${displayYDist.toFixed(1)} cm` : '-- cm';
     }
   }
 
@@ -2948,6 +3012,9 @@ function resetToScanning() {
   state.point2Pixel = null;
   state.finalDistanceMeters = null;
   state.planeHeightSamples = [];
+  state.camYSamples = [];
+  state.hitRaySamples = [];
+  state.lockedYDistCm = null;
 
   hideToast();
   hideErrorBanner();
