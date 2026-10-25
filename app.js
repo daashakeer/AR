@@ -272,6 +272,7 @@ const elements = {
   // AR HUD Elements
   hudTrackingDot: document.getElementById('hud-tracking-dot'),
   hudTrackingText: document.getElementById('hud-tracking-text'),
+  hudDistLabel: document.getElementById('hud-dist-label'),
   hudDistanceVal: document.getElementById('hud-distance-val'),
   hudReticleContainer: document.getElementById('hud-reticle-container'),
   hudReticle: document.getElementById('hud-reticle'),
@@ -1085,6 +1086,7 @@ function setAppMode(newMode) {
     if (elements.btnModeHRNet) elements.btnModeHRNet.classList.remove('active');
     if (elements.hudModeIcon) elements.hudModeIcon.textContent = '⚡';
     if (elements.hudModeText) elements.hudModeText.textContent = 'Mode: OpenCV Live';
+    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Waist:';
     if (elements.btnScanTrigger) {
       elements.scanActionLabel.textContent = '⚡ Live Tracking Active';
       elements.scanInnerLabel.textContent = 'LIVE';
@@ -1100,6 +1102,7 @@ function setAppMode(newMode) {
     if (elements.btnModeOpenCV) elements.btnModeOpenCV.classList.remove('active');
     if (elements.hudModeIcon) elements.hudModeIcon.textContent = '📍';
     if (elements.hudModeText) elements.hudModeText.textContent = 'Mode: Manual 2-Point';
+    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Distance:';
     if (elements.hudCalibrationCard) elements.hudCalibrationCard.classList.add('hidden');
     if (elements.btnToggleARCalib) elements.btnToggleARCalib.classList.add('hidden');
     updateManualHUDControls();
@@ -1109,6 +1112,7 @@ function setAppMode(newMode) {
     if (elements.btnModeOpenCV) elements.btnModeOpenCV.classList.remove('active');
     if (elements.hudModeIcon) elements.hudModeIcon.textContent = '📸';
     if (elements.hudModeText) elements.hudModeText.textContent = 'Mode: HRNet AI';
+    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
     if (elements.btnScanTrigger) {
       elements.scanActionLabel.textContent = 'Tap Scan & Measure';
       elements.scanInnerLabel.textContent = 'SCAN';
@@ -1388,7 +1392,9 @@ function onXRFrame(time, frame) {
   }
 
   // 3. Track Phone Stability over ~800ms
-  if (moveDist < 0.008 && state.surfacePlane && (time - state.surfacePlane.timestamp < 1000)) {
+  const isPlaneFresh = state.surfacePlane && (time - state.surfacePlane.timestamp < 1000);
+  const sampleCount = state.surfacePlane?.sampleCount || 0;
+  if (moveDist < 0.008 && isPlaneFresh && sampleCount >= 10) {
     if (!state.stabilityTimerStart) {
       state.stabilityTimerStart = time;
     }
@@ -1398,6 +1404,30 @@ function onXRFrame(time, frame) {
   } else {
     state.stabilityTimerStart = 0;
     state.isTrackingStable = false;
+  }
+
+  // Live Y-Distance calculation (distance from mobile camera to floor/pant surface plane)
+  let yDistCm = null;
+  if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
+    const pt = state.surfacePlane.point;
+    const n = state.surfacePlane.normal;
+    const nLen = Math.hypot(n.x, n.y, n.z) || 1;
+    const unx = n.x / nLen;
+    const uny = n.y / nLen;
+    const unz = n.z / nLen;
+    const hPerp = Math.abs((camPos.x - pt.x) * unx + (camPos.y - pt.y) * uny + (camPos.z - pt.z) * unz);
+    if (Number.isFinite(hPerp)) {
+      yDistCm = hPerp * 100;
+      state.currentYDistanceCm = yDistCm;
+    }
+  }
+
+  // Update Top Distance Bar for HRNet mode (live Y-distance from mobile to floor/pant)
+  if (state.activeMode === MODES.HRNET) {
+    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
+    if (elements.hudDistanceVal) {
+      elements.hudDistanceVal.textContent = yDistCm !== null ? `${yDistCm.toFixed(1)} cm` : '-- cm';
+    }
   }
 
   updateTrackingUI(surfaceHitFound || state.surfacePlane !== null, state.isTrackingStable);
@@ -1410,12 +1440,12 @@ function onXRFrame(time, frame) {
   // 4b. Handle One-Shot Scan Trigger inside this exact XR frame callback (when in HRNet Mode)
   if (state.scanRequested && state.flowState === STATES.SCANNING) {
     // Ensure plane timestamp is synchronized with this capture frame (<= 500ms fresh)
-    const isPlaneFresh = state.surfacePlane && (time - state.surfacePlane.timestamp <= 500);
-    const sampleCount = state.surfacePlane?.sampleCount || 0;
-    const isSettled = sampleCount >= 15;
+    const isPlaneFreshNow = state.surfacePlane && (time - state.surfacePlane.timestamp <= 500);
+    const currSampleCount = state.surfacePlane?.sampleCount || 0;
+    const isSettled = currSampleCount >= 15;
     const isSteady = state.camMovement < 0.015;
 
-    if (isPlaneFresh) {
+    if (isPlaneFreshNow) {
       if (!state.scanRequestTime) {
         state.scanRequestTime = time;
       }
@@ -1428,7 +1458,7 @@ function onXRFrame(time, frame) {
         handleOneShotFrameCapture(session, frame, view, time);
       } else {
         // Inform user that plane height is settling to eliminate depth jitter
-        showToast(`Locking surface height (${Math.min(sampleCount, 15)}/15 frames)...`);
+        showToast(`Locking surface height (${Math.min(currSampleCount, 15)}/15 frames)...`);
       }
     } else {
       // If plane was momentarily lost right at tap, wait up to 1000ms for fresh hit-test results
@@ -1454,33 +1484,41 @@ function updateTrackingUI(hasSurface, isStable) {
   if (hasSurface && isStable) {
     elements.hudTrackingDot.className = 'dot green';
     elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Phone steady)';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Hold steady, tap Scan';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Ready: Hold steady, tap Scan';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
       if (isManual) {
         updateManualHUDControls();
       } else {
-        elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Hold steady, tap Scan';
+        elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Ready! Tap Scan & Measure';
         elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Hold steady, tap Scan & Measure';
         elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
       }
     }
   } else if (hasSurface) {
-    elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - tap to place points' : 'Surface locked - hold phone steady';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : 'Stabilize phone over trousers';
+    elements.hudTrackingDot.className = 'dot amber';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - hold phone steady' : 'Surface locked - hold phone steady';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : 'Stabilize phone over trousers (waiting for green dot)...';
     if (elements.btnScanTrigger) {
-      elements.btnScanTrigger.disabled = false;
-      if (isManual) {
-        updateManualHUDControls();
+      if (!isOpenCV && !isManual) {
+        // HRNet Mode: until green dot is ready, scan button MUST NOT work
+        elements.btnScanTrigger.disabled = true;
+        elements.scanActionLabel.textContent = 'Hold steady for green dot...';
+        elements.stepText.textContent = 'Wait for green "Surface ready (Phone steady)" dot';
+        elements.stepIcon.textContent = '⏳';
       } else {
-        elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Tap Scan & Measure';
-        elements.stepText.textContent = isOpenCV ? 'Aim at waistband to track live' : 'Aim at flat trousers, tap Scan';
-        elements.stepIcon.textContent = isOpenCV ? '⚡' : '🎯';
+        elements.btnScanTrigger.disabled = false;
+        if (isManual) {
+          updateManualHUDControls();
+        } else {
+          elements.scanActionLabel.textContent = '⚡ Live Tracking Active';
+          elements.stepText.textContent = 'Aim at waistband to track live';
+          elements.stepIcon.textContent = '⚡';
+        }
       }
     }
   } else {
-    elements.hudTrackingDot.className = 'dot amber';
+    elements.hudTrackingDot.className = 'dot red';
     elements.hudTrackingText.textContent = 'Scanning surrounding surface...';
     if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move camera slowly over surface';
     if (elements.btnScanTrigger) {
@@ -1756,6 +1794,10 @@ function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth,
 function triggerScanCapture() {
   if (!state.surfacePlane) {
     showErrorBanner('No surface detected yet. Scan trousers until surface locks.');
+    return;
+  }
+  if (state.activeMode === MODES.HRNET && !state.isSimulator && !state.isTrackingStable) {
+    showToast('Wait for green "Surface ready (Phone steady)" dot before tapping');
     return;
   }
   hideErrorBanner();
@@ -3162,6 +3204,9 @@ async function startSimulatorMode() {
 
     if (state.activeMode === MODES.OPENCV_LIVE) {
       processLiveOpenCVFrame(null, null, simulatedView, performance.now());
+    } else if (state.activeMode === MODES.HRNET) {
+      if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
+      if (elements.hudDistanceVal) elements.hudDistanceVal.textContent = '100.0 cm';
     }
 
     renderGarmentHUD(simulatedView, canvas.width, canvas.height);
@@ -3299,6 +3344,13 @@ function setupEventListeners() {
         return;
       }
     }
+    // Block scan in HRNet mode until surface ready and phone steady (green dot)
+    if (state.activeMode === MODES.HRNET && !state.isSimulator) {
+      if (!state.surfacePlane || !state.isTrackingStable) {
+        showToast('Wait for green "Surface ready (Phone steady)" dot before tapping');
+        return;
+      }
+    }
     triggerScanCapture();
   });
 
@@ -3366,9 +3418,6 @@ function setupEventListeners() {
     if (state.activeMode === MODES.MANUAL_2POINT) {
       handleManualPlacePoint(e.clientX, e.clientY);
       return;
-    }
-    if (state.flowState === STATES.SCANNING) {
-      handleManualPlacePoint(e.clientX, e.clientY);
     }
   });
 

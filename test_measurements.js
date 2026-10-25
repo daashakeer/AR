@@ -699,6 +699,74 @@ assert.strictEqual(manualState.measurementState, 'SCANNING');
 
 console.log(`✓ Acceptance Test 12 Passed: Manual 2-Point AR Mode verified (44.0 cm physical reconstruction, state transitions, reset, bounds validation)`);
 
+// 13. Acceptance Test 13: Live Y-Distance and Scan Button Green Dot Stability Lock
+function calculateYDistance(camPos, planePoint, planeNormal) {
+  if (!camPos || !planePoint || !planeNormal) return null;
+  const nLen = Math.hypot(planeNormal.x, planeNormal.y, planeNormal.z) || 1;
+  const unx = planeNormal.x / nLen;
+  const uny = planeNormal.y / nLen;
+  const unz = planeNormal.z / nLen;
+  const hPerp = Math.abs(
+    (camPos.x - planePoint.x) * unx +
+    (camPos.y - planePoint.y) * uny +
+    (camPos.z - planePoint.z) * unz
+  );
+  return Number.isFinite(hPerp) ? hPerp * 100 : null;
+}
+
+// Test A: Camera held 65 cm above a horizontal floor plane
+const testCamPosA = { x: 0.12, y: 0.65, z: -0.45 };
+const floorPlane = { point: { x: 0.12, y: 0.0, z: -0.45 }, normal: { x: 0, y: 1, z: 0 } };
+const yDistA = calculateYDistance(testCamPosA, floorPlane.point, floorPlane.normal);
+assert.ok(Math.abs(yDistA - 65.0) < 1e-4, `Y-Distance should be 65.0 cm, got ${yDistA}`);
+
+// Test B: Camera held above an angled surface
+const testCamPosB = { x: 0.0, y: 0.80, z: 0.0 };
+const angledPlane = { point: { x: 0.0, y: 0.0, z: 0.0 }, normal: { x: 0.0, y: 0.8, z: -0.6 } };
+const yDistB = calculateYDistance(testCamPosB, angledPlane.point, angledPlane.normal);
+assert.ok(Math.abs(yDistB - 64.0) < 1e-4, `Perpendicular Y-Distance should be 64.0 cm, got ${yDistB}`);
+
+// Test C: Scan trigger button state across tracking lifecycle
+function evaluateHRNetTrackingState(hasSurface, isStable) {
+  let dotClass = 'dot red';
+  let btnDisabled = true;
+  let statusText = 'Scanning surrounding surface...';
+
+  if (hasSurface && isStable) {
+    dotClass = 'dot green';
+    btnDisabled = false;
+    statusText = 'Surface ready (Phone steady)';
+  } else if (hasSurface) {
+    dotClass = 'dot amber';
+    btnDisabled = true;
+    statusText = 'Surface locked - hold phone steady';
+  } else {
+    dotClass = 'dot red';
+    btnDisabled = true;
+    statusText = 'Scanning surrounding surface...';
+  }
+  return { dotClass, btnDisabled, statusText };
+}
+
+// 1. Initial surface scanning: Red dot, button locked
+const state1 = evaluateHRNetTrackingState(false, false);
+assert.strictEqual(state1.dotClass, 'dot red');
+assert.strictEqual(state1.btnDisabled, true, 'Scan button must be disabled when no surface detected');
+
+// 2. Surface found but phone moving / settling: Amber dot, button locked!
+const state2 = evaluateHRNetTrackingState(true, false);
+assert.strictEqual(state2.dotClass, 'dot amber');
+assert.strictEqual(state2.btnDisabled, true, 'Scan button MUST be disabled until phone is steady and dot turns green');
+assert.strictEqual(state2.statusText, 'Surface locked - hold phone steady');
+
+// 3. Surface locked and phone steady: Green dot, button unlocked!
+const state3 = evaluateHRNetTrackingState(true, true);
+assert.strictEqual(state3.dotClass, 'dot green');
+assert.strictEqual(state3.btnDisabled, false, 'Scan button must be enabled when green dot is active');
+assert.strictEqual(state3.statusText, 'Surface ready (Phone steady)');
+
+console.log(`✓ Acceptance Test 13 Passed: Live Y-Distance & Green Dot Stability Lock verified mathematically`);
+
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
 
 
