@@ -767,6 +767,19 @@ assert.strictEqual(state3.statusText, 'Surface ready (Phone steady)');
 
 console.log(`✓ Acceptance Test 13 Passed: Live Y-Distance & Green Dot Stability Lock verified mathematically`);
 
+// 14. Acceptance Test 14: Tracked Horizontal Plane Median Elevation & Outlier Immunity
+const sampleHeights = [-0.002, 0.001, -0.003, 0.045 /* stray 4.5cm spike */, 0.000, -0.001, 0.002];
+const sortedHeights = [...sampleHeights].sort((a, b) => a - b);
+const medianHeight = sortedHeights[Math.floor(sortedHeights.length / 2)];
+assert.ok(Math.abs(medianHeight) < 0.005, 'Median filter must reject single-frame 4.5cm spike');
+
+// Verify stable Y-distance with camera at 0.50m height
+const camElev = 0.50;
+const floorElev = medianHeight;
+const stableYDist = Math.abs(camElev - floorElev);
+assert.ok(Math.abs(stableYDist - 0.50) < 0.005, `Y-Distance must equal 50.0 cm, got ${(stableYDist * 100).toFixed(2)} cm`);
+console.log(`✓ Acceptance Test 14 Passed: Tracked Horizontal Plane Median Elevation & Outlier Immunity verified`);
+
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
 
 

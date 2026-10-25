@@ -1197,9 +1197,9 @@ async function startARSession() {
       }
     }
 
-    // Reference space setup
+    // Reference space setup: prioritize 'local-floor' so ARCore anchors coordinate system to ground truth floor
     let refSpace = null;
-    for (const type of ['local', 'local-floor', 'viewer']) {
+    for (const type of ['local-floor', 'local', 'viewer']) {
       try {
         refSpace = await session.requestReferenceSpace(type);
         if (refSpace) {
@@ -1214,9 +1214,19 @@ async function startARSession() {
     const viewerSpace = await session.requestReferenceSpace('viewer');
     state.xrViewerSpace = viewerSpace;
 
-    // Hit-test source creation
+    // Hit-test source creation: strictly lock to tracked planes to eliminate point-cloud depth noise
     try {
-      const hitSource = await session.requestHitTestSource({ space: viewerSpace });
+      let hitSource = null;
+      try {
+        hitSource = await session.requestHitTestSource({
+          space: viewerSpace,
+          entityTypes: ['plane']
+        });
+        logMsg('Tracked Plane hit-test source initialized (point-cloud noise filtered).', 'success');
+      } catch (ePlane) {
+        logMsg(`Plane hit-test fallback (${ePlane.message}), requesting default hit-test...`, 'warn');
+        hitSource = await session.requestHitTestSource({ space: viewerSpace });
+      }
       state.hitTestSource = hitSource;
       logMsg('Hit-test source active. Scan the trousers surface.', 'success');
     } catch (htErr) {
@@ -1341,51 +1351,63 @@ function onXRFrame(time, frame) {
         }
         const rawPoint = { x: pos.x, y: pos.y, z: pos.z };
 
-        if (!state.surfacePlane) {
+        if (!state.planeHeightSamples) state.planeHeightSamples = [];
+
+        if (isHorizontal) {
+          // Rolling window of recent floor height samples (last 25 samples)
+          state.planeHeightSamples.push(rawPoint.y);
+          if (state.planeHeightSamples.length > 25) {
+            state.planeHeightSamples.shift();
+          }
+          // Median filter completely rejects sensor noise and single-frame hit-test spikes
+          const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
+          const medianY = sorted[Math.floor(sorted.length / 2)];
+
+          const signY = rawNormal.y >= 0 ? 1 : -1;
           state.surfacePlane = {
-            point: { ...rawPoint },
-            normal: { ...rawNormal },
+            point: { x: pos.x, y: medianY, z: pos.z },
+            normal: { x: 0, y: signY, z: 0 },
+            elevationY: medianY,
             timestamp: time,
-            sampleCount: 1
+            sampleCount: (state.surfacePlane?.sampleCount || 0) + 1
           };
         } else {
-          // Align hemisphere sign with existing plane normal before averaging
-          const dot = rawNormal.x * state.surfacePlane.normal.x +
-                      rawNormal.y * state.surfacePlane.normal.y +
-                      rawNormal.z * state.surfacePlane.normal.z;
-          const sign = dot < 0 ? -1 : 1;
-          const alignedNx = sign * rawNormal.x;
-          const alignedNy = sign * rawNormal.y;
-          const alignedNz = sign * rawNormal.z;
-
-          // When camera is steady (moveDist < 0.008), smooth noise with alpha = 0.25 (EMA window ~10 frames).
-          // When camera is moving fast, adapt quickly with alpha = 0.85.
-          const isMovingFast = moveDist > 0.012;
-          const alpha = isMovingFast ? 0.85 : 0.25;
-
-          const smPtX = (1 - alpha) * state.surfacePlane.point.x + alpha * rawPoint.x;
-          const smPtY = (1 - alpha) * state.surfacePlane.point.y + alpha * rawPoint.y;
-          const smPtZ = (1 - alpha) * state.surfacePlane.point.z + alpha * rawPoint.z;
-
-          let smNormX = 0, smNormY = 1, smNormZ = 0;
-          if (isHorizontal) {
-            smNormY = alignedNy >= 0 ? 1 : -1;
+          if (!state.surfacePlane) {
+            state.surfacePlane = {
+              point: { ...rawPoint },
+              normal: { ...rawNormal },
+              timestamp: time,
+              sampleCount: 1
+            };
           } else {
-            smNormX = (1 - alpha) * state.surfacePlane.normal.x + alpha * alignedNx;
-            smNormY = (1 - alpha) * state.surfacePlane.normal.y + alpha * alignedNy;
-            smNormZ = (1 - alpha) * state.surfacePlane.normal.z + alpha * alignedNz;
-            const smLen = Math.hypot(smNormX, smNormY, smNormZ) || 1;
-            smNormX /= smLen;
-            smNormY /= smLen;
-            smNormZ /= smLen;
-          }
+            // Align hemisphere sign with existing plane normal before averaging
+            const dot = rawNormal.x * state.surfacePlane.normal.x +
+                        rawNormal.y * state.surfacePlane.normal.y +
+                        rawNormal.z * state.surfacePlane.normal.z;
+            const sign = dot < 0 ? -1 : 1;
+            const alignedNx = sign * rawNormal.x;
+            const alignedNy = sign * rawNormal.y;
+            const alignedNz = sign * rawNormal.z;
 
-          state.surfacePlane = {
-            point: { x: smPtX, y: smPtY, z: smPtZ },
-            normal: { x: smNormX, y: smNormY, z: smNormZ },
-            timestamp: time,
-            sampleCount: (state.surfacePlane.sampleCount || 0) + 1
-          };
+            const isMovingFast = moveDist > 0.012;
+            const alpha = isMovingFast ? 0.85 : 0.25;
+
+            const smPtX = (1 - alpha) * state.surfacePlane.point.x + alpha * rawPoint.x;
+            const smPtY = (1 - alpha) * state.surfacePlane.point.y + alpha * rawPoint.y;
+            const smPtZ = (1 - alpha) * state.surfacePlane.point.z + alpha * rawPoint.z;
+
+            const smNormX = (1 - alpha) * state.surfacePlane.normal.x + alpha * alignedNx;
+            const smNormY = (1 - alpha) * state.surfacePlane.normal.y + alpha * alignedNy;
+            const smNormZ = (1 - alpha) * state.surfacePlane.normal.z + alpha * alignedNz;
+            const smLen = Math.hypot(smNormX, smNormY, smNormZ) || 1;
+
+            state.surfacePlane = {
+              point: { x: smPtX, y: smPtY, z: smPtZ },
+              normal: { x: smNormX / smLen, y: smNormY / smLen, z: smNormZ / smLen },
+              timestamp: time,
+              sampleCount: (state.surfacePlane?.sampleCount || 0) + 1
+            };
+          }
         }
       }
     }
@@ -1409,16 +1431,25 @@ function onXRFrame(time, frame) {
   // Live Y-Distance calculation (distance from mobile camera to floor/pant surface plane)
   let yDistCm = null;
   if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
-    const pt = state.surfacePlane.point;
-    const n = state.surfacePlane.normal;
-    const nLen = Math.hypot(n.x, n.y, n.z) || 1;
-    const unx = n.x / nLen;
-    const uny = n.y / nLen;
-    const unz = n.z / nLen;
-    const hPerp = Math.abs((camPos.x - pt.x) * unx + (camPos.y - pt.y) * uny + (camPos.z - pt.z) * unz);
-    if (Number.isFinite(hPerp)) {
-      yDistCm = hPerp * 100;
-      state.currentYDistanceCm = yDistCm;
+    if (Math.abs(state.surfacePlane.normal.y) === 1 && state.surfacePlane.elevationY !== undefined) {
+      // Direct pure vertical distance from camera to horizontal floor elevation
+      const hPerp = Math.abs(camPos.y - state.surfacePlane.elevationY);
+      if (Number.isFinite(hPerp)) {
+        yDistCm = hPerp * 100;
+        state.currentYDistanceCm = yDistCm;
+      }
+    } else {
+      const pt = state.surfacePlane.point;
+      const n = state.surfacePlane.normal;
+      const nLen = Math.hypot(n.x, n.y, n.z) || 1;
+      const unx = n.x / nLen;
+      const uny = n.y / nLen;
+      const unz = n.z / nLen;
+      const hPerp = Math.abs((camPos.x - pt.x) * unx + (camPos.y - pt.y) * uny + (camPos.z - pt.z) * unz);
+      if (Number.isFinite(hPerp)) {
+        yDistCm = hPerp * 100;
+        state.currentYDistanceCm = yDistCm;
+      }
     }
   }
 
@@ -2916,6 +2947,7 @@ function resetToScanning() {
   state.point1Pixel = null;
   state.point2Pixel = null;
   state.finalDistanceMeters = null;
+  state.planeHeightSamples = [];
 
   hideToast();
   hideErrorBanner();
