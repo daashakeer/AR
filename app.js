@@ -1520,14 +1520,17 @@ function onXRFrame(time, frame) {
           const slantDepthM = patchSamples[Math.floor(patchSamples.length / 2)];
 
           // Project slant depth onto the vertical (gravity) axis.
-          // camMatrix column 1 (indices [4],[5],[6]) is the camera's local Y axis
-          // in world space. Its world-Y component tells us how much of the camera's
-          // vertical axis aligns with gravity — i.e. cos(camera tilt).
-          // vertical_dist = slant_depth × |camUp_worldY|
+          // In WebXR column-major camMatrix (camera→world):
+          //   col 0 (indices 0,1,2)  = camera right in world space
+          //   col 1 (indices 4,5,6)  = camera up in world space  ← WRONG axis (≈0 when looking down)
+          //   col 2 (indices 8,9,10) = camera -Z (back) in world space
+          // Center ray direction = (-m8, -m9, -m10).
+          // When looking straight down: -m9 ≈ -1, so m9 ≈ 1  → |m9| = cos(tilt from vertical)
+          // vertical_dist = slant_depth × |camMatrix[9]|
           const camMatrix = view.transform.matrix;
-          const camUpWorldY = Math.abs(camMatrix[5]); // |cos(tilt)|
-          if (camUpWorldY > 0.1) { // reject extreme tilt (>84°) — depth unusable
-            methodC = slantDepthM * camUpWorldY * 100; // metres → cm, vertical component
+          const lookDownFactor = Math.abs(camMatrix[9]); // cos(angle from vertical), ≈1 when pointing down
+          if (lookDownFactor > 0.1) { // reject near-horizontal aim (>84° tilt) — depth unusable
+            methodC = slantDepthM * lookDownFactor * 100; // metres → cm, vertical component
           }
         }
       }
