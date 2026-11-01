@@ -139,6 +139,14 @@ const state = {
   scanRequestTime: 0,
   scanHistory: [],
 
+  // Y-Distance Frame Accumulation & Lock State
+  yDistBuffer: [],
+  steadyFrames: 0,
+  isYDistLocked: false,
+  lockedYDistCm: null,
+  currentYDistanceCm: null,
+  lastYDistLogTime: 0,
+
   // Active Flow State
   flowState: STATES.SCANNING,
   frozenSnapshot: null,     // { camMatrix, projMatrix, invProjMatrix, surfacePlane, imageWidth, imageHeight, jpegBlob, dataUrl }
@@ -1162,11 +1170,16 @@ async function startARSession() {
       await gl.makeXRCompatible();
     }
 
-    // Required: hit-test; Optional: dom-overlay, local-floor, camera-access
+    // Required: hit-test; Optional: dom-overlay, local-floor, camera-access, depth-sensing
+    // depth-sensing is optional — app works normally on devices without it (graceful fallback)
     const sessionInit = {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay', 'local-floor', 'camera-access'],
-      domOverlay: { root: elements.arOverlay }
+      optionalFeatures: ['dom-overlay', 'local-floor', 'camera-access', 'depth-sensing'],
+      domOverlay: { root: elements.arOverlay },
+      depthSensing: {
+        usagePreference: ['cpu-optimized'],       // readable CPU-side, no GPU round-trip needed
+        dataFormatPreference: ['luminance-alpha'] // 16-bit depth packed in RG channels
+      }
     };
 
     let session;
@@ -1175,8 +1188,12 @@ async function startARSession() {
     } catch (e1) {
       logMsg(`Primary request failed (${e1.message}), trying optional hit-test...`, 'warn');
       session = await navigator.xr.requestSession('immersive-ar', {
-        optionalFeatures: ['hit-test', 'dom-overlay', 'local-floor', 'camera-access'],
-        domOverlay: { root: elements.arOverlay }
+        optionalFeatures: ['hit-test', 'dom-overlay', 'local-floor', 'camera-access', 'depth-sensing'],
+        domOverlay: { root: elements.arOverlay },
+        depthSensing: {
+          usagePreference: ['cpu-optimized'],
+          dataFormatPreference: ['luminance-alpha']
+        }
       });
     }
 
@@ -1376,11 +1393,37 @@ function onXRFrame(time, frame) {
           }
 
           if (state.planeHeightSamples.length > 0) {
-            // Low-percentile floor elevation: take 20th percentile instead of median.
-            // The floor is the LOWEST surface; higher-elevation samples are from fabric wrinkles or dust.
-            const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
-            const p20idx = Math.max(0, Math.floor(sorted.length * 0.20));
-            const floorElevationY = sorted[p20idx];
+            // --- Elevation anchoring ---
+            // Priority 1: Depth API world-Y at screen center → exact pants/table surface Y
+            // This is the Y coordinate of the surface the camera is actually looking at,
+            // NOT the statistical floor estimate (which biases toward the floor).
+            let surfaceElevationY = null;
+
+            if (frame.getDepthInformation) {
+              try {
+                const depthInfoEl = frame.getDepthInformation(view);
+                if (depthInfoEl && depthInfoEl.width > 0) {
+                  const dEl = depthInfoEl.getDepthInMeters(0.5, 0.5);
+                  if (Number.isFinite(dEl) && dEl > 0.1 && dEl < 3.0) {
+                    // Reconstruct the world-Y of the surface from depth + camera pose:
+                    // surfaceY = camY + lookDirY * depth
+                    // lookDirY = -camMatrix[9]  (camera looks in -Z; Y component of look dir)
+                    const cm = view.transform.matrix;
+                    const lookDirY = -cm[9]; // Y component of camera look direction in world
+                    surfaceElevationY = cm[13] + lookDirY * dEl;
+                  }
+                }
+              } catch (_) { /* fall through to percentile */ }
+            }
+
+            // Priority 2: 20th-percentile of hit-test samples (floor bias fallback)
+            if (surfaceElevationY === null) {
+              const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
+              const p20idx = Math.max(0, Math.floor(sorted.length * 0.20));
+              surfaceElevationY = sorted[p20idx];
+            }
+
+            const floorElevationY = surfaceElevationY;
 
             const signY = rawNormal.y >= 0 ? 1 : -1;
             state.surfacePlane = {
@@ -1450,24 +1493,68 @@ function onXRFrame(time, frame) {
     }
   }
 
-  // 3. Track Phone Stability over ~800ms
+  // 3. Track Raw Phone Motion
   const isPlaneFresh = state.surfacePlane && (time - state.surfacePlane.timestamp < 1000);
   const sampleCount = state.surfacePlane?.sampleCount || 0;
-  if (moveDist < 0.008 && isPlaneFresh && sampleCount >= 10) {
-    if (!state.stabilityTimerStart) {
-      state.stabilityTimerStart = time;
-    }
-    if (time - state.stabilityTimerStart > 800) {
-      state.isTrackingStable = true;
-    }
-  } else {
-    state.stabilityTimerStart = 0;
-    state.isTrackingStable = false;
-  }
 
-  // Live Y-Distance calculation: fuse floor-elevation approach with hit-ray approach,
-  // pick whichever has more samples (more confidence), and lock when phone is stable.
+  // Live Y-Distance calculation:
+  // Method C (Depth API)  → direct IR measurement at reticle center [PRIMARY, ±1–3cm]
+  // Method A (SLAM floor) → smoothed camera Y minus floor elevation  [FALLBACK A]
+  // Method B (hit-ray)    → 30th-pct vertical component of hit-tests [FALLBACK B]
   let yDistCm = null;
+
+  // ------------------------------------------------------------------
+  // Method C: ARCore Depth API — direct hardware depth at screen center
+  // getDepthInformation() is only defined when depth-sensing was granted.
+  // We sample a 5×5 patch around (0.5, 0.5) normalized UV and take the
+  // median to reject edge/background outliers at the garment boundary.
+  // ------------------------------------------------------------------
+  let methodC = null;
+  if (frame.getDepthInformation) {
+    try {
+      const depthInfo = frame.getDepthInformation(view);
+      if (depthInfo && depthInfo.width > 0 && depthInfo.height > 0) {
+        const dW = depthInfo.width;
+        const dH = depthInfo.height;
+        const patchR = 2; // 5×5 patch centred on screen middle
+        const cx = Math.round(dW * 0.5);
+        const cy = Math.round(dH * 0.5);
+        const patchSamples = [];
+
+        for (let dy = -patchR; dy <= patchR; dy++) {
+          for (let dx = -patchR; dx <= patchR; dx++) {
+            const px = cx + dx;
+            const py = cy + dy;
+            if (px < 0 || px >= dW || py < 0 || py >= dH) continue;
+            // getDepthInMeters expects normalised UV [0,1]
+            const d = depthInfo.getDepthInMeters(
+              (px + 0.5) / dW,
+              (py + 0.5) / dH
+            );
+            // Accept only plausible camera-to-garment range (15cm – 250cm)
+            if (Number.isFinite(d) && d > 0.15 && d < 2.5) {
+              patchSamples.push(d);
+            }
+          }
+        }
+
+        if (patchSamples.length >= 4) {
+          patchSamples.sort((a, b) => a - b);
+          const slantDepthM = patchSamples[Math.floor(patchSamples.length / 2)];
+
+          // Project slant depth onto the vertical (gravity) axis.
+          // vertical_dist = slant_depth × |camMatrix[9]|
+          const camMatrix = view.transform.matrix;
+          const lookDownFactor = Math.abs(camMatrix[9]); // cos(angle from vertical), ≈1 when pointing down
+          if (lookDownFactor > 0.1) { // reject near-horizontal aim (>84° tilt)
+            methodC = slantDepthM * lookDownFactor * 100; // metres → cm, vertical component
+          }
+        }
+      }
+    } catch (depthErr) {
+      // Depth API unavailable or threw — silently fall through to A/B
+    }
+  }
 
   if (state.surfacePlane && state.surfacePlane.elevationY !== undefined) {
     // Method A: smoothed camera Y minus floor elevation (both median-filtered)
@@ -1482,26 +1569,19 @@ function onXRFrame(time, frame) {
       methodB = p30 * 100;
     }
 
-    if (methodB !== null && state.hitRaySamples.length >= 30) {
-      // Weighted average: B gets more weight with more samples (more confident)
+    // Priority: C (Depth API) > A+B fusion > A alone
+    if (methodC !== null) {
+      yDistCm = methodC;
+    } else if (methodB !== null && state.hitRaySamples.length >= 30) {
       const wB = Math.min(1.0, state.hitRaySamples.length / 60);
       const wA = 1.0 - wB;
       yDistCm = wA * methodA + wB * methodB;
     } else {
       yDistCm = methodA;
     }
-
-    if (Number.isFinite(yDistCm)) {
-      state.currentYDistanceCm = yDistCm;
-      // Lock Y-distance when phone is steady: prevents jitter from showing on HUD
-      if (state.isTrackingStable) {
-        if (!state.lockedYDistCm) {
-          state.lockedYDistCm = yDistCm;
-        }
-      } else {
-        state.lockedYDistCm = null;
-      }
-    }
+  } else if (methodC !== null) {
+    // Surface plane not yet established but depth is already available — use it directly
+    yDistCm = methodC;
   } else if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
     const pt = state.surfacePlane.point;
     const n = state.surfacePlane.normal;
@@ -1510,18 +1590,92 @@ function onXRFrame(time, frame) {
     const hPerp = Math.abs((smoothCamY - pt.y) * uny + (camPos.x - pt.x) * unx + (camPos.z - pt.z) * unz);
     if (Number.isFinite(hPerp)) {
       yDistCm = hPerp * 100;
-      state.currentYDistanceCm = yDistCm;
     }
   }
 
-  // Display locked value when stable, live value when moving
-  const displayYDist = (state.lockedYDistCm && state.isTrackingStable) ? state.lockedYDistCm : yDistCm;
+  // ------------------------------------------------------------------
+  // Frame Accumulation & Convergence Lock for Y-Distance Accuracy
+  // As the user holds the phone, the distance improves frame by frame.
+  // We accumulate 25 stable frames (~0.8-1.0s), compute the rolling median,
+  // and lock the value once settled for rock-solid accuracy.
+  // ------------------------------------------------------------------
+  const TARGET_LOCK_FRAMES = 25;
+  if (!state.yDistBuffer) state.yDistBuffer = [];
 
-  // Update Top Distance Bar for HRNet mode (live Y-distance from mobile to floor/pant)
+  let rollingMedianY = null;
+
+  if (Number.isFinite(yDistCm) && yDistCm > 15 && yDistCm < 250) {
+    state.currentYDistanceCm = yDistCm;
+    state.yDistBuffer.push(yDistCm);
+    if (state.yDistBuffer.length > 35) state.yDistBuffer.shift();
+
+    // Compute rolling median across recent frame samples
+    const sortedSamples = [...state.yDistBuffer].sort((a, b) => a - b);
+    rollingMedianY = sortedSamples[Math.floor(sortedSamples.length / 2)];
+
+    // Check phone stability over trousers
+    const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
+    if (moveDist < 0.010 && hasValidSurface && sampleCount >= 6) {
+      state.steadyFrames = (state.steadyFrames || 0) + 1;
+    } else if (moveDist > 0.022) {
+      // Significant camera motion -> reset lock to recalibrate to new position
+      state.steadyFrames = 0;
+      state.isYDistLocked = false;
+      state.lockedYDistCm = null;
+    } else {
+      // Slight movement -> decay counter gently
+      state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 2);
+    }
+
+    // Lock after accumulating TARGET_LOCK_FRAMES (25 steady frames)
+    if (state.steadyFrames >= TARGET_LOCK_FRAMES && state.yDistBuffer.length >= 15) {
+      if (!state.isYDistLocked || !state.lockedYDistCm) {
+        state.isYDistLocked = true;
+        state.lockedYDistCm = rollingMedianY;
+        logMsg(`[Y-Dist Locked] Settled & locked at ${state.lockedYDistCm.toFixed(1)} cm over ${state.steadyFrames} frames`, 'success');
+      }
+
+      // Anchor surface plane elevation strictly to this converged locked distance
+      if (state.surfacePlane && Number.isFinite(smoothCamY)) {
+        state.surfacePlane.elevationY = smoothCamY - (state.lockedYDistCm / 100);
+        state.surfacePlane.point.y = state.surfacePlane.elevationY;
+      }
+    }
+
+    // Tracking is considered fully stable only once distance has locked
+    state.isTrackingStable = state.isYDistLocked;
+
+    // Periodic throttled diagnostic log (once every 1.2s)
+    if (time - (state.lastYDistLogTime || 0) > 1200) {
+      state.lastYDistLogTime = time;
+      const statusTxt = state.isYDistLocked
+        ? `LOCKED: ${state.lockedYDistCm.toFixed(1)} cm`
+        : `Locking (${Math.min(state.steadyFrames || 0, TARGET_LOCK_FRAMES)}/${TARGET_LOCK_FRAMES})`;
+      logMsg(`[Y-Dist] Frame: ${yDistCm.toFixed(1)} cm | Median: ${rollingMedianY.toFixed(1)} cm | ${statusTxt}`, 'info');
+    }
+  } else {
+    if (moveDist > 0.02) {
+      state.steadyFrames = 0;
+      state.isYDistLocked = false;
+      state.lockedYDistCm = null;
+    }
+    state.isTrackingStable = state.isYDistLocked;
+  }
+
+  // Update Top Distance Bar on HUD for HRNet mode
   if (state.activeMode === MODES.HRNET) {
     if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
     if (elements.hudDistanceVal) {
-      elements.hudDistanceVal.textContent = displayYDist !== null ? `${displayYDist.toFixed(1)} cm` : '-- cm';
+      if (state.isYDistLocked && state.lockedYDistCm !== null) {
+        elements.hudDistanceVal.textContent = `${state.lockedYDistCm.toFixed(1)} cm (Locked)`;
+      } else if (rollingMedianY !== null) {
+        const count = Math.min(state.steadyFrames || 0, TARGET_LOCK_FRAMES);
+        elements.hudDistanceVal.textContent = `${rollingMedianY.toFixed(1)} cm (${count}/${TARGET_LOCK_FRAMES})`;
+      } else if (Number.isFinite(yDistCm)) {
+        elements.hudDistanceVal.textContent = `${yDistCm.toFixed(1)} cm`;
+      } else {
+        elements.hudDistanceVal.textContent = '-- cm';
+      }
     }
   }
 
@@ -1575,31 +1729,35 @@ function updateTrackingUI(hasSurface, isStable) {
 
   const isOpenCV = state.activeMode === MODES.OPENCV_LIVE;
   const isManual = state.activeMode === MODES.MANUAL_2POINT;
+  const TARGET_LOCK_FRAMES = 25;
+  const framesSettled = Math.min(state.steadyFrames || 0, TARGET_LOCK_FRAMES);
 
   if (hasSurface && isStable) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Phone steady)';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Ready: Hold steady, tap Scan';
+    const distSuffix = state.lockedYDistCm ? ` (${state.lockedYDistCm.toFixed(1)} cm)` : '';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : `Distance locked${distSuffix}`;
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : `Locked at ${state.lockedYDistCm ? state.lockedYDistCm.toFixed(1) + ' cm' : 'steady distance'} - Ready to scan`;
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
       if (isManual) {
         updateManualHUDControls();
       } else {
         elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Ready! Tap Scan & Measure';
-        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Hold steady, tap Scan & Measure';
+        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : `Distance locked${distSuffix}! Tap Scan & Measure`;
         elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
       }
     }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot amber';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - hold phone steady' : 'Surface locked - hold phone steady';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : 'Stabilize phone over trousers (waiting for green dot)...';
+    const lockProgress = `Stabilizing distance (${framesSettled}/${TARGET_LOCK_FRAMES})...`;
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - hold phone steady' : lockProgress;
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : `Hold steady over trousers to lock distance (${framesSettled}/${TARGET_LOCK_FRAMES})...`;
     if (elements.btnScanTrigger) {
       if (!isOpenCV && !isManual) {
-        // HRNet Mode: until green dot is ready, scan button MUST NOT work
+        // HRNet Mode: until distance is settled and locked, scan button is disabled
         elements.btnScanTrigger.disabled = true;
-        elements.scanActionLabel.textContent = 'Hold steady for green dot...';
-        elements.stepText.textContent = 'Wait for green "Surface ready (Phone steady)" dot';
+        elements.scanActionLabel.textContent = `Stabilizing (${framesSettled}/${TARGET_LOCK_FRAMES})...`;
+        elements.stepText.textContent = `Hold steady over trousers (${framesSettled}/${TARGET_LOCK_FRAMES} frames to lock)`;
         elements.stepIcon.textContent = '⏳';
       } else {
         elements.btnScanTrigger.disabled = false;
@@ -3014,7 +3172,11 @@ function resetToScanning() {
   state.planeHeightSamples = [];
   state.camYSamples = [];
   state.hitRaySamples = [];
+  state.yDistBuffer = [];
+  state.steadyFrames = 0;
+  state.isYDistLocked = false;
   state.lockedYDistCm = null;
+  state.lastYDistLogTime = 0;
 
   hideToast();
   hideErrorBanner();
