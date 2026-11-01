@@ -130,20 +130,18 @@ const state = {
   surfacePlane: null,       // { point: {x,y,z}, normal: {x,y,z}, timestamp }
   currentReticlePose: null, // { x, y, z, matrix }
 
-  // Stability Tracking
+  // Stability Tracking & 2-4s Steady Scan Gate
   lastCamPosition: null,
   camMovement: 0,
-  stabilityTimerStart: 0,
+  steadyStartTime: 0,
+  steadyDurationMs: 0,
   isTrackingStable: false,
   scanRequested: false,
   scanRequestTime: 0,
   scanHistory: [],
 
-  // Y-Distance Frame Accumulation & Lock State
+  // Live Y-Distance Smoothing (Continuous, Never Artificially Locked)
   yDistBuffer: [],
-  steadyFrames: 0,
-  isYDistLocked: false,
-  lockedYDistCm: null,
   currentYDistanceCm: null,
   lastYDistLogTime: 0,
 
@@ -1594,89 +1592,58 @@ function onXRFrame(time, frame) {
   }
 
   // ------------------------------------------------------------------
-  // Frame Accumulation & Convergence Lock for Y-Distance Accuracy
-  // As the user holds the phone, the distance improves frame by frame.
-  // We accumulate 25 stable frames (~0.8-1.0s), compute the rolling median,
-  // and lock the value once settled for rock-solid accuracy.
   // ------------------------------------------------------------------
-  const TARGET_LOCK_FRAMES = 25;
+  // Live Continuous Y-Distance Smoothing (Never Artificially Locked)
+  // Keeps a rolling median across 10 recent frames to eliminate flicker,
+  // while continuously reflecting real-time distance.
+  // ------------------------------------------------------------------
   if (!state.yDistBuffer) state.yDistBuffer = [];
-
   let rollingMedianY = null;
 
   if (Number.isFinite(yDistCm) && yDistCm > 15 && yDistCm < 250) {
     state.currentYDistanceCm = yDistCm;
     state.yDistBuffer.push(yDistCm);
-    if (state.yDistBuffer.length > 35) state.yDistBuffer.shift();
+    if (state.yDistBuffer.length > 10) state.yDistBuffer.shift();
 
-    // Compute rolling median across recent frame samples
     const sortedSamples = [...state.yDistBuffer].sort((a, b) => a - b);
     rollingMedianY = sortedSamples[Math.floor(sortedSamples.length / 2)];
-
-    // Check phone stability over trousers
-    const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
-    if (moveDist < 0.010 && hasValidSurface && sampleCount >= 6) {
-      state.steadyFrames = (state.steadyFrames || 0) + 1;
-    } else if (moveDist > 0.022) {
-      // Significant camera motion -> reset lock to recalibrate to new position
-      state.steadyFrames = 0;
-      state.isYDistLocked = false;
-      state.lockedYDistCm = null;
-    } else {
-      // Slight movement -> decay counter gently
-      state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 2);
-    }
-
-    // Lock after accumulating TARGET_LOCK_FRAMES (25 steady frames)
-    if (state.steadyFrames >= TARGET_LOCK_FRAMES && state.yDistBuffer.length >= 15) {
-      if (!state.isYDistLocked || !state.lockedYDistCm) {
-        state.isYDistLocked = true;
-        state.lockedYDistCm = rollingMedianY;
-        logMsg(`[Y-Dist Locked] Settled & locked at ${state.lockedYDistCm.toFixed(1)} cm over ${state.steadyFrames} frames`, 'success');
-      }
-
-      // Anchor surface plane elevation strictly to this converged locked distance
-      if (state.surfacePlane && Number.isFinite(smoothCamY)) {
-        state.surfacePlane.elevationY = smoothCamY - (state.lockedYDistCm / 100);
-        state.surfacePlane.point.y = state.surfacePlane.elevationY;
-      }
-    }
-
-    // Tracking is considered fully stable only once distance has locked
-    state.isTrackingStable = state.isYDistLocked;
-
-    // Periodic throttled diagnostic log (once every 1.2s)
-    if (time - (state.lastYDistLogTime || 0) > 1200) {
-      state.lastYDistLogTime = time;
-      const statusTxt = state.isYDistLocked
-        ? `LOCKED: ${state.lockedYDistCm.toFixed(1)} cm`
-        : `Locking (${Math.min(state.steadyFrames || 0, TARGET_LOCK_FRAMES)}/${TARGET_LOCK_FRAMES})`;
-      logMsg(`[Y-Dist] Frame: ${yDistCm.toFixed(1)} cm | Median: ${rollingMedianY.toFixed(1)} cm | ${statusTxt}`, 'info');
-    }
-  } else {
-    if (moveDist > 0.02) {
-      state.steadyFrames = 0;
-      state.isYDistLocked = false;
-      state.lockedYDistCm = null;
-    }
-    state.isTrackingStable = state.isYDistLocked;
   }
 
-  // Update Top Distance Bar on HUD for HRNet mode
+  // ------------------------------------------------------------------
+  // 2-4s Steady Scan Gate
+  // Disallows taking an image until the camera has been held steady over
+  // the trousers for 2.5 seconds (~75 steady frames) so ARCore/Depth settles.
+  // ------------------------------------------------------------------
+  const SETTLE_REQUIRED_MS = 2500; // 2.5 seconds steady gate
+  const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
+
+  if (hasValidSurface && moveDist < 0.012 && sampleCount >= 5) {
+    if (!state.steadyStartTime) {
+      state.steadyStartTime = time;
+    }
+    state.steadyDurationMs = time - state.steadyStartTime;
+    state.isTrackingStable = state.steadyDurationMs >= SETTLE_REQUIRED_MS;
+  } else {
+    state.steadyStartTime = 0;
+    state.steadyDurationMs = 0;
+    state.isTrackingStable = false;
+  }
+
+  // Update Top Distance Bar on HUD with live continuous reading (never locked)
   if (state.activeMode === MODES.HRNET) {
     if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
     if (elements.hudDistanceVal) {
-      if (state.isYDistLocked && state.lockedYDistCm !== null) {
-        elements.hudDistanceVal.textContent = `${state.lockedYDistCm.toFixed(1)} cm (Locked)`;
-      } else if (rollingMedianY !== null) {
-        const count = Math.min(state.steadyFrames || 0, TARGET_LOCK_FRAMES);
-        elements.hudDistanceVal.textContent = `${rollingMedianY.toFixed(1)} cm (${count}/${TARGET_LOCK_FRAMES})`;
-      } else if (Number.isFinite(yDistCm)) {
-        elements.hudDistanceVal.textContent = `${yDistCm.toFixed(1)} cm`;
-      } else {
-        elements.hudDistanceVal.textContent = '-- cm';
-      }
+      const displayVal = Number.isFinite(rollingMedianY) ? rollingMedianY : yDistCm;
+      elements.hudDistanceVal.textContent = Number.isFinite(displayVal) ? `${displayVal.toFixed(1)} cm` : '-- cm';
     }
+  }
+
+  // Periodic throttled diagnostic log
+  if (time - (state.lastYDistLogTime || 0) > 1200) {
+    state.lastYDistLogTime = time;
+    const sec = ((state.steadyDurationMs || 0) / 1000).toFixed(1);
+    const statusTxt = state.isTrackingStable ? 'READY TO SCAN' : `Stabilizing (${sec}s/2.5s)`;
+    logMsg(`[Y-Dist Live] ${rollingMedianY ? rollingMedianY.toFixed(1) : (yDistCm ? yDistCm.toFixed(1) : '--')} cm | ${statusTxt}`, 'info');
   }
 
   updateTrackingUI(surfaceHitFound || state.surfacePlane !== null, state.isTrackingStable);
@@ -1729,35 +1696,33 @@ function updateTrackingUI(hasSurface, isStable) {
 
   const isOpenCV = state.activeMode === MODES.OPENCV_LIVE;
   const isManual = state.activeMode === MODES.MANUAL_2POINT;
-  const TARGET_LOCK_FRAMES = 25;
-  const framesSettled = Math.min(state.steadyFrames || 0, TARGET_LOCK_FRAMES);
+  const elapsedSec = Math.min(2.5, ((state.steadyDurationMs || 0) / 1000)).toFixed(1);
 
   if (hasSurface && isStable) {
     elements.hudTrackingDot.className = 'dot green';
-    const distSuffix = state.lockedYDistCm ? ` (${state.lockedYDistCm.toFixed(1)} cm)` : '';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : `Distance locked${distSuffix}`;
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : `Locked at ${state.lockedYDistCm ? state.lockedYDistCm.toFixed(1) + ' cm' : 'steady distance'} - Ready to scan`;
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Tracking stable)';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Ready: Hold steady, tap Scan & Measure';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
       if (isManual) {
         updateManualHUDControls();
       } else {
         elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Ready! Tap Scan & Measure';
-        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : `Distance locked${distSuffix}! Tap Scan & Measure`;
+        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Hold steady, tap Scan & Measure';
         elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
       }
     }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot amber';
-    const lockProgress = `Stabilizing distance (${framesSettled}/${TARGET_LOCK_FRAMES})...`;
+    const lockProgress = `Stabilizing frames (${elapsedSec}s / 2.5s)...`;
     elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - hold phone steady' : lockProgress;
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : `Hold steady over trousers to lock distance (${framesSettled}/${TARGET_LOCK_FRAMES})...`;
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : `Hold steady over trousers to calibrate (${elapsedSec}s / 2.5s)...`;
     if (elements.btnScanTrigger) {
       if (!isOpenCV && !isManual) {
-        // HRNet Mode: until distance is settled and locked, scan button is disabled
+        // HRNet Mode: prevent taking image until 2.5s steady tracking gate is reached
         elements.btnScanTrigger.disabled = true;
-        elements.scanActionLabel.textContent = `Stabilizing (${framesSettled}/${TARGET_LOCK_FRAMES})...`;
-        elements.stepText.textContent = `Hold steady over trousers (${framesSettled}/${TARGET_LOCK_FRAMES} frames to lock)`;
+        elements.scanActionLabel.textContent = `Scanning (${elapsedSec}s / 2.5s)...`;
+        elements.stepText.textContent = `Hold camera steady over trousers (${elapsedSec}s / 2.5s to scan)`;
         elements.stepIcon.textContent = '⏳';
       } else {
         elements.btnScanTrigger.disabled = false;
@@ -2050,7 +2015,7 @@ function triggerScanCapture() {
     return;
   }
   if (state.activeMode === MODES.HRNET && !state.isSimulator && !state.isTrackingStable) {
-    showToast('Wait for green "Surface ready (Phone steady)" dot before tapping');
+    showToast('Hold camera steady over trousers for 2-3 seconds before scanning');
     return;
   }
   hideErrorBanner();
@@ -3173,9 +3138,8 @@ function resetToScanning() {
   state.camYSamples = [];
   state.hitRaySamples = [];
   state.yDistBuffer = [];
-  state.steadyFrames = 0;
-  state.isYDistLocked = false;
-  state.lockedYDistCm = null;
+  state.steadyStartTime = 0;
+  state.steadyDurationMs = 0;
   state.lastYDistLogTime = 0;
 
   hideToast();
