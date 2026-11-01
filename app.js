@@ -1162,11 +1162,16 @@ async function startARSession() {
       await gl.makeXRCompatible();
     }
 
-    // Required: hit-test; Optional: dom-overlay, local-floor, camera-access
+    // Required: hit-test; Optional: dom-overlay, local-floor, camera-access, depth-sensing
+    // depth-sensing is optional — app works normally on devices without it (graceful fallback)
     const sessionInit = {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay', 'local-floor', 'camera-access'],
-      domOverlay: { root: elements.arOverlay }
+      optionalFeatures: ['dom-overlay', 'local-floor', 'camera-access', 'depth-sensing'],
+      domOverlay: { root: elements.arOverlay },
+      depthSensing: {
+        usagePreference: ['cpu-optimized'],       // readable CPU-side, no GPU round-trip needed
+        dataFormatPreference: ['luminance-alpha'] // 16-bit depth packed in RG channels
+      }
     };
 
     let session;
@@ -1175,8 +1180,12 @@ async function startARSession() {
     } catch (e1) {
       logMsg(`Primary request failed (${e1.message}), trying optional hit-test...`, 'warn');
       session = await navigator.xr.requestSession('immersive-ar', {
-        optionalFeatures: ['hit-test', 'dom-overlay', 'local-floor', 'camera-access'],
-        domOverlay: { root: elements.arOverlay }
+        optionalFeatures: ['hit-test', 'dom-overlay', 'local-floor', 'camera-access', 'depth-sensing'],
+        domOverlay: { root: elements.arOverlay },
+        depthSensing: {
+          usagePreference: ['cpu-optimized'],
+          dataFormatPreference: ['luminance-alpha']
+        }
       });
     }
 
@@ -1465,9 +1474,67 @@ function onXRFrame(time, frame) {
     state.isTrackingStable = false;
   }
 
-  // Live Y-Distance calculation: fuse floor-elevation approach with hit-ray approach,
-  // pick whichever has more samples (more confidence), and lock when phone is stable.
+  // Live Y-Distance calculation:
+  // Method C (Depth API)  → direct IR measurement at reticle center [PRIMARY, ±1–3cm]
+  // Method A (SLAM floor) → smoothed camera Y minus floor elevation  [FALLBACK A]
+  // Method B (hit-ray)    → 30th-pct vertical component of hit-tests [FALLBACK B]
   let yDistCm = null;
+
+  // ------------------------------------------------------------------
+  // Method C: ARCore Depth API — direct hardware depth at screen center
+  // getDepthInformation() is only defined when depth-sensing was granted.
+  // We sample a 5×5 patch around (0.5, 0.5) normalized UV and take the
+  // median to reject edge/background outliers at the garment boundary.
+  // ------------------------------------------------------------------
+  let methodC = null;
+  if (frame.getDepthInformation) {
+    try {
+      const depthInfo = frame.getDepthInformation(view);
+      if (depthInfo && depthInfo.width > 0 && depthInfo.height > 0) {
+        const dW = depthInfo.width;
+        const dH = depthInfo.height;
+        const patchR = 2; // 5×5 patch centred on screen middle
+        const cx = Math.round(dW * 0.5);
+        const cy = Math.round(dH * 0.5);
+        const patchSamples = [];
+
+        for (let dy = -patchR; dy <= patchR; dy++) {
+          for (let dx = -patchR; dx <= patchR; dx++) {
+            const px = cx + dx;
+            const py = cy + dy;
+            if (px < 0 || px >= dW || py < 0 || py >= dH) continue;
+            // getDepthInMeters expects normalised UV [0,1]
+            const d = depthInfo.getDepthInMeters(
+              (px + 0.5) / dW,
+              (py + 0.5) / dH
+            );
+            // Accept only plausible camera-to-garment range (15cm – 250cm)
+            if (Number.isFinite(d) && d > 0.15 && d < 2.5) {
+              patchSamples.push(d);
+            }
+          }
+        }
+
+        if (patchSamples.length >= 4) {
+          patchSamples.sort((a, b) => a - b);
+          const slantDepthM = patchSamples[Math.floor(patchSamples.length / 2)];
+
+          // Project slant depth onto the vertical (gravity) axis.
+          // camMatrix column 1 (indices [4],[5],[6]) is the camera's local Y axis
+          // in world space. Its world-Y component tells us how much of the camera's
+          // vertical axis aligns with gravity — i.e. cos(camera tilt).
+          // vertical_dist = slant_depth × |camUp_worldY|
+          const camMatrix = view.transform.matrix;
+          const camUpWorldY = Math.abs(camMatrix[5]); // |cos(tilt)|
+          if (camUpWorldY > 0.1) { // reject extreme tilt (>84°) — depth unusable
+            methodC = slantDepthM * camUpWorldY * 100; // metres → cm, vertical component
+          }
+        }
+      }
+    } catch (depthErr) {
+      // Depth API unavailable or threw — silently fall through to A/B
+    }
+  }
 
   if (state.surfacePlane && state.surfacePlane.elevationY !== undefined) {
     // Method A: smoothed camera Y minus floor elevation (both median-filtered)
@@ -1482,7 +1549,12 @@ function onXRFrame(time, frame) {
       methodB = p30 * 100;
     }
 
-    if (methodB !== null && state.hitRaySamples.length >= 30) {
+    // Priority: C (Depth API) > A+B fusion > A alone
+    if (methodC !== null) {
+      // Depth API wins — direct IR measurement, most accurate
+      yDistCm = methodC;
+      logMsg(`[Y-Dist] Depth-API: ${methodC.toFixed(1)} cm (SLAM-A: ${methodA.toFixed(1)} cm)`, 'info');
+    } else if (methodB !== null && state.hitRaySamples.length >= 30) {
       // Weighted average: B gets more weight with more samples (more confident)
       const wB = Math.min(1.0, state.hitRaySamples.length / 60);
       const wA = 1.0 - wB;
@@ -1502,6 +1574,10 @@ function onXRFrame(time, frame) {
         state.lockedYDistCm = null;
       }
     }
+  } else if (methodC !== null) {
+    // Surface plane not yet established but depth is already available — use it directly
+    yDistCm = methodC;
+    state.currentYDistanceCm = yDistCm;
   } else if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
     const pt = state.surfacePlane.point;
     const n = state.surfacePlane.normal;
