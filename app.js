@@ -15,6 +15,16 @@
  * 5. Debug Mode (?debug=1): 2D keypoint visual inspection on captured frame.
  */
 
+import {
+  KalmanFilter1D,
+  extractCameraIntrinsics,
+  MultiFrameDepthAccumulator,
+  estimateFloorPlaneRansac,
+  fuseDepthAndSLAMPlane,
+  computeCalibrationBenchmarkStats,
+  evaluateCaptureQuality
+} from './precision_depth.js';
+
 // ==============================================================================
 // 1. CONSTANTS & CONFIGURATION
 // ==============================================================================
@@ -129,6 +139,22 @@ const state = {
   // Detected Surface Plane Equation: plane.normal · (P - plane.point) = 0
   surfacePlane: null,       // { point: {x,y,z}, normal: {x,y,z}, timestamp }
   currentReticlePose: null, // { x, y, z, matrix }
+
+  // Precision Depth & 3D Floor Plane Architecture
+  kalmanFloorFilter: new KalmanFilter1D(0.0, 1.0, 1e-5),
+  depthAccumulator: new MultiFrameDepthAccumulator(25, 600),
+  ransacFloorPlane: null,
+  fusedFloorPlane: null,
+  captureQuality: null,
+  lastRansacTime: 0,
+  fusedDistanceCm: null,
+  depthDistanceCm: null,
+  slamDistanceCm: null,
+
+  // Calibration Testing Dashboard State
+  selectedBenchmarkTargetCm: 100.0,
+  calibrationDataset: [],
+  isDevDashboardOpen: false,
 
   // Stability Tracking
   lastCamPosition: null,
@@ -257,6 +283,8 @@ const elements = {
   btnModeHRNet: document.getElementById('btn-mode-hrnet'),
   btnModeOpenCV: document.getElementById('btn-mode-opencv'),
   chkCalib44: document.getElementById('chk-calib-44'),
+  btnOpenDevDashboardLanding: document.getElementById('btn-open-dev-dashboard-landing'),
+  btnHudDevDashboard: document.getElementById('btn-hud-dev-dashboard'),
   btnToggleARMode: document.getElementById('btn-toggle-ar-mode'),
   hudModeIcon: document.getElementById('hud-mode-icon'),
   hudModeText: document.getElementById('hud-mode-text'),
@@ -268,6 +296,33 @@ const elements = {
   calibMeanErr: document.getElementById('calib-mean-err'),
   calibStdVal: document.getElementById('calib-std-val'),
   calibStatsText: document.getElementById('calib-stats-text'),
+
+  // Developer Calibration & Testing Dashboard Modal Elements
+  modalDevDashboard: document.getElementById('modal-dev-dashboard'),
+  btnCloseDevDashboard: document.getElementById('btn-close-dev-dashboard'),
+  inputCustomTarget: document.getElementById('input-custom-target'),
+  teleTarget: document.getElementById('tele-target'),
+  teleFused: document.getElementById('tele-fused'),
+  teleDelta: document.getElementById('tele-delta'),
+  teleSlam: document.getElementById('tele-slam'),
+  teleResidual: document.getElementById('tele-residual'),
+  teleInliers: document.getElementById('tele-inliers'),
+  teleDepthFrames: document.getElementById('tele-depth-frames'),
+  teleQuality: document.getElementById('tele-quality'),
+  teleWaist: document.getElementById('tele-waist'),
+  btnRecordSample: document.getElementById('btn-record-sample'),
+  btnExportCSV: document.getElementById('btn-export-csv'),
+  btnExportJSON: document.getElementById('btn-export-json'),
+  btnClearDataset: document.getElementById('btn-clear-dataset'),
+  statCount: document.getElementById('stat-count'),
+  statMae: document.getElementById('stat-mae'),
+  statRmse: document.getElementById('stat-rmse'),
+  statHalfInch: document.getElementById('stat-half-inch'),
+  statQuarterInch: document.getElementById('stat-quarter-inch'),
+  statStdDev: document.getElementById('stat-stddev'),
+  statRange: document.getElementById('stat-range'),
+  statMaxErr: document.getElementById('stat-max-err'),
+  devRecordsTbody: document.getElementById('dev-records-tbody'),
 
   // AR HUD Elements
   hudTrackingDot: document.getElementById('hud-tracking-dot'),
@@ -1044,6 +1099,234 @@ function updateCalibrationHUD(stats, liveVal) {
   }
 }
 
+/* ==========================================================================
+   Developer Calibration & Precision Testing Dashboard Controller
+   ========================================================================== */
+
+function openDevDashboard() {
+  state.isDevDashboardOpen = true;
+  if (elements.modalDevDashboard) {
+    elements.modalDevDashboard.classList.remove('hidden');
+    updateDevDashboardUI();
+  }
+}
+
+function closeDevDashboard() {
+  state.isDevDashboardOpen = false;
+  if (elements.modalDevDashboard) {
+    elements.modalDevDashboard.classList.add('hidden');
+  }
+}
+
+function setDevDashboardTarget(distCm) {
+  state.selectedBenchmarkTargetCm = parseFloat(distCm) || 100.0;
+  if (elements.inputCustomTarget) {
+    elements.inputCustomTarget.value = state.selectedBenchmarkTargetCm.toFixed(1);
+  }
+  const presetBtns = document.querySelectorAll('.btn-preset-dist');
+  presetBtns.forEach(btn => {
+    if (parseFloat(btn.dataset.dist) === state.selectedBenchmarkTargetCm) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+  updateDevDashboardUI();
+}
+
+function recordDevCalibrationSample() {
+  const target = state.selectedBenchmarkTargetCm;
+  const fused = state.fusedDistanceCm || state.slamDistanceCm || state.currentYDistanceCm || null;
+  if (fused === null) {
+    alert('No distance measurement available yet. Please aim the camera at the floor/garment.');
+    return;
+  }
+  const errorCm = fused - target;
+  const waistCm = state.calculatedMeasurements?.waist_width?.distCm || null;
+
+  const record = {
+    index: state.calibrationDataset.length + 1,
+    timestamp: new Date().toISOString(),
+    targetCm: target,
+    fusedCm: fused,
+    slamCm: state.slamDistanceCm || null,
+    depthCm: state.depthDistanceCm || null,
+    errorCm: errorCm,
+    absErrorCm: Math.abs(errorCm),
+    absErrorInches: Math.abs(errorCm) / 2.54,
+    ransacInliers: state.ransacFloorPlane?.inlierCount || 0,
+    ransacTotal: state.ransacFloorPlane?.totalPoints || 0,
+    ransacResidualCm: state.ransacFloorPlane?.rmseResidualCm || null,
+    depthFrames: state.depthAccumulator?.validFrameCount || 0,
+    waistCm: waistCm
+  };
+
+  state.calibrationDataset.push(record);
+  showToast(`Sample #${record.index} recorded (${record.fusedCm.toFixed(1)} cm, Error: ${errorCm >= 0 ? '+' : ''}${errorCm.toFixed(1)} cm)`);
+  updateDevDashboardUI();
+}
+
+function clearCalibrationDataset() {
+  if (confirm('Clear all recorded calibration samples?')) {
+    state.calibrationDataset = [];
+    updateDevDashboardUI();
+  }
+}
+
+function exportCalibrationCSV() {
+  if (state.calibrationDataset.length === 0) {
+    alert('No calibration samples recorded yet.');
+    return;
+  }
+  const headers = [
+    'Index', 'Timestamp', 'Target_Distance_cm', 'Fused_Distance_cm',
+    'SLAM_Distance_cm', 'Depth_Distance_cm', 'Error_cm', 'Abs_Error_cm',
+    'Abs_Error_in', 'RANSAC_Inliers', 'RANSAC_Total', 'RANSAC_Residual_cm',
+    'Depth_Frames', 'Waist_Width_cm'
+  ];
+
+  const rows = state.calibrationDataset.map(d => [
+    d.index,
+    `"${d.timestamp}"`,
+    d.targetCm.toFixed(1),
+    d.fusedCm.toFixed(2),
+    d.slamCm ? d.slamCm.toFixed(2) : '',
+    d.depthCm ? d.depthCm.toFixed(2) : '',
+    d.errorCm.toFixed(2),
+    d.absErrorCm.toFixed(2),
+    d.absErrorInches.toFixed(3),
+    d.ransacInliers,
+    d.ransacTotal,
+    d.ransacResidualCm ? d.ransacResidualCm.toFixed(2) : '',
+    d.depthFrames,
+    d.waistCm ? d.waistCm.toFixed(2) : ''
+  ]);
+
+  const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ar_depth_calibration_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportCalibrationJSON() {
+  if (state.calibrationDataset.length === 0) {
+    alert('No calibration samples recorded yet.');
+    return;
+  }
+  const benchmarkSamples = state.calibrationDataset.map(d => ({ measured: d.fusedCm, target: d.targetCm }));
+  const stats = computeCalibrationBenchmarkStats(benchmarkSamples);
+
+  const exportData = {
+    exportedAt: new Date().toISOString(),
+    userAgent: navigator.userAgent,
+    datasetCount: state.calibrationDataset.length,
+    statisticsSummary: stats,
+    records: state.calibrationDataset
+  };
+
+  const jsonStr = JSON.stringify(exportData, null, 2);
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ar_depth_calibration_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function updateDevDashboardUI() {
+  if (!state.isDevDashboardOpen && !elements.modalDevDashboard) return;
+
+  const target = state.selectedBenchmarkTargetCm;
+  const fused = state.fusedDistanceCm || state.currentYDistanceCm || null;
+
+  if (elements.teleTarget) elements.teleTarget.textContent = `${target.toFixed(1)} cm`;
+  if (elements.teleFused) elements.teleFused.textContent = fused !== null ? `${fused.toFixed(1)} cm` : '-- cm';
+
+  if (elements.teleDelta) {
+    if (fused !== null) {
+      const delta = fused - target;
+      const sign = delta >= 0 ? '+' : '';
+      elements.teleDelta.textContent = `${sign}${delta.toFixed(1)} cm`;
+      elements.teleDelta.className = Math.abs(delta) <= 1.27 ? 'val val-green' : (Math.abs(delta) <= 2.54 ? 'val val-cyan' : 'val val-red');
+    } else {
+      elements.teleDelta.textContent = '-- cm';
+      elements.teleDelta.className = 'val';
+    }
+  }
+
+  if (elements.teleSlam) {
+    elements.teleSlam.textContent = state.slamDistanceCm !== null ? `${state.slamDistanceCm.toFixed(1)} cm` : '-- cm';
+  }
+
+  if (elements.teleResidual) {
+    elements.teleResidual.textContent = state.ransacFloorPlane ? `${state.ransacFloorPlane.rmseResidualCm.toFixed(2)} cm` : '-- cm';
+  }
+
+  if (elements.teleInliers) {
+    if (state.ransacFloorPlane) {
+      const pct = Math.round(state.ransacFloorPlane.inlierRatio * 100);
+      elements.teleInliers.textContent = `${state.ransacFloorPlane.inlierCount}/${state.ransacFloorPlane.totalPoints} (${pct}%)`;
+    } else {
+      elements.teleInliers.textContent = '-- / --';
+    }
+  }
+
+  if (elements.teleDepthFrames) {
+    const fCount = state.depthAccumulator?.validFrameCount || 0;
+    elements.teleDepthFrames.textContent = `${fCount} / 25`;
+    elements.teleDepthFrames.className = fCount >= 15 ? 'val val-green' : 'val val-amber';
+  }
+
+  if (elements.teleQuality) {
+    elements.teleQuality.textContent = state.captureQuality?.message || (state.isTrackingStable ? 'Stable' : 'Scanning...');
+  }
+
+  // Update Summary Stats
+  const benchmarkSamples = state.calibrationDataset.map(d => ({ measured: d.fusedCm, target: d.targetCm }));
+  const stats = computeCalibrationBenchmarkStats(benchmarkSamples);
+
+  if (elements.statCount) elements.statCount.textContent = stats.count;
+  if (elements.statMae) elements.statMae.textContent = stats.count > 0 ? `${stats.maeCm.toFixed(2)} cm (${stats.maeInches.toFixed(2)}")` : '-- cm (-- in)';
+  if (elements.statRmse) elements.statRmse.textContent = stats.count > 0 ? `${stats.rmseCm.toFixed(2)} cm` : '-- cm';
+  if (elements.statHalfInch) elements.statHalfInch.textContent = stats.count > 0 ? `${stats.percentWithinHalfInch.toFixed(1)}%` : '--%';
+  if (elements.statQuarterInch) elements.statQuarterInch.textContent = stats.count > 0 ? `${stats.percentWithinQuarterInch.toFixed(1)}%` : '--%';
+  if (elements.statStdDev) elements.statStdDev.textContent = stats.count > 0 ? `${stats.stdDevCm.toFixed(2)} cm` : '-- cm';
+  if (elements.statRange) elements.statRange.textContent = stats.count > 0 ? `${stats.rangeCm.toFixed(2)} cm` : '-- cm';
+  if (elements.statMaxErr) elements.statMaxErr.textContent = stats.count > 0 ? `${stats.maxErrorCm.toFixed(2)} cm` : '-- cm';
+
+  // Update Records Table
+  if (elements.devRecordsTbody) {
+    if (state.calibrationDataset.length === 0) {
+      elements.devRecordsTbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding: 12px;">No calibration samples recorded yet. Select a distance target and tap Record Sample.</td></tr>`;
+    } else {
+      elements.devRecordsTbody.innerHTML = state.calibrationDataset.slice(-15).reverse().map(d => {
+        const sign = d.errorCm >= 0 ? '+' : '';
+        const errClass = d.absErrorCm <= 1.27 ? 'val-green' : (d.absErrorCm <= 2.54 ? 'val-cyan' : 'val-red');
+        const timeStr = d.timestamp.split('T')[1].slice(0, 8);
+        return `<tr>
+          <td>#${d.index}</td>
+          <td>${d.targetCm.toFixed(1)}cm</td>
+          <td>${d.fusedCm.toFixed(1)}cm</td>
+          <td class="${errClass}">${sign}${d.errorCm.toFixed(1)}cm</td>
+          <td>${d.ransacInliers}/${d.ransacTotal}</td>
+          <td>${d.ransacResidualCm ? d.ransacResidualCm.toFixed(1) + 'cm' : '--'}</td>
+          <td>${d.waistCm ? d.waistCm.toFixed(1) + 'cm' : '--'}</td>
+          <td>${timeStr}</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+}
+
 function toggleOpenCVLock() {
   const cs = state.cvState;
   const p1 = cs.detectedPoints3D ? cs.detectedPoints3D.p1 : state.point1;
@@ -1500,131 +1783,135 @@ function onXRFrame(time, frame) {
     state.isTrackingStable = false;
   }
 
-  // Live Y-Distance calculation:
-  // Method C (Depth API)  → direct IR measurement at reticle center [PRIMARY, ±1–3cm]
-  // Method A (SLAM floor) → smoothed camera Y minus floor elevation  [FALLBACK A]
-  // Method B (hit-ray)    → 30th-pct vertical component of hit-tests [FALLBACK B]
-  let yDistCm = null;
-
   // ------------------------------------------------------------------
-  // Method C: ARCore Depth API — direct hardware depth at screen center
-  // getDepthInformation() is only defined when depth-sensing was granted.
-  // We sample a 5×5 patch around (0.5, 0.5) normalized UV and take the
-  // median to reject edge/background outliers at the garment boundary.
+  // Phase 2: Multi-Frame Depth Accumulation + Spatial Consistency Filtering
   // ------------------------------------------------------------------
-  let methodC = null;
+  let depthSampledPoints = 0;
   if (frame.getDepthInformation) {
     try {
       const depthInfo = frame.getDepthInformation(view);
       if (depthInfo && depthInfo.width > 0 && depthInfo.height > 0) {
-        const dW = depthInfo.width;
-        const dH = depthInfo.height;
-        const patchR = 2; // 5×5 patch centred on screen middle
-        const cx = Math.round(dW * 0.5);
-        const cy = Math.round(dH * 0.5);
-        const patchSamples = [];
-
-        for (let dy = -patchR; dy <= patchR; dy++) {
-          for (let dx = -patchR; dx <= patchR; dx++) {
-            const px = cx + dx;
-            const py = cy + dy;
-            if (px < 0 || px >= dW || py < 0 || py >= dH) continue;
-            // getDepthInMeters expects normalised UV [0,1]
-            const d = depthInfo.getDepthInMeters(
-              (px + 0.5) / dW,
-              (py + 0.5) / dH
-            );
-            // Accept only plausible camera-to-garment range (15cm – 250cm)
-            if (Number.isFinite(d) && d > 0.15 && d < 2.5) {
-              patchSamples.push(d);
-            }
+        depthSampledPoints = state.depthAccumulator.addDepthFrame(
+          depthInfo,
+          state.lastProjMatrix,
+          state.lastCameraMatrix,
+          time,
+          {
+            gridCols: 8,
+            gridRows: 8,
+            minDepth: 0.25,
+            maxDepth: 2.50,
+            centerGarmentExclusionRadius: 0.22,
+            spatialVarianceThreshold: 0.04
           }
-        }
+        );
 
-        if (patchSamples.length >= 4) {
-          patchSamples.sort((a, b) => a - b);
-          const slantDepthM = patchSamples[Math.floor(patchSamples.length / 2)];
-
-          // Project slant depth onto the vertical (gravity) axis.
-          // In WebXR column-major camMatrix (camera→world):
-          //   col 0 (indices 0,1,2)  = camera right in world space
-          //   col 1 (indices 4,5,6)  = camera up in world space  ← WRONG axis (≈0 when looking down)
-          //   col 2 (indices 8,9,10) = camera -Z (back) in world space
-          // Center ray direction = (-m8, -m9, -m10).
-          // When looking straight down: -m9 ≈ -1, so m9 ≈ 1  → |m9| = cos(tilt from vertical)
-          // vertical_dist = slant_depth × |camMatrix[9]|
+        // Also capture central depth for telemetry display
+        const dCenter = depthInfo.getDepthInMeters(0.5, 0.5);
+        if (Number.isFinite(dCenter) && dCenter > 0.2 && dCenter < 3.0) {
           const camMatrix = view.transform.matrix;
-          const lookDownFactor = Math.abs(camMatrix[9]); // cos(angle from vertical), ≈1 when pointing down
-          if (lookDownFactor > 0.1) { // reject near-horizontal aim (>84° tilt) — depth unusable
-            methodC = slantDepthM * lookDownFactor * 100; // metres → cm, vertical component
-          }
+          const lookDownFactor = Math.abs(camMatrix[9]);
+          state.depthDistanceCm = dCenter * lookDownFactor * 100.0;
         }
       }
     } catch (depthErr) {
-      // Depth API unavailable or threw — silently fall through to A/B
+      // Depth API unavailable or threw — fallback to SLAM tracking
     }
   }
 
-  if (state.surfacePlane && state.surfacePlane.elevationY !== undefined) {
-    // Method A: smoothed camera Y minus floor elevation (both median-filtered)
-    const methodA = Math.abs(smoothCamY - state.surfacePlane.elevationY) * 100;
-
-    // Method B: direct 3D hit-ray vertical component (median of recent samples)
-    let methodB = null;
-    if (state.hitRaySamples && state.hitRaySamples.length >= 5) {
-      const sortedRay = [...state.hitRaySamples].sort((a, b) => a - b);
-      // Use 30th percentile (floor is minimum vertical component)
-      const p30 = sortedRay[Math.max(0, Math.floor(sortedRay.length * 0.30))];
-      methodB = p30 * 100;
+  // ------------------------------------------------------------------
+  // Phase 3: 3D RANSAC Floor-Plane Estimation (Periodic every ~150ms)
+  // ------------------------------------------------------------------
+  if (state.depthAccumulator.validFrameCount >= 6 && (time - state.lastRansacTime > 150)) {
+    state.lastRansacTime = time;
+    const ransac = estimateFloorPlaneRansac(state.depthAccumulator.allWorldPoints, {
+      iterations: 75,
+      inlierThresholdM: 0.015,
+      minInlierRatio: 0.45,
+      minPointsRequired: 25,
+      maxTiltAngleDeg: 28.0
+    });
+    if (ransac && ransac.valid) {
+      state.ransacFloorPlane = ransac;
     }
+  }
 
-    // Priority: C (Depth API) > A+B fusion > A alone
-    if (methodC !== null) {
-      // Depth API wins — direct IR measurement, most accurate
-      yDistCm = methodC;
-      logMsg(`[Y-Dist] Depth-API: ${methodC.toFixed(1)} cm (SLAM-A: ${methodA.toFixed(1)} cm)`, 'info');
-    } else if (methodB !== null && state.hitRaySamples.length >= 30) {
-      // Weighted average: B gets more weight with more samples (more confident)
-      const wB = Math.min(1.0, state.hitRaySamples.length / 60);
-      const wA = 1.0 - wB;
-      yDistCm = wA * methodA + wB * methodB;
-    } else {
-      yDistCm = methodA;
-    }
+  // ------------------------------------------------------------------
+  // Phase 6: Kalman Sensor Fusion (RANSAC Depth + SLAM Plane Hit-Test)
+  // ------------------------------------------------------------------
+  const slamCandidate = (surfaceHitFound && state.surfacePlane) ? state.surfacePlane : null;
+  const fusedResult = fuseDepthAndSLAMPlane(
+    state.ransacFloorPlane,
+    slamCandidate,
+    state.kalmanFloorFilter,
+    camPos
+  );
 
-    if (Number.isFinite(yDistCm)) {
-      state.currentYDistanceCm = yDistCm;
-      // Lock Y-distance when phone is steady: prevents jitter from showing on HUD
-      if (state.isTrackingStable) {
-        if (!state.lockedYDistCm) {
-          state.lockedYDistCm = yDistCm;
-        }
-      } else {
-        state.lockedYDistCm = null;
-      }
-    }
-  } else if (methodC !== null) {
-    // Surface plane not yet established but depth is already available — use it directly
-    yDistCm = methodC;
+  if (fusedResult.valid) {
+    state.fusedFloorPlane = fusedResult;
+    state.fusedDistanceCm = fusedResult.perpendicularDistanceCm;
+
+    // Anchor surfacePlane directly to the fused plane
+    state.surfacePlane = {
+      point: { x: camPos.x, y: fusedResult.elevationY, z: camPos.z },
+      normal: { x: 0, y: 1, z: 0 },
+      elevationY: fusedResult.elevationY,
+      timestamp: time,
+      sampleCount: (state.surfacePlane?.sampleCount || 0) + 1,
+      source: fusedResult.source,
+      residualCm: fusedResult.ransacResidualCm
+    };
+  }
+
+  // SLAM distance calculation for telemetry
+  const slamDistCm = (state.surfacePlane && Number.isFinite(state.surfacePlane.elevationY)) ?
+    Math.abs(smoothCamY - state.surfacePlane.elevationY) * 100 : null;
+  state.slamDistanceCm = slamDistCm;
+
+  // Final fused camera-to-floor distance
+  const finalDistanceCm = fusedResult.valid ? fusedResult.perpendicularDistanceCm : (slamDistCm || state.currentYDistanceCm);
+  let yDistCm = finalDistanceCm;
+
+  if (Number.isFinite(yDistCm)) {
     state.currentYDistanceCm = yDistCm;
-  } else if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
-    const pt = state.surfacePlane.point;
-    const n = state.surfacePlane.normal;
-    const nLen = Math.hypot(n.x, n.y, n.z) || 1;
-    const unx = n.x / nLen; const uny = n.y / nLen; const unz = n.z / nLen;
-    const hPerp = Math.abs((smoothCamY - pt.y) * uny + (camPos.x - pt.x) * unx + (camPos.z - pt.z) * unz);
-    if (Number.isFinite(hPerp)) {
-      yDistCm = hPerp * 100;
-      state.currentYDistanceCm = yDistCm;
-    }
+  }
+
+  // ------------------------------------------------------------------
+  // Phase 8: Guided Capture Quality Evaluator
+  // ------------------------------------------------------------------
+  const stabilityHoldMs = state.stabilityTimerStart ? (time - state.stabilityTimerStart) : 0;
+  const quality = evaluateCaptureQuality({
+    validDepthFrames: state.depthAccumulator.validFrameCount,
+    minDepthFrames: 15,
+    ransacInlierRatio: state.ransacFloorPlane ? state.ransacFloorPlane.inlierRatio : 0,
+    minInlierRatio: 0.50,
+    ransacResidualCm: state.ransacFloorPlane ? state.ransacFloorPlane.rmseResidualCm : Infinity,
+    maxResidualCm: 2.0,
+    camMoveDist: moveDist,
+    maxMoveSpeed: 0.008,
+    stabilityHoldMs: stabilityHoldMs,
+    minStabilityMs: 600
+  });
+  state.captureQuality = quality;
+
+  // Gate stability strictly on quality evaluator
+  state.isTrackingStable = quality.isReady || (state.isSimulator && moveDist < 0.01);
+
+  // Update Developer Dashboard telemetry if open
+  if (state.isDevDashboardOpen) {
+    updateDevDashboardUI();
   }
 
   // Display locked value when stable, live value when moving
-  const displayYDist = (state.lockedYDistCm && state.isTrackingStable) ? state.lockedYDistCm : yDistCm;
+  const displayYDist = yDistCm;
 
-  // Update Top Distance Bar for HRNet mode (live Y-distance from mobile to floor/pant)
+  // Update Top Distance Bar for HRNet mode (calibrated Y-distance to floor)
   if (state.activeMode === MODES.HRNET) {
-    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
+    if (elements.hudDistLabel) {
+      elements.hudDistLabel.textContent = (fusedResult.source === 'fused-depth-slam' || fusedResult.source === 'depth-ransac')
+        ? '📏 Calibrated Floor Y:'
+        : '📏 Y-Distance:';
+    }
     if (elements.hudDistanceVal) {
       elements.hudDistanceVal.textContent = displayYDist !== null ? `${displayYDist.toFixed(1)} cm` : '-- cm';
     }
@@ -1680,10 +1967,11 @@ function updateTrackingUI(hasSurface, isStable) {
 
   const isOpenCV = state.activeMode === MODES.OPENCV_LIVE;
   const isManual = state.activeMode === MODES.MANUAL_2POINT;
+  const quality = state.captureQuality;
 
-  if (hasSurface && isStable) {
+  if (hasSurface && isStable && (!quality || quality.isReady)) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Phone steady)';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : '✓ Floor Calibrated (Phone steady)';
     if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Ready: Hold steady, tap Scan';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
@@ -1691,21 +1979,43 @@ function updateTrackingUI(hasSurface, isStable) {
         updateManualHUDControls();
       } else {
         elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Ready! Tap Scan & Measure';
-        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Hold steady, tap Scan & Measure';
-        elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
+        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Precision Calibrated: Tap Scan & Measure';
+        elements.stepIcon.textContent = isOpenCV ? '⚡' : '🎯';
       }
     }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot amber';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - hold phone steady' : 'Surface locked - hold phone steady';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : 'Stabilize phone over trousers (waiting for green dot)...';
+    let statusMsg = 'Surface locked - hold phone over trousers';
+    let stepMsg = 'Hold steady for calibration...';
+    let stepIcon = '⏳';
+
+    if (quality && !isOpenCV && !isManual) {
+      if (quality.stage === 'COLLECTING_DEPTH') {
+        const frames = state.depthAccumulator ? state.depthAccumulator.validFrameCount : 0;
+        statusMsg = `Depth: ${frames}/15 frames (move gently)`;
+        stepMsg = `Collecting depth: ${frames}/15 frames (move phone gently)`;
+        stepIcon = '📡';
+      } else if (quality.stage === 'ESTIMATING_PLANE') {
+        const inlierPct = state.ransacFloorPlane ? Math.round(state.ransacFloorPlane.inlierRatio * 100) : 0;
+        const resCm = state.ransacFloorPlane ? state.ransacFloorPlane.rmseResidualCm.toFixed(1) : '--';
+        statusMsg = `Floor Plane: ${inlierPct}% inliers, ${resCm}cm residual`;
+        stepMsg = 'Fitting 3D floor plane (hold steady)...';
+        stepIcon = '📐';
+      } else if (quality.stage === 'STABILIZING') {
+        statusMsg = 'Hold phone steady for scan...';
+        stepMsg = 'Hold phone steady over trousers...';
+        stepIcon = '🎯';
+      }
+    }
+
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - hold phone steady' : statusMsg;
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : (quality ? quality.message : 'Stabilize phone over trousers...');
     if (elements.btnScanTrigger) {
       if (!isOpenCV && !isManual) {
-        // HRNet Mode: until green dot is ready, scan button MUST NOT work
         elements.btnScanTrigger.disabled = true;
-        elements.scanActionLabel.textContent = 'Hold steady for green dot...';
-        elements.stepText.textContent = 'Wait for green "Surface ready (Phone steady)" dot';
-        elements.stepIcon.textContent = '⏳';
+        elements.scanActionLabel.textContent = quality ? quality.message : 'Hold steady for calibration...';
+        elements.stepText.textContent = stepMsg;
+        elements.stepIcon.textContent = stepIcon;
       } else {
         elements.btnScanTrigger.disabled = false;
         if (isManual) {
@@ -1724,7 +2034,7 @@ function updateTrackingUI(hasSurface, isStable) {
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = true;
       elements.scanActionLabel.textContent = 'Aim at surface...';
-      elements.stepText.textContent = 'Scan surface until tracking locks';
+      elements.stepText.textContent = 'Aim camera at trousers and surrounding floor';
       elements.stepIcon.textContent = '🔍';
     }
   }
@@ -2086,6 +2396,16 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
       jpegBlob: frameData.blob,
       dataUrl: frameData.dataUrl
     };
+
+    // Extract exact pinhole camera intrinsics from projection matrix
+    const intrinsics = extractCameraIntrinsics(snapshot.projMatrix, frameData.width, frameData.height);
+    snapshot.intrinsics = intrinsics;
+    snapshot.fusedDistanceCm = state.fusedDistanceCm;
+    snapshot.slamDistanceCm = state.slamDistanceCm;
+    snapshot.depthDistanceCm = state.depthDistanceCm;
+    snapshot.ransacResidualCm = state.ransacFloorPlane?.rmseResidualCm || null;
+    snapshot.ransacInliers = state.ransacFloorPlane ? `${state.ransacFloorPlane.inlierCount}/${state.ransacFloorPlane.totalPoints}` : null;
+    snapshot.depthFrames = state.depthAccumulator?.validFrameCount || 0;
 
     // If in simulator mode, ensure projection matrix aspect ratio matches simulator frame
     if (state.isSimulator && frameData.width && frameData.height) {
@@ -3690,6 +4010,42 @@ function setupEventListeners() {
       }
     });
   }
+
+  // Developer Calibration & Testing Dashboard Event Listeners
+  if (elements.btnOpenDevDashboardLanding) {
+    elements.btnOpenDevDashboardLanding.addEventListener('click', openDevDashboard);
+  }
+  if (elements.btnHudDevDashboard) {
+    elements.btnHudDevDashboard.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDevDashboard();
+    });
+  }
+  if (elements.btnCloseDevDashboard) {
+    elements.btnCloseDevDashboard.addEventListener('click', closeDevDashboard);
+  }
+  if (elements.btnRecordSample) {
+    elements.btnRecordSample.addEventListener('click', recordDevCalibrationSample);
+  }
+  if (elements.btnExportCSV) {
+    elements.btnExportCSV.addEventListener('click', exportCalibrationCSV);
+  }
+  if (elements.btnExportJSON) {
+    elements.btnExportJSON.addEventListener('click', exportCalibrationJSON);
+  }
+  if (elements.btnClearDataset) {
+    elements.btnClearDataset.addEventListener('click', clearCalibrationDataset);
+  }
+  if (elements.inputCustomTarget) {
+    elements.inputCustomTarget.addEventListener('input', (e) => {
+      setDevDashboardTarget(e.target.value);
+    });
+  }
+  document.querySelectorAll('.btn-preset-dist').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setDevDashboardTarget(btn.dataset.dist);
+    });
+  });
 
   // Window resize
   window.addEventListener('resize', () => {

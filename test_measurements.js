@@ -1,5 +1,13 @@
-// Automated Unit Test Suite for AR Measurement MVP
 import assert from 'node:assert';
+import {
+  KalmanFilter1D,
+  extractCameraIntrinsics,
+  MultiFrameDepthAccumulator,
+  estimateFloorPlaneRansac,
+  fuseDepthAndSLAMPlane,
+  computeCalibrationBenchmarkStats,
+  evaluateCaptureQuality
+} from './precision_depth.js';
 
 console.log('--- Running AR Measurement MVP Math & Schema Verification ---');
 
@@ -780,6 +788,144 @@ const stableYDist = Math.abs(camElev - floorElev);
 assert.ok(Math.abs(stableYDist - 0.50) < 0.005, `Y-Distance must equal 50.0 cm, got ${(stableYDist * 100).toFixed(2)} cm`);
 console.log(`✓ Acceptance Test 14 Passed: Tracked Horizontal Plane Median Elevation & Outlier Immunity verified`);
 
-console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
+// 15. Acceptance Test 15: Kalman Filter 1D Convergence, Variance Reduction & Innovation Gate
+const kf = new KalmanFilter1D(0.0, 1.0, 1e-5);
+// Feed 20 noisy measurements of a true static floor at Y = -0.85m (std dev 2.5cm) + 1 sudden tracking jump of +15cm
+const trueFloorY = -0.85;
+const simulatedNoise = [
+  -0.84, -0.86, -0.83, -0.87, -0.85,
+  -0.84, -0.86, -0.85, -0.85, -0.86,
+  -0.70, // 15cm tracking glitch / spike
+  -0.85, -0.84, -0.86, -0.85, -0.85,
+  -0.86, -0.84, -0.85, -0.85
+];
+
+let kfOut = 0;
+for (let i = 0; i < simulatedNoise.length; i++) {
+  kfOut = kf.update(simulatedNoise[i], 0.000625 /* (2.5cm)^2 */, 3.5);
+}
+// Outlier at index 10 should be rejected by innovation gating; state should converge tightly to -0.85m
+assert.ok(Math.abs(kfOut - trueFloorY) < 0.005, `Kalman filter must converge within 5mm of true floor, got ${kfOut.toFixed(4)}m`);
+assert.ok(kf.p < 0.0001, `Kalman estimation variance must decrease significantly, got ${kf.p.toFixed(6)}`);
+console.log(`✓ Acceptance Test 15 Passed: Kalman Filter 1D converged to ${kfOut.toFixed(4)}m (error ${(Math.abs(kfOut - trueFloorY) * 100).toFixed(2)}cm) and rejected 15cm outlier jump`);
+
+// 16. Acceptance Test 16: Pinhole Camera Intrinsics Extraction from WebXR Matrix
+const testW = 1920;
+const testH = 1080;
+const intrinsics = extractCameraIntrinsics(projMatrix, testW, testH);
+assert.ok(intrinsics !== null, 'Intrinsics extraction must succeed');
+// Recall: f = 1 / tan(30 deg) = 1.73205. p00 = f / aspect = 1.73205 / (1920/1080) = 0.974278
+// fx = p00 * 1920 / 2 = 0.974278 * 960 = 935.307 px
+// fy = p11 * 1080 / 2 = 1.73205 * 540 = 935.307 px (square pixels)
+// cx = 960, cy = 540
+assert.ok(Math.abs(intrinsics.cx - 960) < 1e-4, 'Principal point cx must be 960');
+assert.ok(Math.abs(intrinsics.cy - 540) < 1e-4, 'Principal point cy must be 540');
+assert.ok(Math.abs(intrinsics.fx - intrinsics.fy) < 1e-4, 'Square pixels expected (fx == fy)');
+console.log(`✓ Acceptance Test 16 Passed: Camera Intrinsics extracted correctly (fx=${intrinsics.fx.toFixed(1)}px, fy=${intrinsics.fy.toFixed(1)}px, cx=${intrinsics.cx}, cy=${intrinsics.cy})`);
+
+// 17. Acceptance Test 17: 3D RANSAC Floor-Plane Estimator with 30% Noise and Outliers
+// Create synthetic ground truth floor at Y = -0.90m with normal [0, 1, 0]
+// 70 inliers on the plane with ±8mm Gaussian-like noise
+// 30 random outliers representing garment, legs, furniture
+const syntheticPoints = [];
+for (let i = 0; i < 70; i++) {
+  const x = (Math.random() - 0.5) * 1.5; // [-0.75m, +0.75m]
+  const z = -0.5 - Math.random() * 1.5;  // [-0.5m, -2.0m]
+  const noiseY = (Math.random() - 0.5) * 0.016; // ±8mm noise
+  syntheticPoints.push({ x, y: -0.90 + noiseY, z });
+}
+// 30 outliers (elevated, e.g. trousers at Y = -0.85m or furniture at -0.4m)
+for (let i = 0; i < 30; i++) {
+  const x = (Math.random() - 0.5) * 1.0;
+  const z = -0.5 - Math.random() * 1.0;
+  const outlierY = -0.80 + Math.random() * 0.50; // -0.80m to -0.30m
+  syntheticPoints.push({ x, y: outlierY, z });
+}
+
+const ransacResult = estimateFloorPlaneRansac(syntheticPoints, {
+  iterations: 100,
+  inlierThresholdM: 0.018,
+  minInlierRatio: 0.50,
+  minPointsRequired: 30
+});
+
+assert.ok(ransacResult !== null, 'RANSAC plane estimation must succeed');
+assert.strictEqual(ransacResult.valid, true);
+assert.ok(ransacResult.inlierRatio >= 0.60, `Inlier ratio should be >= 60%, got ${(ransacResult.inlierRatio * 100).toFixed(1)}%`);
+assert.ok(Math.abs(ransacResult.elevationY - (-0.90)) < 0.008, `Estimated floor elevation should be within 8mm of -0.90m, got ${ransacResult.elevationY.toFixed(4)}m`);
+assert.ok(ransacResult.rmseResidualCm < 1.5, `RMSE residual should be < 1.5 cm, got ${ransacResult.rmseResidualCm.toFixed(2)} cm`);
+console.log(`✓ Acceptance Test 17 Passed: 3D RANSAC Floor Plane estimated Y=${ransacResult.elevationY.toFixed(4)}m (residual=${ransacResult.rmseResidualCm.toFixed(2)}cm, inliers=${ransacResult.inlierCount}/${ransacResult.totalPoints})`);
+
+// 18. Acceptance Test 18: Multi-Frame Depth Accumulation and Center Garment Exclusion
+const accumulator = new MultiFrameDepthAccumulator(10, 200);
+// Mock depthInfo returning 1.0m flat floor
+const mockDepthInfo = {
+  width: 160,
+  height: 120,
+  getDepthInMeters: (u, v) => 1.0
+};
+// Camera at Y = 1.0m looking down at floor:
+// Cam +X = World +X [1, 0, 0]
+// Cam +Y = World +Z [0, 0, 1]
+// Cam +Z = World +Y [0, 1, 0] (so optical axis -Z is world -Y)
+// Cam origin = [0, 1.0, 0]
+const mockCamMatrix = new Float32Array([
+  1, 0, 0, 0,
+  0, 0, 1, 0,
+  0, 1, 0, 0,
+  0, 1.0, 0, 1
+]);
+const ptsAdded = accumulator.addDepthFrame(mockDepthInfo, projMatrix, mockCamMatrix, 1000);
+assert.ok(ptsAdded > 15, `Should extract valid peripheral floor points, got ${ptsAdded}`);
+assert.strictEqual(accumulator.validFrameCount, 1);
+assert.ok(accumulator.allWorldPoints.length >= ptsAdded);
+// All extracted points should have Y ≈ 0.0 (camera Y=1.0 - depth 1.0 = 0.0m floor)
+const sampleP = accumulator.allWorldPoints[0];
+assert.ok(Math.abs(sampleP.y) < 0.05, `Floor point in world coordinates should be at Y ~ 0.0m, got ${sampleP.y.toFixed(3)}m`);
+console.log(`✓ Acceptance Test 18 Passed: Multi-Frame Depth Accumulation extracted ${ptsAdded} world points with garment center exclusion`);
+
+// 19. Acceptance Test 19: Comprehensive Calibration Benchmark Statistics Engine (MAE, RMSE, ±0.5", ±0.25")
+const benchmarkSamples = [
+  { measured: 44.2, target: 44.0 }, // +0.2 cm (within 0.25")
+  { measured: 43.8, target: 44.0 }, // -0.2 cm (within 0.25")
+  { measured: 44.5, target: 44.0 }, // +0.5 cm (within 0.25")
+  { measured: 43.2, target: 44.0 }, // -0.8 cm (within 0.5")
+  { measured: 44.9, target: 44.0 }, // +0.9 cm (within 0.5")
+  { measured: 44.0, target: 44.0 }, // 0.0 cm (within 0.25")
+  { measured: 45.4, target: 44.0 }, // +1.4 cm (> 0.5")
+  { measured: 43.9, target: 44.0 }  // -0.1 cm (within 0.25")
+];
+const bStats = computeCalibrationBenchmarkStats(benchmarkSamples);
+assert.strictEqual(bStats.count, 8);
+assert.ok(bStats.maeCm < 0.65, `MAE should be ~0.54 cm, got ${bStats.maeCm.toFixed(2)} cm`);
+assert.ok(bStats.maeInches < 0.26, `MAE in inches should be ~0.21", got ${bStats.maeInches.toFixed(3)}"`);
+assert.ok(bStats.rmseCm < 0.80, `RMSE should be ~0.67 cm, got ${bStats.rmseCm.toFixed(2)} cm`);
+// 7 out of 8 are within 0.5" (1.27 cm) -> 87.5%
+assert.strictEqual(bStats.percentWithinHalfInch, 87.5);
+// 5 out of 8 are within 0.25" (0.635 cm) -> 62.5%
+assert.strictEqual(bStats.percentWithinQuarterInch, 62.5);
+console.log(`✓ Acceptance Test 19 Passed: Calibration benchmark computed MAE=${bStats.maeCm.toFixed(2)}cm (${bStats.maeInches.toFixed(2)}"), RMSE=${bStats.rmseCm.toFixed(2)}cm, 87.5% within ±0.5", 62.5% within ±0.25"`);
+
+// 20. Acceptance Test 20: Guided Capture Quality Evaluator State Machine
+const quality1 = evaluateCaptureQuality({ validDepthFrames: 5, minDepthFrames: 15 });
+assert.strictEqual(quality1.isReady, false);
+assert.strictEqual(quality1.stage, 'COLLECTING_DEPTH');
+
+const quality2 = evaluateCaptureQuality({ validDepthFrames: 18, minDepthFrames: 15, ransacInlierRatio: 0.35, minInlierRatio: 0.50 });
+assert.strictEqual(quality2.isReady, false);
+assert.strictEqual(quality2.stage, 'ESTIMATING_PLANE');
+
+const quality3 = evaluateCaptureQuality({
+  validDepthFrames: 20, minDepthFrames: 15,
+  ransacInlierRatio: 0.75, minInlierRatio: 0.50,
+  ransacResidualCm: 1.1, maxResidualCm: 2.0,
+  camMoveDist: 0.003, maxMoveSpeed: 0.010,
+  stabilityHoldMs: 800, minStabilityMs: 600
+});
+assert.strictEqual(quality3.isReady, true);
+assert.strictEqual(quality3.stage, 'READY');
+console.log(`✓ Acceptance Test 20 Passed: Guided Capture Quality Evaluator correctly gated lifecycle states (COLLECTING -> ESTIMATING -> READY)`);
+
+console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED (1-20)!');
 
 

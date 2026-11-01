@@ -57,6 +57,11 @@
             <span class="toggle-label">🎯 44 cm Rigid Calibration Benchmark Test</span>
           </div>
 
+          <button type="button" id="btn-open-dev-dashboard-landing" class="btn btn-secondary" style="width: 100%; margin-bottom: 10px; border-color: rgba(0, 229, 255, 0.4); color: var(--accent-cyan);">
+            <span class="btn-icon">🔬</span>
+            <span class="btn-text">Calibration &amp; Testing Dashboard</span>
+          </button>
+
           <button type="button" id="btn-start-opencv" class="btn btn-opencv btn-large" disabled>
             <span class="btn-icon">⚡</span>
             <span class="btn-text">Start OpenCV Automatic 2-Point AR</span>
@@ -150,6 +155,9 @@
           </button>
           <button type="button" id="btn-toggle-ar-calib" class="hud-calib-pill hidden" title="Toggle 44cm Calibration">
             <span>🎯 44cm Test</span>
+          </button>
+          <button type="button" id="btn-hud-dev-dashboard" class="hud-mode-pill" title="Calibration & Testing Dashboard">
+            <span>🔬 Dashboard</span>
           </button>
         </div>
 
@@ -368,10 +376,165 @@
       </main>
     </section>
 
+    <!-- 4. DEVELOPER CALIBRATION & TESTING DASHBOARD MODAL -->
+    <div id="modal-dev-dashboard" class="dev-modal-overlay hidden">
+      <div class="dev-modal-dialog">
+        <div class="dev-modal-header">
+          <div class="dev-modal-title">
+            <span class="icon">🔬</span>
+            <h3>Calibration &amp; Precision Testing Dashboard</h3>
+          </div>
+          <button type="button" id="btn-close-dev-dashboard" class="btn-close-modal" title="Close Dashboard">&times;</button>
+        </div>
+
+        <div class="dev-modal-body">
+          <!-- Physical Reference Distance Control -->
+          <div class="dev-card target-selection-card">
+            <label class="dev-section-label">Known Physical Distance Target:</label>
+            <div class="target-presets-row">
+              <button type="button" class="btn-preset-dist" data-dist="80">80 cm</button>
+              <button type="button" class="btn-preset-dist" data-dist="90">90 cm</button>
+              <button type="button" class="btn-preset-dist active" data-dist="100">100 cm</button>
+              <button type="button" class="btn-preset-dist" data-dist="110">110 cm</button>
+              <button type="button" class="btn-preset-dist" data-dist="120">120 cm</button>
+              <button type="button" class="btn-preset-dist" data-dist="130">130 cm</button>
+            </div>
+            <div class="custom-target-row">
+              <span>Target:</span>
+              <input type="number" id="input-custom-target" min="10" max="300" step="0.5" value="100.0" />
+              <span>cm</span>
+            </div>
+          </div>
+
+          <!-- Live Real-Time Telemetry Grid -->
+          <div class="dev-card telemetry-card">
+            <div class="dev-section-label">Live Telemetry &amp; Algorithm Observability</div>
+            <div class="telemetry-grid">
+              <div class="tele-item">
+                <span class="lbl">Target</span>
+                <span id="tele-target" class="val val-cyan">100.0 cm</span>
+              </div>
+              <div class="tele-item">
+                <span class="lbl">Fused Kalman</span>
+                <span id="tele-fused" class="val val-green">-- cm</span>
+              </div>
+              <div class="tele-item">
+                <span class="lbl">Error (&Delta;)</span>
+                <span id="tele-delta" class="val">-- cm</span>
+              </div>
+              <div class="tele-item">
+                <span class="lbl">AR SLAM Dist</span>
+                <span id="tele-slam" class="val">-- cm</span>
+              </div>
+              <div class="tele-item">
+                <span class="lbl">RANSAC Residual</span>
+                <span id="tele-residual" class="val">-- cm</span>
+              </div>
+              <div class="tele-item">
+                <span class="lbl">RANSAC Inliers</span>
+                <span id="tele-inliers" class="val">-- / --</span>
+              </div>
+              <div class="tele-item">
+                <span class="lbl">Depth Frames</span>
+                <span id="tele-depth-frames" class="val">0 / 25</span>
+              </div>
+              <div class="tele-item">
+                <span class="lbl">Tracking Quality</span>
+                <span id="tele-quality" class="val">Scanning...</span>
+              </div>
+              <div class="tele-item">
+                <span class="lbl">Live Waist</span>
+                <span id="tele-waist" class="val">-- cm</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action Buttons Bar -->
+          <div class="dev-actions-row">
+            <button type="button" id="btn-record-sample" class="btn btn-primary btn-small">
+              <span>📸 Record Calibration Sample</span>
+            </button>
+            <button type="button" id="btn-export-csv" class="btn btn-secondary btn-small">
+              <span>📥 Export CSV</span>
+            </button>
+            <button type="button" id="btn-export-json" class="btn btn-secondary btn-small">
+              <span>📥 Export JSON</span>
+            </button>
+            <button type="button" id="btn-clear-dataset" class="btn btn-link btn-small" style="color:var(--accent-red);">
+              <span>Clear Data</span>
+            </button>
+          </div>
+
+          <!-- Cumulative Benchmark Statistics -->
+          <div class="dev-card stats-summary-card">
+            <div class="dev-section-label">Dataset Benchmark Accuracy Statistics</div>
+            <div class="stats-summary-grid">
+              <div class="sum-item">
+                <span class="lbl">Recorded Samples</span>
+                <span id="stat-count" class="val">0</span>
+              </div>
+              <div class="sum-item">
+                <span class="lbl">Mean Abs Error (MAE)</span>
+                <span id="stat-mae" class="val">-- cm (-- in)</span>
+              </div>
+              <div class="sum-item">
+                <span class="lbl">Root Mean Sq Err (RMSE)</span>
+                <span id="stat-rmse" class="val">-- cm</span>
+              </div>
+              <div class="sum-item">
+                <span class="lbl">Within &plusmn;0.5 in (&plusmn;1.27cm)</span>
+                <span id="stat-half-inch" class="val val-green">--%</span>
+              </div>
+              <div class="sum-item">
+                <span class="lbl">Within &plusmn;0.25 in (&plusmn;0.64cm)</span>
+                <span id="stat-quarter-inch" class="val val-cyan">--%</span>
+              </div>
+              <div class="sum-item">
+                <span class="lbl">Std Dev (&sigma;)</span>
+                <span id="stat-stddev" class="val">-- cm</span>
+              </div>
+              <div class="sum-item">
+                <span class="lbl">Repeatability (Range)</span>
+                <span id="stat-range" class="val">-- cm</span>
+              </div>
+              <div class="sum-item">
+                <span class="lbl">Max Abs Error</span>
+                <span id="stat-max-err" class="val">-- cm</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Logged Samples Table -->
+          <div class="dev-card table-card">
+            <div class="dev-section-label">Logged Trial Records</div>
+            <div class="dev-table-container">
+              <table class="dev-data-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Target</th>
+                    <th>Fused</th>
+                    <th>Error (&Delta;)</th>
+                    <th>Inliers</th>
+                    <th>Residual</th>
+                    <th>Waist</th>
+                    <th>Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody id="dev-records-tbody">
+                  <tr><td colspan="8" style="text-align:center; color:var(--text-muted); padding: 12px;">No calibration samples recorded yet. Select a distance target and tap Record Sample.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- Main Application Script with cache busting -->
-  <script type="module" src="app.js?v=19"></script>
+  <script type="module" src="app.js?v=20"></script>
 </body>
 </html>
 

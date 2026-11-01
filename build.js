@@ -6,7 +6,7 @@ if (!fs.existsSync(distDir)) {
   fs.mkdirSync(distDir, { recursive: true });
 }
 
-const filesToCopy = ['index.html', 'style.css', 'app.js', 'README.md'];
+const filesToCopy = ['index.html', 'style.css', 'app.js', 'precision_depth.js', 'README.md'];
 for (const file of filesToCopy) {
   if (fs.existsSync(file)) {
     fs.copyFileSync(file, path.join(distDir, file));
