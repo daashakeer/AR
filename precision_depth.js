@@ -199,27 +199,17 @@ export class MultiFrameDepthAccumulator {
           continue;
         }
 
-        // Map normalized view coordinate to depth buffer coordinate
-        let uDepth = uNorm;
-        let vDepth = vNorm;
-        if (normTrans && normTrans.length >= 16) {
-          uDepth = normTrans[0] * uNorm + normTrans[4] * vNorm + normTrans[12];
-          vDepth = normTrans[1] * uNorm + normTrans[5] * vNorm + normTrans[13];
-        }
-
-        // Clamp to [0.01, 0.99]
-        uDepth = Math.max(0.01, Math.min(0.99, uDepth));
-        vDepth = Math.max(0.01, Math.min(0.99, vDepth));
-
-        const depthM = depthInfo.getDepthInMeters(uDepth, vDepth);
+        // Per W3C WebXR Depth Sensing API § 6.2, getDepthInMeters takes normalized view coordinates
+        // directly and converts them internally. Do not pre-multiply by normTrans.
+        const depthM = depthInfo.getDepthInMeters(uNorm, vNorm);
         if (!Number.isFinite(depthM) || depthM < minDepth || depthM > maxDepth) {
           continue;
         }
 
         // Spatial consistency check: sample a tiny 3x3 neighborhood around this pixel
         // Reject edges or noisy discontinuities
-        const px = Math.round(uDepth * dW);
-        const py = Math.round(vDepth * dH);
+        const px = Math.round(uNorm * dW);
+        const py = Math.round(vNorm * dH);
         let patchSum = 0;
         let patchCount = 0;
         const patchVals = [];
@@ -473,22 +463,25 @@ export function fuseDepthAndSLAMPlane(ransacPlane, slamHitTestPlane, kalmanFilte
   let ransacResidualCm = 0;
   let inlierCount = 0;
 
-  // 1. Incorporate RANSAC depth observation
+  // 1. Primary ground truth: SLAM plane hit-test from ARCore visual-inertial odometry
+  if (slamHitTestPlane && Number.isFinite(slamHitTestPlane.elevationY)) {
+    const rSlam = 0.0001; // ~1cm std dev
+    fusedElevationY = kalmanFilter.update(slamHitTestPlane.elevationY, rSlam);
+    source = 'slam-hittest';
+  }
+
+  // 2. Secondary refinement: Incorporate RANSAC depth observation ONLY if consistent with SLAM (< 12cm)
   if (ransacPlane && ransacPlane.valid) {
     ransacResidualCm = ransacPlane.rmseResidualCm;
     inlierCount = ransacPlane.inlierCount;
-    // Measurement noise R is proportional to residual squared and inversely to inlier count
-    const rDepth = Math.max(0.0001, (ransacPlane.rmseResidualM ** 2) * (ransacPlane.totalPoints / Math.max(1, inlierCount)));
-    fusedElevationY = kalmanFilter.update(ransacPlane.elevationY, rDepth);
-    source = 'depth-ransac';
-  }
 
-  // 2. Incorporate SLAM plane hit-test observation
-  if (slamHitTestPlane && Number.isFinite(slamHitTestPlane.elevationY)) {
-    // SLAM plane is typically stable but may have slight initial drift (~0.0004 = 2cm std dev)
-    const rSlam = 0.0004;
-    fusedElevationY = kalmanFilter.update(slamHitTestPlane.elevationY, rSlam);
-    source = (source === 'depth-ransac') ? 'fused-depth-slam' : 'slam-hittest';
+    const isConsistentWithSlam = (fusedElevationY === null) || Math.abs(ransacPlane.elevationY - fusedElevationY) < 0.12;
+    if (isConsistentWithSlam && ransacPlane.inlierRatio >= 0.45 && ransacPlane.rmseResidualCm <= 2.5) {
+      // Depth measurement noise R: conservative on monocular depth
+      const rDepth = Math.max(0.0025, (ransacPlane.rmseResidualM ** 2) * (ransacPlane.totalPoints / Math.max(1, inlierCount)));
+      fusedElevationY = kalmanFilter.update(ransacPlane.elevationY, rDepth);
+      source = (source === 'slam-hittest') ? 'fused-depth-slam' : 'depth-ransac';
+    }
   }
 
   // If Kalman has not initialized, fallback to whatever is available

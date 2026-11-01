@@ -140,6 +140,7 @@ const state = {
 
   // Detected Surface Plane Equation: plane.normal · (P - plane.point) = 0
   surfacePlane: null,       // { point: {x,y,z}, normal: {x,y,z}, timestamp }
+  rawSlamHitPlane: null,    // Independent raw SLAM plane observation from hit-test
   currentReticlePose: null, // { x, y, z, matrix }
 
   // Precision Depth & 3D Floor Plane Architecture
@@ -1988,46 +1989,25 @@ function onXRFrame(time, frame) {
           }
 
           if (state.planeHeightSamples.length > 0) {
-            // --- Elevation anchoring ---
-            // Priority 1: Depth API world-Y at screen center → exact pants/table surface Y
-            // This is the Y coordinate of the surface the camera is actually looking at,
-            // NOT the statistical floor estimate (which biases toward the floor).
-            let surfaceElevationY = null;
-
-            if (frame.getDepthInformation) {
-              try {
-                const depthInfoEl = frame.getDepthInformation(view);
-                if (depthInfoEl && depthInfoEl.width > 0) {
-                  const dEl = depthInfoEl.getDepthInMeters(0.5, 0.5);
-                  if (Number.isFinite(dEl) && dEl > 0.1 && dEl < 3.0) {
-                    // Reconstruct the world-Y of the surface from depth + camera pose:
-                    // surfaceY = camY + lookDirY * depth
-                    // lookDirY = -camMatrix[9]  (camera looks in -Z; Y component of look dir)
-                    const cm = view.transform.matrix;
-                    const lookDirY = -cm[9]; // Y component of camera look direction in world
-                    surfaceElevationY = cm[13] + lookDirY * dEl;
-                  }
-                }
-              } catch (_) { /* fall through to percentile */ }
-            }
-
-            // Priority 2: 20th-percentile of hit-test samples (floor bias fallback)
-            if (surfaceElevationY === null) {
-              const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
-              const p20idx = Math.max(0, Math.floor(sorted.length * 0.20));
-              surfaceElevationY = sorted[p20idx];
-            }
-
-            const floorElevationY = surfaceElevationY;
+            // High-precision rolling median of ARCore tracked SLAM plane samples
+            const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
+            const medianIdx = Math.floor(sorted.length / 2);
+            const floorElevationY = sorted[medianIdx];
 
             const signY = rawNormal.y >= 0 ? 1 : -1;
-            state.surfacePlane = {
+
+            // Pure raw SLAM plane observation from visual-inertial odometry (never overwritten by Kalman feedback)
+            state.rawSlamHitPlane = {
               point: { x: pos.x, y: floorElevationY, z: pos.z },
               normal: { x: 0, y: signY, z: 0 },
               elevationY: floorElevationY,
               timestamp: time,
-              sampleCount: (state.surfacePlane?.sampleCount || 0) + 1
+              sampleCount: (state.rawSlamHitPlane?.sampleCount || 0) + 1
             };
+
+            if (!state.surfacePlane) {
+              state.surfacePlane = { ...state.rawSlamHitPlane };
+            }
           }
         } else {
           if (!state.surfacePlane) {
@@ -2159,7 +2139,7 @@ function onXRFrame(time, frame) {
   // ------------------------------------------------------------------
   // Phase 6: Kalman Sensor Fusion (RANSAC Depth + SLAM Plane Hit-Test)
   // ------------------------------------------------------------------
-  const slamCandidate = (surfaceHitFound && state.surfacePlane) ? state.surfacePlane : null;
+  const slamCandidate = (surfaceHitFound && state.rawSlamHitPlane) ? state.rawSlamHitPlane : null;
   const fusedResult = fuseDepthAndSLAMPlane(
     state.ransacFloorPlane,
     slamCandidate,
@@ -2183,13 +2163,20 @@ function onXRFrame(time, frame) {
     };
   }
 
+  // Direct ray vertical height from ARCore tracked plane hit-test (immune to world origin drift)
+  let directRayHeightCm = null;
+  if (state.hitRaySamples && state.hitRaySamples.length > 0) {
+    const sortedRays = [...state.hitRaySamples].sort((a, b) => a - b);
+    directRayHeightCm = sortedRays[Math.floor(sortedRays.length / 2)] * 100.0;
+  }
+
   // SLAM distance calculation for telemetry
-  const slamDistCm = (state.surfacePlane && Number.isFinite(state.surfacePlane.elevationY)) ?
-    Math.abs(smoothCamY - state.surfacePlane.elevationY) * 100 : null;
+  const slamDistCm = directRayHeightCm || ((state.rawSlamHitPlane && Number.isFinite(state.rawSlamHitPlane.elevationY)) ?
+    Math.abs(camPos.y - state.rawSlamHitPlane.elevationY) * 100 : null);
   state.slamDistanceCm = slamDistCm;
 
-  // Final fused camera-to-floor distance
-  const finalDistanceCm = fusedResult.valid ? fusedResult.perpendicularDistanceCm : (slamDistCm || state.currentYDistanceCm);
+  // Final camera-to-floor distance: prioritize direct SLAM ray height ground truth
+  const finalDistanceCm = directRayHeightCm || (fusedResult.valid ? fusedResult.perpendicularDistanceCm : (slamDistCm || state.currentYDistanceCm));
   let yDistCm = finalDistanceCm;
 
   if (Number.isFinite(yDistCm)) {
@@ -2233,9 +2220,7 @@ function onXRFrame(time, frame) {
   // Update Top Distance Bar for HRNet mode (calibrated Y-distance to floor)
   if (state.activeMode === MODES.HRNET) {
     if (elements.hudDistLabel) {
-      elements.hudDistLabel.textContent = (fusedResult.source === 'fused-depth-slam' || fusedResult.source === 'depth-ransac')
-        ? '📏 Calibrated Floor Y:'
-        : '📏 Y-Distance:';
+      elements.hudDistLabel.textContent = '📏 Floor Distance:';
     }
     if (elements.hudDistanceVal) {
       elements.hudDistanceVal.textContent = displayYDist !== null ? `${displayYDist.toFixed(1)} cm` : '-- cm';
