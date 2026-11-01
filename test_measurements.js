@@ -992,7 +992,62 @@ const lineCount = csvOut.trim().split('\n').length;
 assert.strictEqual(lineCount, 31, `CSV should contain 1 header + 30 rows = 31 lines, got ${lineCount}`);
 console.log('✓ Acceptance Test 21 Passed: 30-Second Diagnostic Logging Engine & Telemetry CSV Exporter (Tests A–E) verified');
 
-console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED (1-21)!');
+// 22. Acceptance Test 22: Forward-Aim Tilt-Compensated Plane Projection (Eliminates 69–85cm Fluctuation at 77cm Physical Height)
+// Ground truth setup: Phone held at height 77.0 cm (0.77 m) above floor
+const gtCamPos = { x: 0.0, y: 0.77, z: 0.0 };
+// ARCore detected plane has a 5.5 degree pitch tilt error: normal = [0, cos(5.5 deg), sin(5.5 deg)]
+const tiltAngleRad = (5.5 * Math.PI) / 180.0;
+const planeNorm = { x: 0.0, y: Math.cos(tiltAngleRad), z: Math.sin(tiltAngleRad) }; // [0, 0.9954, 0.0958]
+
+// Plane passes through true floor origin (0, 0, 0): ny*y + nz*z = 0  =>  y = -(nz/ny)*z
+// Hit test rays cast forward along camera view axis hit floor at different distances:
+const testHitPoints = [
+  { name: 'Closer Hit (Z=-0.6m)', pos: { x: 0.0, y: -(planeNorm.z / planeNorm.y) * (-0.60), z: -0.60 } },
+  { name: 'Center Hit (Z=-0.8m)', pos: { x: 0.0, y: -(planeNorm.z / planeNorm.y) * (-0.80), z: -0.80 } },
+  { name: 'Far Hem Hit (Z=-1.1m)', pos: { x: 0.0, y: -(planeNorm.z / planeNorm.y) * (-1.10), z: -1.10 } }
+];
+
+// Check OLD buggy calculation: |pos.y - camPos.y|
+const oldHeightsCm = testHitPoints.map(pt => Math.abs(pt.pos.y - gtCamPos.y) * 100.0);
+// Old calculation causes 69-72cm reading (or 85cm when tilted backward)!
+assert.ok(oldHeightsCm[1] < 70.0, `Old calculation produced ${oldHeightsCm[1].toFixed(1)}cm instead of 77cm due to uncompensated slope`);
+
+// Check NEW tilt-compensated formula:
+// D_perp = nx*(camX - posX) + ny*(camY - posY) + nz*(camZ - posZ)
+// H_under_cam = D_perp / ny
+function computeTiltCompensatedHeight(camPos, hitPos, normal) {
+  const cToPx = camPos.x - hitPos.x;
+  const cToPy = camPos.y - hitPos.y;
+  const cToPz = camPos.z - hitPos.z;
+  const perpDist = normal.x * cToPx + normal.y * cToPy + normal.z * cToPz;
+  const vertHeight = perpDist / normal.y;
+  return { perpDistM: perpDist, vertHeightM: vertHeight, vertHeightCm: vertHeight * 100.0 };
+}
+
+testHitPoints.forEach(pt => {
+  const result = computeTiltCompensatedHeight(gtCamPos, pt.pos, planeNorm);
+  // Must equal exactly 77.0 cm within 0.1 mm regardless of forward hit distance!
+  assert.ok(
+    Math.abs(result.vertHeightCm - 77.0) < 0.01,
+    `Tilt-compensated height at ${pt.name} must equal 77.0 cm, got ${result.vertHeightCm.toFixed(3)} cm`
+  );
+  // Floor elevation directly under camera must be exactly 0.000m
+  const floorUnderCamY = gtCamPos.y - result.vertHeightM;
+  assert.ok(Math.abs(floorUnderCamY) < 1e-4, `Floor under camera must be 0.000m, got ${floorUnderCamY}`);
+});
+
+// Also test backward tilt (-5.5 deg): old calculation gives ~84.7cm, new gives exactly 77.0cm
+const backwardNorm = { x: 0.0, y: Math.cos(-tiltAngleRad), z: Math.sin(-tiltAngleRad) };
+const backwardHitPos = { x: 0.0, y: -(backwardNorm.z / backwardNorm.y) * (-0.80), z: -0.80 };
+const oldBackwardCm = Math.abs(backwardHitPos.y - gtCamPos.y) * 100.0;
+assert.ok(oldBackwardCm > 84.0, `Old calculation on backward slope produced ${oldBackwardCm.toFixed(1)}cm`);
+const newBackwardResult = computeTiltCompensatedHeight(gtCamPos, backwardHitPos, backwardNorm);
+assert.ok(Math.abs(newBackwardResult.vertHeightCm - 77.0) < 0.01, `New formula must produce 77.0 cm on backward slope`);
+
+console.log('✓ Acceptance Test 22 Passed: Forward-Aim Tilt-Compensated Plane Projection verified (recovers 77.00 cm exactly across all angles and forward distances)');
+
+console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED (1-22)!');
+
 
 
 

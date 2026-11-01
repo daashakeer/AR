@@ -431,8 +431,10 @@ export function estimateFloorPlaneRansac(points, config = {}) {
   }
   const rmseResidualM = Math.sqrt(sumSqErr / M);
 
-  // Floor elevation Y at center
-  const elevationY = meanPt.y;
+  // Floor elevation Y at origin (X=0, Z=0) from plane equation
+  // Plane equation: finalNormal.x * x + finalNormal.y * y + finalNormal.z * z + finalD = 0
+  // At (x=0, z=0): y = -finalD / finalNormal.y
+  const elevationY = Math.abs(finalNormal.y) > 0.01 ? (-finalD / finalNormal.y) : meanPt.y;
 
   return {
     valid: true,

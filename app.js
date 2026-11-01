@@ -1812,10 +1812,12 @@ async function startARSession() {
 
     // Reference space setup: prioritize 'local-floor' so ARCore anchors coordinate system to ground truth floor
     let refSpace = null;
+    let selectedType = null;
     for (const type of ['local-floor', 'local', 'viewer']) {
       try {
         refSpace = await session.requestReferenceSpace(type);
         if (refSpace) {
+          selectedType = type;
           logMsg(`Reference space "${type}" initialized.`, 'info');
           break;
         }
@@ -1823,6 +1825,7 @@ async function startARSession() {
     }
     if (!refSpace) throw new Error('Could not acquire reference space');
     state.xrRefSpace = refSpace;
+    state.refSpaceType = selectedType;
 
     const viewerSpace = await session.requestReferenceSpace('viewer');
     state.xrViewerSpace = viewerSpace;
@@ -1970,19 +1973,36 @@ function onXRFrame(time, frame) {
         const isHorizontal = rawAbsNy >= 0.88;
         const isHighQualityHorizontal = rawAbsNy >= 0.95; // Strict quality threshold for elevation samples
 
-        if (isHorizontal) {
-          rawNormal = { x: 0, y: rawNormal.y >= 0 ? 1 : -1, z: 0 };
-        }
+        // Ensure normal points upward (+Y in WebXR reference space)
+        const signY = rawNormal.y >= 0 ? 1 : -1;
+        const unitNx = rawNormal.x * signY;
+        const unitNy = rawNormal.y * signY;
+        const unitNz = rawNormal.z * signY;
+
+        // Vector from hit point to camera position
+        const cToPx = camPos.x - pos.x;
+        const cToPy = camPos.y - pos.y;
+        const cToPz = camPos.z - pos.z;
+
+        // Perpendicular distance from camera to the detected plane:
+        // D_perp = unitNx*(camX - posX) + unitNy*(camY - posY) + unitNz*(camZ - posZ)
+        const perpDistM = unitNx * cToPx + unitNy * cToPy + unitNz * cToPz;
+
+        // Vertical height directly under the camera (removes the forward-aim slope error):
+        // H_under_cam = D_perp / unitNy
+        const vertHeightUnderCamM = unitNy > 0.01 ? (perpDistM / unitNy) : perpDistM;
+
+        // The elevation of the floor plane directly below the camera (at x = camPos.x, z = camPos.z):
+        const floorElevUnderCamY = camPos.y - vertHeightUnderCamM;
+
         const rawPoint = { x: pos.x, y: pos.y, z: pos.z };
 
         if (!state.planeHeightSamples) state.planeHeightSamples = [];
 
         if (isHorizontal) {
-          // Only accept high-quality (nearly-perfect horizontal) samples into elevation buffer
-          // This filters out oblique-angle hits that overestimate floor depth
+          // Push true floor elevation directly under camera (neutralizes the ~8cm slope offset of forward hit points)
           if (isHighQualityHorizontal) {
-            // Larger rolling window (60 samples ≈ 2 seconds at 30fps) for more stable median
-            state.planeHeightSamples.push(rawPoint.y);
+            state.planeHeightSamples.push(floorElevUnderCamY);
             if (state.planeHeightSamples.length > 60) {
               state.planeHeightSamples.shift();
             }
@@ -1994,12 +2014,10 @@ function onXRFrame(time, frame) {
             const medianIdx = Math.floor(sorted.length / 2);
             const floorElevationY = sorted[medianIdx];
 
-            const signY = rawNormal.y >= 0 ? 1 : -1;
-
             // Pure raw SLAM plane observation from visual-inertial odometry (never overwritten by Kalman feedback)
             state.rawSlamHitPlane = {
-              point: { x: pos.x, y: floorElevationY, z: pos.z },
-              normal: { x: 0, y: signY, z: 0 },
+              point: { x: camPos.x, y: floorElevationY, z: camPos.z },
+              normal: { x: unitNx, y: unitNy, z: unitNz },
               elevationY: floorElevationY,
               timestamp: time,
               sampleCount: (state.rawSlamHitPlane?.sampleCount || 0) + 1
@@ -2047,20 +2065,14 @@ function onXRFrame(time, frame) {
           }
         }
 
-        // Also compute the 3D hit-ray distance from camera to surface hit point.
-        // This is more reliable than (camY - floorY) because it avoids depending on
-        // ARCore's absolute Y axis, using the direct spatial distance instead.
+        // Compute the true perpendicular / vertical distance from camera to the detected floor plane.
+        // Using (unitNx*dx + unitNy*dy + unitNz*dz)/unitNy completely eliminates the forward-pitch
+        // lever arm tilt error (which previously caused 69-85cm fluctuation for a true 77cm height).
         if (isHorizontal && state.surfacePlane) {
-          const dx = pos.x - camPos.x;
-          const dy = pos.y - camPos.y;
-          const dz = pos.z - camPos.z;
-          const rayDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          // Project ray distance onto vertical axis: vertical_height = rayDist * |dy/rayDist|
-          // This removes the horizontal component that occurs when pointing at an angle
-          const verticalComponent = Math.abs(dy);
-          if (Number.isFinite(rayDist) && rayDist > 0.05 && verticalComponent > 0.01) {
+          const planeDistUnderCam = Math.abs(vertHeightUnderCamM);
+          if (Number.isFinite(planeDistUnderCam) && planeDistUnderCam > 0.10 && planeDistUnderCam < 3.0) {
             if (!state.hitRaySamples) state.hitRaySamples = [];
-            state.hitRaySamples.push(verticalComponent);
+            state.hitRaySamples.push(planeDistUnderCam);
             if (state.hitRaySamples.length > 60) state.hitRaySamples.shift();
           }
         }
@@ -2163,7 +2175,7 @@ function onXRFrame(time, frame) {
     };
   }
 
-  // Direct ray vertical height from ARCore tracked plane hit-test (immune to world origin drift)
+  // Direct ray vertical height from ARCore tracked plane hit-test (immune to world origin drift and tilt error)
   let directRayHeightCm = null;
   if (state.hitRaySamples && state.hitRaySamples.length > 0) {
     const sortedRays = [...state.hitRaySamples].sort((a, b) => a - b);
@@ -2175,8 +2187,19 @@ function onXRFrame(time, frame) {
     Math.abs(camPos.y - state.rawSlamHitPlane.elevationY) * 100 : null);
   state.slamDistanceCm = slamDistCm;
 
-  // Final camera-to-floor distance: prioritize direct SLAM ray height ground truth
-  const finalDistanceCm = directRayHeightCm || (fusedResult.valid ? fusedResult.perpendicularDistanceCm : (slamDistCm || state.currentYDistanceCm));
+  // In 'local-floor' reference space, ARCore sets origin at floor level (Y=0).
+  // Therefore smoothCamY is directly the camera's height above the floor plane.
+  const isLocalFloor = state.refSpaceType === 'local-floor';
+  const localFloorCamHeightCm = (isLocalFloor && smoothCamY > 0.25) ? (smoothCamY * 100.0) : null;
+
+  // Final camera-to-floor distance:
+  // When local-floor and direct tilt-compensated ray agree within 10cm, fuse them for rock-solid stability.
+  let finalDistanceCm = directRayHeightCm;
+  if (directRayHeightCm && localFloorCamHeightCm && Math.abs(directRayHeightCm - localFloorCamHeightCm) < 10.0) {
+    finalDistanceCm = 0.5 * directRayHeightCm + 0.5 * localFloorCamHeightCm;
+  } else if (!finalDistanceCm) {
+    finalDistanceCm = fusedResult.valid ? fusedResult.perpendicularDistanceCm : (localFloorCamHeightCm || slamDistCm || state.currentYDistanceCm);
+  }
   let yDistCm = finalDistanceCm;
 
   if (Number.isFinite(yDistCm)) {
