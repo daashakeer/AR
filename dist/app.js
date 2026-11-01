@@ -130,11 +130,17 @@ const state = {
   surfacePlane: null,       // { point: {x,y,z}, normal: {x,y,z}, timestamp }
   currentReticlePose: null, // { x, y, z, matrix }
 
-  // Stability Tracking
+  // Stability & 2-Phase Calibration Tracking
   lastCamPosition: null,
   camMovement: 0,
   stabilityTimerStart: 0,
   isTrackingStable: false,
+  mappingFrames: 0,
+  mappingComplete: false,
+  steadyFrames: 0,
+  steadyDistanceSamples: [],
+  lockedYDistCm: null,
+  currentYDistanceCm: null,
   scanRequested: false,
   scanRequestTime: 0,
   scanHistory: [],
@@ -1485,21 +1491,6 @@ function onXRFrame(time, frame) {
     }
   }
 
-  // 3. Track Phone Stability over ~800ms
-  const isPlaneFresh = state.surfacePlane && (time - state.surfacePlane.timestamp < 1000);
-  const sampleCount = state.surfacePlane?.sampleCount || 0;
-  if (moveDist < 0.008 && isPlaneFresh && sampleCount >= 10) {
-    if (!state.stabilityTimerStart) {
-      state.stabilityTimerStart = time;
-    }
-    if (time - state.stabilityTimerStart > 800) {
-      state.isTrackingStable = true;
-    }
-  } else {
-    state.stabilityTimerStart = 0;
-    state.isTrackingStable = false;
-  }
-
   // Live Y-Distance calculation:
   // Method C (Depth API)  → direct IR measurement at reticle center [PRIMARY, ±1–3cm]
   // Method A (SLAM floor) → smoothed camera Y minus floor elevation  [FALLBACK A]
@@ -1546,13 +1537,6 @@ function onXRFrame(time, frame) {
           const slantDepthM = patchSamples[Math.floor(patchSamples.length / 2)];
 
           // Project slant depth onto the vertical (gravity) axis.
-          // In WebXR column-major camMatrix (camera→world):
-          //   col 0 (indices 0,1,2)  = camera right in world space
-          //   col 1 (indices 4,5,6)  = camera up in world space  ← WRONG axis (≈0 when looking down)
-          //   col 2 (indices 8,9,10) = camera -Z (back) in world space
-          // Center ray direction = (-m8, -m9, -m10).
-          // When looking straight down: -m9 ≈ -1, so m9 ≈ 1  → |m9| = cos(tilt from vertical)
-          // vertical_dist = slant_depth × |camMatrix[9]|
           const camMatrix = view.transform.matrix;
           const lookDownFactor = Math.abs(camMatrix[9]); // cos(angle from vertical), ≈1 when pointing down
           if (lookDownFactor > 0.1) { // reject near-horizontal aim (>84° tilt) — depth unusable
@@ -1582,7 +1566,10 @@ function onXRFrame(time, frame) {
     if (methodC !== null) {
       // Depth API wins — direct IR measurement, most accurate
       yDistCm = methodC;
-      logMsg(`[Y-Dist] Depth-API: ${methodC.toFixed(1)} cm (SLAM-A: ${methodA.toFixed(1)} cm)`, 'info');
+      if (!state.lastYDistLog || time - state.lastYDistLog > 2000) {
+        state.lastYDistLog = time;
+        logMsg(`[Y-Dist] Depth-API: ${methodC.toFixed(1)} cm (SLAM-A: ${methodA.toFixed(1)} cm)`, 'info');
+      }
     } else if (methodB !== null && state.hitRaySamples.length >= 30) {
       // Weighted average: B gets more weight with more samples (more confident)
       const wB = Math.min(1.0, state.hitRaySamples.length / 60);
@@ -1591,22 +1578,9 @@ function onXRFrame(time, frame) {
     } else {
       yDistCm = methodA;
     }
-
-    if (Number.isFinite(yDistCm)) {
-      state.currentYDistanceCm = yDistCm;
-      // Lock Y-distance when phone is steady: prevents jitter from showing on HUD
-      if (state.isTrackingStable) {
-        if (!state.lockedYDistCm) {
-          state.lockedYDistCm = yDistCm;
-        }
-      } else {
-        state.lockedYDistCm = null;
-      }
-    }
   } else if (methodC !== null) {
     // Surface plane not yet established but depth is already available — use it directly
     yDistCm = methodC;
-    state.currentYDistanceCm = yDistCm;
   } else if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
     const pt = state.surfacePlane.point;
     const n = state.surfacePlane.normal;
@@ -1615,18 +1589,93 @@ function onXRFrame(time, frame) {
     const hPerp = Math.abs((smoothCamY - pt.y) * uny + (camPos.x - pt.x) * unx + (camPos.z - pt.z) * unz);
     if (Number.isFinite(hPerp)) {
       yDistCm = hPerp * 100;
-      state.currentYDistanceCm = yDistCm;
     }
   }
 
-  // Display locked value when stable, live value when moving
-  const displayYDist = (state.lockedYDistCm && state.isTrackingStable) ? state.lockedYDistCm : yDistCm;
+  if (Number.isFinite(yDistCm)) {
+    state.currentYDistanceCm = yDistCm;
+  }
 
-  // Update Top Distance Bar for HRNet mode (live Y-distance from mobile to floor/pant)
+  // ------------------------------------------------------------------
+  // 3. 2-Phase Pre-Scan Calibration Engine
+  // Phase 1: User moves phone slightly over trousers to map surface & establish SLAM/depth parallax (~30 frames)
+  // Phase 2: User holds phone steady to settle and lock Y-distance rolling median (~25 frames)
+  // ------------------------------------------------------------------
+  const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
+
+  if (state.isSimulator) {
+    // Simulator desktop mode bypasses physical motion requirements
+    state.mappingComplete = true;
+    state.isTrackingStable = true;
+    if (!state.lockedYDistCm && Number.isFinite(yDistCm)) {
+      state.lockedYDistCm = yDistCm;
+    }
+  } else if (hasValidSurface) {
+    // Phase 1: Motion mapping
+    if (!state.mappingComplete) {
+      // Accumulate frames while user moves phone slightly over garment
+      const isMotionHelpful = moveDist > 0.001 || (state.surfacePlane && state.surfacePlane.sampleCount > 2);
+      if (isMotionHelpful) {
+        state.mappingFrames = (state.mappingFrames || 0) + 1;
+        if (state.mappingFrames >= 30) {
+          state.mappingComplete = true;
+          logMsg('Pre-scan Phase 1 complete: Surface mapped with optical parallax. Now hold steady.', 'success');
+        }
+      }
+    }
+
+    // Phase 2: Steady hold & Y-distance median settling
+    if (state.mappingComplete) {
+      const isPhoneSteady = moveDist < 0.012;
+      if (isPhoneSteady) {
+        state.steadyFrames = (state.steadyFrames || 0) + 1;
+
+        if (Number.isFinite(yDistCm) && yDistCm > 15 && yDistCm < 250) {
+          if (!state.steadyDistanceSamples) state.steadyDistanceSamples = [];
+          state.steadyDistanceSamples.push(yDistCm);
+          if (state.steadyDistanceSamples.length > 30) state.steadyDistanceSamples.shift();
+        }
+
+        if (state.steadyFrames >= 25) {
+          state.isTrackingStable = true;
+          if (!state.lockedYDistCm && state.steadyDistanceSamples && state.steadyDistanceSamples.length >= 8) {
+            const sorted = [...state.steadyDistanceSamples].sort((a, b) => a - b);
+            state.lockedYDistCm = sorted[Math.floor(sorted.length / 2)];
+            logMsg(`Pre-scan Phase 2 complete: Y-Distance converged and locked at ${state.lockedYDistCm.toFixed(1)} cm`, 'success');
+          }
+        }
+      } else {
+        // Recalibration guard: if phone is moved significantly (> 4cm in a frame), smoothly unlock to re-settle
+        if (moveDist > 0.04) {
+          state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 6);
+          state.isTrackingStable = false;
+          state.lockedYDistCm = null;
+        }
+      }
+    }
+  } else {
+    // Tracking lost
+    state.isTrackingStable = false;
+    state.lockedYDistCm = null;
+  }
+
+  // Determine displayed distance
+  let displayDistText = '-- cm';
+  if (state.isTrackingStable && state.lockedYDistCm !== null) {
+    displayDistText = `${state.lockedYDistCm.toFixed(1)} cm`;
+  } else if (Number.isFinite(yDistCm)) {
+    if (!state.mappingComplete && !state.isSimulator) {
+      displayDistText = `${yDistCm.toFixed(1)} cm (Mapping)`;
+    } else {
+      displayDistText = `${yDistCm.toFixed(1)} cm (Settling)`;
+    }
+  }
+
+  // Update Top Distance Bar for HRNet mode
   if (state.activeMode === MODES.HRNET) {
     if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
     if (elements.hudDistanceVal) {
-      elements.hudDistanceVal.textContent = displayYDist !== null ? `${displayYDist.toFixed(1)} cm` : '-- cm';
+      elements.hudDistanceVal.textContent = displayDistText;
     }
   }
 
@@ -1683,37 +1732,65 @@ function updateTrackingUI(hasSurface, isStable) {
 
   if (hasSurface && isStable) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Phone steady)';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Ready: Hold steady, tap Scan';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Calibrated & steady)';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Ready: Hold steady, tap Scan & Measure';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
       if (isManual) {
         updateManualHUDControls();
       } else {
         elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Ready! Tap Scan & Measure';
-        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Hold steady, tap Scan & Measure';
+        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Ready! Hold steady, tap Scan & Measure';
         elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
       }
     }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot amber';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - hold phone steady' : 'Surface locked - hold phone steady';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : 'Stabilize phone over trousers (waiting for green dot)...';
-    if (elements.btnScanTrigger) {
-      if (!isOpenCV && !isManual) {
-        // HRNet Mode: until green dot is ready, scan button MUST NOT work
-        elements.btnScanTrigger.disabled = true;
-        elements.scanActionLabel.textContent = 'Hold steady for green dot...';
-        elements.stepText.textContent = 'Wait for green "Surface ready (Phone steady)" dot';
-        elements.stepIcon.textContent = '⏳';
+
+    if (!isOpenCV && !isManual && !state.isSimulator) {
+      // HRNet Mode: 2-Phase Calibration Active
+      if (!state.mappingComplete) {
+        // Phase 1: Moving phone to map surface
+        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 30) * 100));
+        elements.hudTrackingText.textContent = `Mapping surface (${mapPct}%)`;
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move phone slowly over trousers in small circles';
+        if (elements.btnScanTrigger) {
+          elements.btnScanTrigger.disabled = true;
+          elements.scanActionLabel.textContent = `Mapping surface (${mapPct}%)...`;
+          elements.stepText.textContent = `Move phone slowly over trousers to map surface (${mapPct}%)`;
+          elements.stepIcon.textContent = '🔄';
+        }
       } else {
-        elements.btnScanTrigger.disabled = false;
-        if (isManual) {
-          updateManualHUDControls();
+        // Phase 2: Holding phone steady to settle distance
+        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 25) * 100));
+        elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
+        if (elements.btnScanTrigger) {
+          elements.btnScanTrigger.disabled = true;
+          elements.scanActionLabel.textContent = `Stabilizing distance (${settlePct}%)...`;
+          elements.stepText.textContent = `Hold camera steady over trousers (${settlePct}%)`;
+          elements.stepIcon.textContent = '⏳';
+        }
+      }
+    } else {
+      // OpenCV / Manual / Simulator Fallbacks
+      elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked - hold phone over trousers' : isManual ? 'Surface locked - hold phone steady' : 'Surface locked - hold phone steady';
+      if (elements.hudReticleHint) elements.hudReticleHint.textContent = isManual ? 'Aim at point and tap' : 'Stabilize phone over trousers (waiting for green dot)...';
+      if (elements.btnScanTrigger) {
+        if (!isOpenCV && !isManual) {
+          elements.btnScanTrigger.disabled = true;
+          elements.scanActionLabel.textContent = 'Hold steady for green dot...';
+          elements.stepText.textContent = 'Wait for green "Surface ready" dot';
+          elements.stepIcon.textContent = '⏳';
         } else {
-          elements.scanActionLabel.textContent = '⚡ Live Tracking Active';
-          elements.stepText.textContent = 'Aim at waistband to track live';
-          elements.stepIcon.textContent = '⚡';
+          elements.btnScanTrigger.disabled = false;
+          if (isManual) {
+            updateManualHUDControls();
+          } else {
+            elements.scanActionLabel.textContent = '⚡ Live Tracking Active';
+            elements.stepText.textContent = 'Aim at waistband to track live';
+            elements.stepIcon.textContent = '⚡';
+          }
         }
       }
     }
@@ -1996,8 +2073,12 @@ function triggerScanCapture() {
     showErrorBanner('No surface detected yet. Scan trousers until surface locks.');
     return;
   }
-  if (state.activeMode === MODES.HRNET && !state.isSimulator && !state.isTrackingStable) {
-    showToast('Wait for green "Surface ready (Phone steady)" dot before tapping');
+  if (state.activeMode === MODES.HRNET && !state.isSimulator && (!state.mappingComplete || !state.isTrackingStable)) {
+    if (!state.mappingComplete) {
+      showToast('Move phone slowly over trousers in small circles to map surface');
+    } else {
+      showToast('Hold camera steady over trousers until distance settles');
+    }
     return;
   }
   hideErrorBanner();
@@ -3119,7 +3200,12 @@ function resetToScanning() {
   state.planeHeightSamples = [];
   state.camYSamples = [];
   state.hitRaySamples = [];
+  state.mappingFrames = 0;
+  state.mappingComplete = false;
+  state.steadyFrames = 0;
+  state.steadyDistanceSamples = [];
   state.lockedYDistCm = null;
+  state.currentYDistanceCm = null;
 
   hideToast();
   hideErrorBanner();
