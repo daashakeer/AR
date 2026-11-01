@@ -138,8 +138,7 @@ const state = {
   mappingFrames: 0,
   mappingComplete: false,
   steadyFrames: 0,
-  steadyDistanceSamples: [],
-  lockedYDistCm: null,
+  liveDistanceBuffer: [],
   currentYDistanceCm: null,
   scanRequested: false,
   scanRequestTime: 0,
@@ -1597,81 +1596,79 @@ function onXRFrame(time, frame) {
   }
 
   // ------------------------------------------------------------------
-  // 3. 2-Phase Pre-Scan Calibration Engine
-  // Phase 1: User moves phone slightly over trousers to map surface & establish SLAM/depth parallax (~30 frames)
-  // Phase 2: User holds phone steady to settle and lock Y-distance rolling median (~25 frames)
   // ------------------------------------------------------------------
+  // 3. 2-Phase Pre-Scan Calibration Engine (Increased Timings: 75 mapping + 60 steady)
+  // Phase 1: User moves phone slightly over trousers to map surface & establish SLAM/depth parallax (75 frames ~2.5s)
+  // Phase 2: User holds phone steady to settle tracking and build confidence (60 frames ~2.0s)
+  // Dynamic Real-Time Y-Distance: Never artificially locked; continuously responsive with rolling median smoothing
+  // ------------------------------------------------------------------
+  const MAPPING_TARGET_FRAMES = 75;
+  const STEADY_TARGET_FRAMES = 60;
   const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
 
   if (state.isSimulator) {
     // Simulator desktop mode bypasses physical motion requirements
     state.mappingComplete = true;
     state.isTrackingStable = true;
-    if (!state.lockedYDistCm && Number.isFinite(yDistCm)) {
-      state.lockedYDistCm = yDistCm;
-    }
   } else if (hasValidSurface) {
-    // Phase 1: Motion mapping
+    // Phase 1: Motion mapping (75 frames)
     if (!state.mappingComplete) {
-      // Accumulate frames while user moves phone slightly over garment
       const isMotionHelpful = moveDist > 0.001 || (state.surfacePlane && state.surfacePlane.sampleCount > 2);
       if (isMotionHelpful) {
         state.mappingFrames = (state.mappingFrames || 0) + 1;
-        if (state.mappingFrames >= 30) {
+        if (state.mappingFrames >= MAPPING_TARGET_FRAMES) {
           state.mappingComplete = true;
           logMsg('Pre-scan Phase 1 complete: Surface mapped with optical parallax. Now hold steady.', 'success');
         }
       }
     }
 
-    // Phase 2: Steady hold & Y-distance median settling
+    // Phase 2: Steady hold (60 frames)
     if (state.mappingComplete) {
       const isPhoneSteady = moveDist < 0.012;
       if (isPhoneSteady) {
         state.steadyFrames = (state.steadyFrames || 0) + 1;
-
-        if (Number.isFinite(yDistCm) && yDistCm > 15 && yDistCm < 250) {
-          if (!state.steadyDistanceSamples) state.steadyDistanceSamples = [];
-          state.steadyDistanceSamples.push(yDistCm);
-          if (state.steadyDistanceSamples.length > 30) state.steadyDistanceSamples.shift();
-        }
-
-        if (state.steadyFrames >= 25) {
+        if (state.steadyFrames >= STEADY_TARGET_FRAMES) {
           state.isTrackingStable = true;
-          if (!state.lockedYDistCm && state.steadyDistanceSamples && state.steadyDistanceSamples.length >= 8) {
-            const sorted = [...state.steadyDistanceSamples].sort((a, b) => a - b);
-            state.lockedYDistCm = sorted[Math.floor(sorted.length / 2)];
-            logMsg(`Pre-scan Phase 2 complete: Y-Distance converged and locked at ${state.lockedYDistCm.toFixed(1)} cm`, 'success');
-          }
         }
       } else {
-        // Recalibration guard: if phone is moved significantly (> 4cm in a frame), smoothly unlock to re-settle
-        if (moveDist > 0.04) {
-          state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 6);
+        // If phone is moved during steady phase, smoothly adjust steady frames
+        if (moveDist > 0.02) {
+          state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 4);
           state.isTrackingStable = false;
-          state.lockedYDistCm = null;
         }
       }
     }
   } else {
     // Tracking lost
     state.isTrackingStable = false;
-    state.lockedYDistCm = null;
   }
 
-  // Determine displayed distance
+  // Live Continuous Y-Distance Smoothing (Never Artificially Locked):
+  // Keeps a rolling buffer across 12 recent frames to remove sensor noise/flicker
+  // while remaining 100% dynamic and reflecting current camera height in real-time.
+  if (!state.liveDistanceBuffer) state.liveDistanceBuffer = [];
+  let smoothedYDist = null;
+  if (Number.isFinite(yDistCm) && yDistCm > 15 && yDistCm < 250) {
+    state.liveDistanceBuffer.push(yDistCm);
+    if (state.liveDistanceBuffer.length > 12) state.liveDistanceBuffer.shift();
+    const sorted = [...state.liveDistanceBuffer].sort((a, b) => a - b);
+    smoothedYDist = sorted[Math.floor(sorted.length / 2)];
+  }
+
+  const currentDisplayVal = smoothedYDist !== null ? smoothedYDist : yDistCm;
   let displayDistText = '-- cm';
-  if (state.isTrackingStable && state.lockedYDistCm !== null) {
-    displayDistText = `${state.lockedYDistCm.toFixed(1)} cm`;
-  } else if (Number.isFinite(yDistCm)) {
+  if (Number.isFinite(currentDisplayVal)) {
     if (!state.mappingComplete && !state.isSimulator) {
-      displayDistText = `${yDistCm.toFixed(1)} cm (Mapping)`;
+      displayDistText = `${currentDisplayVal.toFixed(1)} cm (Mapping)`;
+    } else if (!state.isTrackingStable && !state.isSimulator) {
+      displayDistText = `${currentDisplayVal.toFixed(1)} cm (Stabilizing)`;
     } else {
-      displayDistText = `${yDistCm.toFixed(1)} cm (Settling)`;
+      displayDistText = `${currentDisplayVal.toFixed(1)} cm`;
     }
   }
 
-  // Update Top Distance Bar for HRNet mode
+  // Update Top Distance Bar for HRNet mode (always live, never frozen)
   if (state.activeMode === MODES.HRNET) {
     if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
     if (elements.hudDistanceVal) {
@@ -1748,10 +1745,10 @@ function updateTrackingUI(hasSurface, isStable) {
     elements.hudTrackingDot.className = 'dot amber';
 
     if (!isOpenCV && !isManual && !state.isSimulator) {
-      // HRNet Mode: 2-Phase Calibration Active
+      // HRNet Mode: 2-Phase Calibration Active (75 frames mapping + 60 frames steady)
       if (!state.mappingComplete) {
         // Phase 1: Moving phone to map surface
-        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 30) * 100));
+        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 75) * 100));
         elements.hudTrackingText.textContent = `Mapping surface (${mapPct}%)`;
         if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move phone slowly over trousers in small circles';
         if (elements.btnScanTrigger) {
@@ -1762,7 +1759,7 @@ function updateTrackingUI(hasSurface, isStable) {
         }
       } else {
         // Phase 2: Holding phone steady to settle distance
-        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 25) * 100));
+        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 60) * 100));
         elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
         if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
         if (elements.btnScanTrigger) {
@@ -3203,8 +3200,7 @@ function resetToScanning() {
   state.mappingFrames = 0;
   state.mappingComplete = false;
   state.steadyFrames = 0;
-  state.steadyDistanceSamples = [];
-  state.lockedYDistCm = null;
+  state.liveDistanceBuffer = [];
   state.currentYDistanceCm = null;
 
   hideToast();
