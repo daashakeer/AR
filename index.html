@@ -445,6 +445,65 @@
               <div class="tele-item">
                 <span class="lbl">Live Waist</span>
                 <span id="tele-waist" class="val">-- cm</span>
+          </div>
+
+          <!-- 30-Second Diagnostic Logging Tool (Tests A, B, C, D, E) -->
+          <div class="dev-card diagnostic-test-card">
+            <div class="dev-section-label">🔬 30-Second Controlled Diagnostic Experiment (Tests A–E)</div>
+            <p class="diag-instruction">
+              Select a test mode below. The engine records high-resolution per-frame telemetry for 30 seconds at full camera frame rate, audits camera pose and depth fluctuations, and exports the full CSV.
+            </p>
+            <div class="diag-btn-row">
+              <button type="button" id="btn-diag-stationary" class="btn btn-primary btn-small">
+                <span>⏱️ Run 30s Stationary Test</span>
+              </button>
+              <button type="button" id="btn-diag-moving" class="btn btn-secondary btn-small">
+                <span>🚶 Run 30s Slight-Motion Test</span>
+              </button>
+              <button type="button" id="btn-diag-stop" class="btn btn-small btn-link hidden" style="color:var(--accent-red);">
+                <span>⏹️ Abort / Stop</span>
+              </button>
+              <button type="button" id="btn-diag-export-csv" class="btn btn-secondary btn-small" disabled>
+                <span>📥 Export 30s Diagnostic CSV</span>
+              </button>
+            </div>
+
+            <!-- Diagnostic Live Status Bar -->
+            <div id="diag-status-container" class="diag-status-box hidden">
+              <div class="diag-progress-header">
+                <span id="diag-mode-tag" class="badge checking">IDLE</span>
+                <span id="diag-timer-text" class="diag-timer">00.0s / 30.0s</span>
+                <span id="diag-fps-text" class="diag-fps">0 frames (0 fps)</span>
+              </div>
+              <div class="diag-progress-bar-bg">
+                <div id="diag-progress-bar" class="diag-progress-bar-fill" style="width: 0%;"></div>
+              </div>
+            </div>
+
+            <!-- Diagnostic Run Summary Stats (Rendered upon run completion) -->
+            <div id="diag-summary-container" class="diag-summary-box hidden">
+              <div class="dev-section-label" style="margin-top:6px; color:#fff;">📊 30-Second Experiment Results Summary</div>
+              <div class="diag-stats-grid">
+                <div class="diag-stat-card">
+                  <span class="d-lbl">Camera Y Position</span>
+                  <span class="d-val" id="diag-cam-y-mean">--</span>
+                  <span class="d-sub" id="diag-cam-y-sub">Range: -- | &sigma;: --</span>
+                </div>
+                <div class="diag-stat-card">
+                  <span class="d-lbl">Raw Depth (Center)</span>
+                  <span class="d-val" id="diag-depth-mean">--</span>
+                  <span class="d-sub" id="diag-depth-sub">Range: -- | &sigma;: --</span>
+                </div>
+                <div class="diag-stat-card">
+                  <span class="d-lbl">Floor Elevation Y</span>
+                  <span class="d-val" id="diag-floor-y-mean">--</span>
+                  <span class="d-sub" id="diag-floor-y-sub">Range: -- | &sigma;: --</span>
+                </div>
+                <div class="diag-stat-card">
+                  <span class="d-lbl">Fused Y-Distance</span>
+                  <span class="d-val" id="diag-fused-mean">--</span>
+                  <span class="d-sub" id="diag-fused-sub">Range: -- | &sigma;: --</span>
+                </div>
               </div>
             </div>
           </div>

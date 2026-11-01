@@ -1880,6 +1880,113 @@ input:checked + .toggle-slider:before {
   }
 }
 
+/* 30-Second Diagnostic Logging Engine Styles (Tests A-E) */
+.diagnostic-test-card {
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  background: rgba(14, 20, 32, 0.85);
+}
+
+.diag-instruction {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin: 0 0 10px 0;
+}
+
+.diag-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.diag-status-box {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin-top: 8px;
+}
+
+.diag-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.diag-timer {
+  font-weight: 700;
+  color: var(--accent-cyan);
+}
+
+.diag-fps {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.diag-progress-bar-bg {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.diag-progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-cyan), #00ff88);
+  transition: width 0.1s ease;
+}
+
+.diag-summary-box {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(0, 255, 136, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin-top: 10px;
+}
+
+.diag-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.diag-stat-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.diag-stat-card .d-lbl {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.diag-stat-card .d-val {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #00ff88;
+  margin: 2px 0;
+}
+
+.diag-stat-card .d-sub {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+
 
 
 

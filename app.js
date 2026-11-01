@@ -22,7 +22,9 @@ import {
   estimateFloorPlaneRansac,
   fuseDepthAndSLAMPlane,
   computeCalibrationBenchmarkStats,
-  evaluateCaptureQuality
+  evaluateCaptureQuality,
+  computeDiagnosticRunStats,
+  generateDiagnosticCSV
 } from './precision_depth.js';
 
 // ==============================================================================
@@ -155,6 +157,18 @@ const state = {
   selectedBenchmarkTargetCm: 100.0,
   calibrationDataset: [],
   isDevDashboardOpen: false,
+
+  // 30-Second Diagnostic Logging State (Tests A–E)
+  diagnosticSession: {
+    isActive: false,
+    mode: null,
+    startTime: 0,
+    durationMs: 30000,
+    frames: [],
+    lastPose: null,
+    lastUpdateUiTime: 0,
+    summary: null
+  },
 
   // Stability Tracking
   lastCamPosition: null,
@@ -323,6 +337,26 @@ const elements = {
   statRange: document.getElementById('stat-range'),
   statMaxErr: document.getElementById('stat-max-err'),
   devRecordsTbody: document.getElementById('dev-records-tbody'),
+
+  // 30-Second Diagnostic Logging Engine Elements (Tests A–E)
+  btnDiagStationary: document.getElementById('btn-diag-stationary'),
+  btnDiagMoving: document.getElementById('btn-diag-moving'),
+  btnDiagStop: document.getElementById('btn-diag-stop'),
+  btnDiagExportCsv: document.getElementById('btn-diag-export-csv'),
+  diagStatusContainer: document.getElementById('diag-status-container'),
+  diagModeTag: document.getElementById('diag-mode-tag'),
+  diagTimerText: document.getElementById('diag-timer-text'),
+  diagFpsText: document.getElementById('diag-fps-text'),
+  diagProgressBar: document.getElementById('diag-progress-bar'),
+  diagSummaryContainer: document.getElementById('diag-summary-container'),
+  diagCamYMean: document.getElementById('diag-cam-y-mean'),
+  diagCamYSub: document.getElementById('diag-cam-y-sub'),
+  diagDepthMean: document.getElementById('diag-depth-mean'),
+  diagDepthSub: document.getElementById('diag-depth-sub'),
+  diagFloorYMean: document.getElementById('diag-floor-y-mean'),
+  diagFloorYSub: document.getElementById('diag-floor-y-sub'),
+  diagFusedMean: document.getElementById('diag-fused-mean'),
+  diagFusedSub: document.getElementById('diag-fused-sub'),
 
   // AR HUD Elements
   hudTrackingDot: document.getElementById('hud-tracking-dot'),
@@ -1327,6 +1361,292 @@ function updateDevDashboardUI() {
   }
 }
 
+/* ==========================================================================
+   Controlled 30-Second Diagnostic Logging Engine (Tests A–E)
+   ========================================================================== */
+
+function startDiagnosticTest(mode) {
+  if (state.diagnosticSession.isActive) return;
+
+  if (!state.xrSession && !state.isSimulator) {
+    alert('Please start AR mode (or WebXR Emulator mode) before running the diagnostic test, so live camera pose and depth telemetry can be recorded.');
+    return;
+  }
+
+  state.diagnosticSession.isActive = true;
+  state.diagnosticSession.mode = mode; // 'STATIONARY' or 'MOVING'
+  state.diagnosticSession.startTime = 0; // will anchor on next frame
+  state.diagnosticSession.frames = [];
+  state.diagnosticSession.lastPose = null;
+  state.diagnosticSession.lastUpdateUiTime = 0;
+  state.diagnosticSession.summary = null;
+
+  if (elements.diagStatusContainer) elements.diagStatusContainer.classList.remove('hidden');
+  if (elements.diagSummaryContainer) elements.diagSummaryContainer.classList.add('hidden');
+  if (elements.diagModeTag) {
+    elements.diagModeTag.textContent = mode === 'STATIONARY' ? 'STATIONARY 30S' : 'SLIGHT-MOTION 30S';
+    elements.diagModeTag.className = mode === 'STATIONARY' ? 'badge info' : 'badge warning';
+  }
+  if (elements.diagTimerText) elements.diagTimerText.textContent = '00.0s / 30.0s';
+  if (elements.diagFpsText) elements.diagFpsText.textContent = '0 frames (0 fps)';
+  if (elements.diagProgressBar) elements.diagProgressBar.style.width = '0%';
+  if (elements.btnDiagStationary) elements.btnDiagStationary.disabled = true;
+  if (elements.btnDiagMoving) elements.btnDiagMoving.disabled = true;
+  if (elements.btnDiagStop) elements.btnDiagStop.classList.remove('hidden');
+  if (elements.btnDiagExportCsv) elements.btnDiagExportCsv.disabled = true;
+
+  showToast(`Starting 30s ${mode} diagnostic test... Keep phone ${mode === 'STATIONARY' ? 'completely stationary' : 'moving slightly'}.`);
+}
+
+function stopDiagnosticTest(completedNaturally = false) {
+  if (!state.diagnosticSession.isActive && !state.diagnosticSession.summary) return;
+
+  state.diagnosticSession.isActive = false;
+
+  const frames = state.diagnosticSession.frames;
+  const summary = computeDiagnosticRunStats(frames);
+  state.diagnosticSession.summary = summary;
+
+  if (elements.btnDiagStationary) elements.btnDiagStationary.disabled = false;
+  if (elements.btnDiagMoving) elements.btnDiagMoving.disabled = false;
+  if (elements.btnDiagStop) elements.btnDiagStop.classList.add('hidden');
+
+  if (summary && summary.totalFrames > 0) {
+    if (elements.btnDiagExportCsv) elements.btnDiagExportCsv.disabled = false;
+    if (elements.diagSummaryContainer) elements.diagSummaryContainer.classList.remove('hidden');
+
+    if (elements.diagCamYMean) {
+      elements.diagCamYMean.textContent = `${summary.camY.mean.toFixed(3)} m`;
+    }
+    if (elements.diagCamYSub) {
+      elements.diagCamYSub.textContent = `Range: ${(summary.camY.range * 100).toFixed(1)}cm | σ: ${(summary.camY.stdDev * 100).toFixed(2)}cm`;
+    }
+
+    if (elements.diagDepthMean) {
+      elements.diagDepthMean.textContent = summary.rawDepth.count > 0 ? `${summary.rawDepth.mean.toFixed(3)} m` : 'N/A';
+    }
+    if (elements.diagDepthSub) {
+      elements.diagDepthSub.textContent = summary.rawDepth.count > 0
+        ? `Range: ${(summary.rawDepth.range * 100).toFixed(1)}cm | σ: ${(summary.rawDepth.stdDev * 100).toFixed(2)}cm`
+        : 'No depth sensor data';
+    }
+
+    if (elements.diagFloorYMean) {
+      elements.diagFloorYMean.textContent = summary.floorY.count > 0 ? `${summary.floorY.mean.toFixed(3)} m` : 'N/A';
+    }
+    if (elements.diagFloorYSub) {
+      elements.diagFloorYSub.textContent = summary.floorY.count > 0
+        ? `Range: ${(summary.floorY.range * 100).toFixed(1)}cm | σ: ${(summary.floorY.stdDev * 100).toFixed(2)}cm`
+        : 'Plane not converged';
+    }
+
+    if (elements.diagFusedMean) {
+      elements.diagFusedMean.textContent = summary.fusedDist.count > 0 ? `${summary.fusedDist.mean.toFixed(1)} cm` : 'N/A';
+    }
+    if (elements.diagFusedSub) {
+      elements.diagFusedSub.textContent = summary.fusedDist.count > 0
+        ? `Range: ${summary.fusedDist.range.toFixed(1)}cm | σ: ${summary.fusedDist.stdDev.toFixed(2)}cm`
+        : 'N/A';
+    }
+
+    if (completedNaturally) {
+      showToast(`✅ 30s ${state.diagnosticSession.mode} Test Finished (${summary.totalFrames} frames)! Tap Export 30s CSV.`);
+    } else {
+      showToast(`⏹️ Diagnostic Test Stopped (${summary.totalFrames} frames logged). Tap Export 30s CSV.`);
+    }
+  } else {
+    showToast('No frames recorded during diagnostic session.');
+  }
+}
+
+function exportDiagnosticRunCSV() {
+  const frames = state.diagnosticSession.frames;
+  if (!frames || frames.length === 0) {
+    alert('No diagnostic frames recorded yet.');
+    return;
+  }
+
+  const csvContent = generateDiagnosticCSV(frames);
+  const mode = state.diagnosticSession.mode ? state.diagnosticSession.mode.toLowerCase() : 'telemetry';
+  const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const filename = `ar_diagnostic_${mode}_${timestamp}.csv`;
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function recordDiagnosticFrame(time, frame, view, isSimulator = false) {
+  if (!state.diagnosticSession.isActive) return;
+
+  const ds = state.diagnosticSession;
+  if (!ds.startTime) {
+    ds.startTime = time;
+  }
+
+  const elapsedMs = time - ds.startTime;
+  const elapsedS = elapsedMs / 1000.0;
+
+  if (elapsedMs >= ds.durationMs) {
+    stopDiagnosticTest(true);
+    return;
+  }
+
+  const camMatrix = view.transform.matrix;
+  const camPos = {
+    x: camMatrix[12],
+    y: camMatrix[13],
+    z: camMatrix[14]
+  };
+
+  const dX = ds.lastPose ? camPos.x - ds.lastPose.x : 0;
+  const dY = ds.lastPose ? camPos.y - ds.lastPose.y : 0;
+  const dZ = ds.lastPose ? camPos.z - ds.lastPose.z : 0;
+  const dDist = Math.hypot(dX, dY, dZ);
+  ds.lastPose = { ...camPos };
+
+  // Look direction (-Z column of camMatrix)
+  const lookDirX = -camMatrix[8];
+  const lookDirY = -camMatrix[9];
+  const lookDirZ = -camMatrix[10];
+  const pitchDeg = Math.acos(Math.max(-1, Math.min(1, Math.abs(lookDirY)))) * (180.0 / Math.PI);
+
+  const quat = view.transform.orientation || { x: 0, y: 0, z: 0, w: 1 };
+  const trackingState = view.transform.emulatedPosition ? 'EMULATED' : 'TRACKING';
+
+  // Raw Depth sampling (if available)
+  let depthWidth = 0;
+  let depthHeight = 0;
+  let rawValueToMeters = 0;
+  let centerDepthM = null;
+  let floorDepthMedianM = null;
+  let floorDepthStdDevM = null;
+  let floorSamplesValid = 0;
+
+  if (frame && frame.getDepthInformation) {
+    try {
+      const depthInfo = frame.getDepthInformation(view);
+      if (depthInfo && depthInfo.width > 0 && depthInfo.height > 0) {
+        depthWidth = depthInfo.width;
+        depthHeight = depthInfo.height;
+        rawValueToMeters = depthInfo.rawValueToMeters || 0.001;
+        const dCenter = depthInfo.getDepthInMeters(0.5, 0.5);
+        if (Number.isFinite(dCenter) && dCenter > 0.05 && dCenter < 5.0) {
+          centerDepthM = dCenter;
+        }
+
+        // Multi-point sampling across visible floor regions
+        const sampleCoords = [
+          [0.2, 0.2], [0.5, 0.2], [0.8, 0.2],
+          [0.2, 0.5],             [0.8, 0.5],
+          [0.2, 0.8], [0.5, 0.8], [0.8, 0.8]
+        ];
+        const validDepths = [];
+        for (let i = 0; i < sampleCoords.length; i++) {
+          const sm = depthInfo.getDepthInMeters(sampleCoords[i][0], sampleCoords[i][1]);
+          if (Number.isFinite(sm) && sm > 0.1 && sm < 4.0) {
+            validDepths.push(sm);
+          }
+        }
+        floorSamplesValid = validDepths.length;
+        if (validDepths.length > 0) {
+          validDepths.sort((a, b) => a - b);
+          floorDepthMedianM = validDepths[Math.floor(validDepths.length / 2)];
+          const mean = validDepths.reduce((acc, v) => acc + v, 0) / validDepths.length;
+          const varSum = validDepths.reduce((acc, v) => acc + (v - mean) ** 2, 0);
+          floorDepthStdDevM = Math.sqrt(varSum / validDepths.length);
+        }
+      }
+    } catch (_) {}
+  } else if (isSimulator) {
+    // Simulator synthetic depth
+    depthWidth = 160;
+    depthHeight = 120;
+    rawValueToMeters = 0.001;
+    centerDepthM = 1.0;
+    floorDepthMedianM = 1.0;
+    floorDepthStdDevM = 0.01;
+    floorSamplesValid = 8;
+  }
+
+  // Floor-plane status
+  const ransac = state.ransacFloorPlane;
+  const slam = state.surfacePlane;
+
+  const rawDepthYDistCm = (centerDepthM !== null) ? centerDepthM * Math.abs(camMatrix[9]) * 100 : null;
+  const ransacYDistCm = (ransac && Number.isFinite(ransac.elevationY)) ? Math.abs(camPos.y - ransac.elevationY) * 100 : null;
+  const slamYDistCm = (slam && Number.isFinite(slam.elevationY)) ? Math.abs(camPos.y - slam.elevationY) * 100 : null;
+
+  const record = {
+    timestampMs: time,
+    timeElapsedS: elapsedS,
+    testMode: ds.mode,
+    trackingState: trackingState,
+    camWorldX: camPos.x,
+    camWorldY: camPos.y,
+    camWorldZ: camPos.z,
+    camDeltaX: dX,
+    camDeltaY: dY,
+    camDeltaZ: dZ,
+    camDeltaDistM: dDist,
+    camPitchDeg: pitchDeg,
+    camLookDirX: lookDirX,
+    camLookDirY: lookDirY,
+    camLookDirZ: lookDirZ,
+    camQuatX: quat.x,
+    camQuatY: quat.y,
+    camQuatZ: quat.z,
+    camQuatW: quat.w,
+    depthWidth,
+    depthHeight,
+    rawValueToMeters,
+    centerDepthM,
+    floorDepthMedianM,
+    floorDepthStdDevM,
+    floorSamplesValid,
+    ransacValid: !!(ransac && ransac.valid),
+    planeNx: ransac ? ransac.normal.x : (slam ? slam.normal.x : null),
+    planeNy: ransac ? ransac.normal.y : (slam ? slam.normal.y : null),
+    planeNz: ransac ? ransac.normal.z : (slam ? slam.normal.z : null),
+    planeD: ransac ? ransac.d : null,
+    planeElevationY: ransac ? ransac.elevationY : (slam ? slam.elevationY : null),
+    ransacInliers: ransac ? ransac.inlierCount : 0,
+    ransacTotalPoints: ransac ? ransac.totalPoints : 0,
+    ransacInlierRatio: ransac ? ransac.inlierRatio : 0,
+    ransacResidualCm: ransac ? ransac.rmseResidualCm : null,
+    slamHitFound: !!slam,
+    slamElevationY: slam ? slam.elevationY : null,
+    slamYDistCm,
+    rawDepthYDistCm,
+    ransacYDistCm,
+    fusedKalmanYDistCm: state.fusedDistanceCm || state.currentYDistanceCm || null
+  };
+
+  ds.frames.push(record);
+
+  // Throttle UI update to every 100ms
+  if (time - ds.lastUpdateUiTime > 100) {
+    ds.lastUpdateUiTime = time;
+    const pct = Math.min(100, Math.max(0, (elapsedMs / ds.durationMs) * 100));
+    if (elements.diagProgressBar) {
+      elements.diagProgressBar.style.width = `${pct.toFixed(1)}%`;
+    }
+    if (elements.diagTimerText) {
+      elements.diagTimerText.textContent = `${elapsedS.toFixed(1)}s / 30.0s`;
+    }
+    if (elements.diagFpsText) {
+      const fps = elapsedS > 0.5 ? Math.round(ds.frames.length / elapsedS) : 0;
+      elements.diagFpsText.textContent = `${ds.frames.length} frames (${fps} fps)`;
+    }
+  }
+}
+
 function toggleOpenCVLock() {
   const cs = state.cvState;
   const p1 = cs.detectedPoints3D ? cs.detectedPoints3D.p1 : state.point1;
@@ -1900,6 +2220,11 @@ function onXRFrame(time, frame) {
   // Update Developer Dashboard telemetry if open
   if (state.isDevDashboardOpen) {
     updateDevDashboardUI();
+  }
+
+  // 30-Second Controlled Diagnostic Engine Recording (Tests A–E)
+  if (state.diagnosticSession.isActive) {
+    recordDiagnosticFrame(time, frame, view, false);
   }
 
   // Display locked value when stable, live value when moving
@@ -3735,6 +4060,11 @@ async function startSimulatorMode() {
 
     renderGarmentHUD(simulatedView, canvas.width, canvas.height);
 
+    // 30-Second Controlled Diagnostic Engine Recording (Simulator mode)
+    if (state.diagnosticSession.isActive) {
+      recordDiagnosticFrame(performance.now(), null, simulatedView, true);
+    }
+
   }, 33);
 }
 
@@ -4046,6 +4376,20 @@ function setupEventListeners() {
       setDevDashboardTarget(btn.dataset.dist);
     });
   });
+
+  // 30-Second Diagnostic Logging Engine Listeners (Tests A–E)
+  if (elements.btnDiagStationary) {
+    elements.btnDiagStationary.addEventListener('click', () => startDiagnosticTest('STATIONARY'));
+  }
+  if (elements.btnDiagMoving) {
+    elements.btnDiagMoving.addEventListener('click', () => startDiagnosticTest('MOVING'));
+  }
+  if (elements.btnDiagStop) {
+    elements.btnDiagStop.addEventListener('click', () => stopDiagnosticTest(false));
+  }
+  if (elements.btnDiagExportCsv) {
+    elements.btnDiagExportCsv.addEventListener('click', exportDiagnosticRunCSV);
+  }
 
   // Window resize
   window.addEventListener('resize', () => {

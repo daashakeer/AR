@@ -819,3 +819,166 @@ export function evaluateCaptureQuality(params = {}) {
     checks
   };
 }
+
+/**
+ * 11. Diagnostic Run Statistics Aggregator (Tests A–E)
+ * Computes mean, min, max, range, and standard deviation across recorded telemetry frames.
+ * 
+ * @param {Array<object>} frames - Array of recorded telemetry frame records
+ * @returns {object|null} Computed statistical summary
+ */
+export function computeDiagnosticRunStats(frames) {
+  if (!frames || frames.length === 0) {
+    return null;
+  }
+
+  const calcSeries = (arr) => {
+    const valid = arr.filter(v => typeof v === 'number' && Number.isFinite(v));
+    if (valid.length === 0) return { mean: 0, min: 0, max: 0, range: 0, stdDev: 0, count: 0 };
+    const n = valid.length;
+    let sum = 0, min = Infinity, max = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const v = valid[i];
+      sum += v;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const mean = sum / n;
+    let sumSq = 0;
+    for (let i = 0; i < n; i++) {
+      sumSq += (valid[i] - mean) ** 2;
+    }
+    const stdDev = n > 1 ? Math.sqrt(sumSq / (n - 1)) : 0;
+    return {
+      mean,
+      min,
+      max,
+      range: max - min,
+      stdDev,
+      count: n
+    };
+  };
+
+  const camY = calcSeries(frames.map(f => f.camWorldY));
+  const rawDepth = calcSeries(frames.map(f => f.centerDepthM));
+  const floorY = calcSeries(frames.map(f => f.planeElevationY));
+  const fusedDist = calcSeries(frames.map(f => f.fusedKalmanYDistCm));
+  const slamDist = calcSeries(frames.map(f => f.slamYDistCm));
+  const camDelta = calcSeries(frames.map(f => f.camDeltaDistM));
+
+  return {
+    totalFrames: frames.length,
+    durationSec: frames.length > 0 ? (frames[frames.length - 1].timeElapsedS || 0) : 0,
+    camY,
+    rawDepth,
+    floorY,
+    fusedDist,
+    slamDist,
+    camDelta
+  };
+}
+
+/**
+ * 12. Full Telemetry CSV Exporter (Tests A, B, C, D, E)
+ * Formats high-resolution telemetry records into standard CSV format.
+ * 
+ * @param {Array<object>} frames - Array of recorded telemetry frame records
+ * @returns {string} CSV formatted string
+ */
+export function generateDiagnosticCSV(frames) {
+  if (!frames || frames.length === 0) return '';
+  const headers = [
+    'Frame',
+    'Timestamp_ms',
+    'Time_Elapsed_s',
+    'Test_Mode',
+    'Tracking_State',
+    'Cam_World_X',
+    'Cam_World_Y',
+    'Cam_World_Z',
+    'Cam_Delta_X',
+    'Cam_Delta_Y',
+    'Cam_Delta_Z',
+    'Cam_Delta_Dist_m',
+    'Cam_Pitch_Deg',
+    'Cam_LookDir_X',
+    'Cam_LookDir_Y',
+    'Cam_LookDir_Z',
+    'Cam_Quat_X',
+    'Cam_Quat_Y',
+    'Cam_Quat_Z',
+    'Cam_Quat_W',
+    'Depth_Width',
+    'Depth_Height',
+    'Raw_Value_To_Meters',
+    'Center_Depth_m',
+    'Floor_Depth_Median_m',
+    'Floor_Depth_StdDev_m',
+    'Floor_Samples_Valid',
+    'RANSAC_Valid',
+    'Plane_Nx',
+    'Plane_Ny',
+    'Plane_Nz',
+    'Plane_D',
+    'Plane_Elevation_Y',
+    'RANSAC_Inliers',
+    'RANSAC_Total_Points',
+    'RANSAC_Inlier_Ratio',
+    'RANSAC_Residual_cm',
+    'SLAM_Hit_Found',
+    'SLAM_Elevation_Y',
+    'SLAM_Y_Dist_cm',
+    'Raw_Depth_Y_Dist_cm',
+    'RANSAC_Y_Dist_cm',
+    'Fused_Kalman_Y_Dist_cm'
+  ];
+
+  const rows = frames.map((f, idx) => [
+    idx + 1,
+    f.timestampMs ? f.timestampMs.toFixed(1) : '',
+    f.timeElapsedS ? f.timeElapsedS.toFixed(3) : '',
+    `"${f.testMode || ''}"`,
+    `"${f.trackingState || 'TRACKING'}"`,
+    f.camWorldX !== null && f.camWorldX !== undefined ? f.camWorldX.toFixed(5) : '',
+    f.camWorldY !== null && f.camWorldY !== undefined ? f.camWorldY.toFixed(5) : '',
+    f.camWorldZ !== null && f.camWorldZ !== undefined ? f.camWorldZ.toFixed(5) : '',
+    f.camDeltaX !== null && f.camDeltaX !== undefined ? f.camDeltaX.toFixed(5) : '',
+    f.camDeltaY !== null && f.camDeltaY !== undefined ? f.camDeltaY.toFixed(5) : '',
+    f.camDeltaZ !== null && f.camDeltaZ !== undefined ? f.camDeltaZ.toFixed(5) : '',
+    f.camDeltaDistM !== null && f.camDeltaDistM !== undefined ? f.camDeltaDistM.toFixed(5) : '',
+    f.camPitchDeg !== null && f.camPitchDeg !== undefined ? f.camPitchDeg.toFixed(2) : '',
+    f.camLookDirX !== null && f.camLookDirX !== undefined ? f.camLookDirX.toFixed(4) : '',
+    f.camLookDirY !== null && f.camLookDirY !== undefined ? f.camLookDirY.toFixed(4) : '',
+    f.camLookDirZ !== null && f.camLookDirZ !== undefined ? f.camLookDirZ.toFixed(4) : '',
+    f.camQuatX !== null && f.camQuatX !== undefined ? f.camQuatX.toFixed(5) : '',
+    f.camQuatY !== null && f.camQuatY !== undefined ? f.camQuatY.toFixed(5) : '',
+    f.camQuatZ !== null && f.camQuatZ !== undefined ? f.camQuatZ.toFixed(5) : '',
+    f.camQuatW !== null && f.camQuatW !== undefined ? f.camQuatW.toFixed(5) : '',
+    f.depthWidth || '',
+    f.depthHeight || '',
+    f.rawValueToMeters || '',
+    f.centerDepthM !== null && f.centerDepthM !== undefined ? f.centerDepthM.toFixed(4) : '',
+    f.floorDepthMedianM !== null && f.floorDepthMedianM !== undefined ? f.floorDepthMedianM.toFixed(4) : '',
+    f.floorDepthStdDevM !== null && f.floorDepthStdDevM !== undefined ? f.floorDepthStdDevM.toFixed(4) : '',
+    f.floorSamplesValid || 0,
+    f.ransacValid ? 1 : 0,
+    f.planeNx !== null && f.planeNx !== undefined ? f.planeNx.toFixed(4) : '',
+    f.planeNy !== null && f.planeNy !== undefined ? f.planeNy.toFixed(4) : '',
+    f.planeNz !== null && f.planeNz !== undefined ? f.planeNz.toFixed(4) : '',
+    f.planeD !== null && f.planeD !== undefined ? f.planeD.toFixed(4) : '',
+    f.planeElevationY !== null && f.planeElevationY !== undefined ? f.planeElevationY.toFixed(4) : '',
+    f.ransacInliers || 0,
+    f.ransacTotalPoints || 0,
+    f.ransacInlierRatio !== null && f.ransacInlierRatio !== undefined ? f.ransacInlierRatio.toFixed(3) : '',
+    f.ransacResidualCm !== null && f.ransacResidualCm !== undefined ? f.ransacResidualCm.toFixed(2) : '',
+    f.slamHitFound ? 1 : 0,
+    f.slamElevationY !== null && f.slamElevationY !== undefined ? f.slamElevationY.toFixed(4) : '',
+    f.slamYDistCm !== null && f.slamYDistCm !== undefined ? f.slamYDistCm.toFixed(2) : '',
+    f.rawDepthYDistCm !== null && f.rawDepthYDistCm !== undefined ? f.rawDepthYDistCm.toFixed(2) : '',
+    f.ransacYDistCm !== null && f.ransacYDistCm !== undefined ? f.ransacYDistCm.toFixed(2) : '',
+    f.fusedKalmanYDistCm !== null && f.fusedKalmanYDistCm !== undefined ? f.fusedKalmanYDistCm.toFixed(2) : ''
+  ]);
+
+  return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+}
+

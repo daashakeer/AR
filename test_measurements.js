@@ -6,7 +6,9 @@ import {
   estimateFloorPlaneRansac,
   fuseDepthAndSLAMPlane,
   computeCalibrationBenchmarkStats,
-  evaluateCaptureQuality
+  evaluateCaptureQuality,
+  computeDiagnosticRunStats,
+  generateDiagnosticCSV
 } from './precision_depth.js';
 
 console.log('--- Running AR Measurement MVP Math & Schema Verification ---');
@@ -926,6 +928,71 @@ assert.strictEqual(quality3.isReady, true);
 assert.strictEqual(quality3.stage, 'READY');
 console.log(`✓ Acceptance Test 20 Passed: Guided Capture Quality Evaluator correctly gated lifecycle states (COLLECTING -> ESTIMATING -> READY)`);
 
-console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED (1-20)!');
+// 21. Acceptance Test 21: 30-Second Diagnostic Logging Engine & Telemetry CSV Exporter (Tests A–E)
+const mockDiagFrames = [];
+for (let i = 0; i < 30; i++) {
+  mockDiagFrames.push({
+    timestampMs: 1000 + i * 33.3,
+    timeElapsedS: (i * 33.3) / 1000,
+    testMode: 'STATIONARY',
+    trackingState: 'TRACKING',
+    camWorldX: 0.05 + 0.001 * Math.sin(i),
+    camWorldY: 1.25 + 0.002 * Math.cos(i), // Stationary camera with small IMU noise
+    camWorldZ: -0.10,
+    camDeltaX: 0.0005,
+    camDeltaY: 0.0004,
+    camDeltaZ: 0.0001,
+    camDeltaDistM: 0.0006,
+    camPitchDeg: 45.0,
+    camLookDirX: 0.0,
+    camLookDirY: -0.7071,
+    camLookDirZ: -0.7071,
+    camQuatX: 0.38268,
+    camQuatY: 0.0,
+    camQuatZ: 0.0,
+    camQuatW: 0.92388,
+    depthWidth: 160,
+    depthHeight: 120,
+    rawValueToMeters: 0.001,
+    centerDepthM: 1.414 + 0.01 * (Math.random() - 0.5),
+    floorDepthMedianM: 1.42,
+    floorDepthStdDevM: 0.02,
+    floorSamplesValid: 8,
+    ransacValid: true,
+    planeNx: 0.0,
+    planeNy: 1.0,
+    planeNz: 0.0,
+    planeD: 0.0,
+    planeElevationY: 0.0,
+    ransacInliers: 65,
+    ransacTotalPoints: 80,
+    ransacInlierRatio: 0.8125,
+    ransacResidualCm: 1.2,
+    slamHitFound: true,
+    slamElevationY: 0.0,
+    slamYDistCm: 125.0,
+    rawDepthYDistCm: 100.0,
+    ransacYDistCm: 125.0,
+    fusedKalmanYDistCm: 125.0
+  });
+}
+
+const diagStats = computeDiagnosticRunStats(mockDiagFrames);
+assert.strictEqual(diagStats.totalFrames, 30);
+assert.ok(Math.abs(diagStats.camY.mean - 1.25) < 0.01, `Cam Y mean should be ~1.25m, got ${diagStats.camY.mean}`);
+assert.ok(diagStats.camY.stdDev < 0.01, `Cam Y std dev should be small (<0.01m), got ${diagStats.camY.stdDev}`);
+assert.strictEqual(diagStats.floorY.mean, 0.0);
+assert.strictEqual(diagStats.fusedDist.mean, 125.0);
+
+const csvOut = generateDiagnosticCSV(mockDiagFrames);
+assert.ok(csvOut.includes('Frame,Timestamp_ms,Time_Elapsed_s,Test_Mode,Tracking_State'));
+assert.ok(csvOut.includes('STATIONARY'));
+assert.ok(csvOut.includes('1.25'));
+const lineCount = csvOut.trim().split('\n').length;
+assert.strictEqual(lineCount, 31, `CSV should contain 1 header + 30 rows = 31 lines, got ${lineCount}`);
+console.log('✓ Acceptance Test 21 Passed: 30-Second Diagnostic Logging Engine & Telemetry CSV Exporter (Tests A–E) verified');
+
+console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED (1-21)!');
+
 
 
