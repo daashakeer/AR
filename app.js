@@ -1385,11 +1385,37 @@ function onXRFrame(time, frame) {
           }
 
           if (state.planeHeightSamples.length > 0) {
-            // Low-percentile floor elevation: take 20th percentile instead of median.
-            // The floor is the LOWEST surface; higher-elevation samples are from fabric wrinkles or dust.
-            const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
-            const p20idx = Math.max(0, Math.floor(sorted.length * 0.20));
-            const floorElevationY = sorted[p20idx];
+            // --- Elevation anchoring ---
+            // Priority 1: Depth API world-Y at screen center → exact pants/table surface Y
+            // This is the Y coordinate of the surface the camera is actually looking at,
+            // NOT the statistical floor estimate (which biases toward the floor).
+            let surfaceElevationY = null;
+
+            if (frame.getDepthInformation) {
+              try {
+                const depthInfoEl = frame.getDepthInformation(view);
+                if (depthInfoEl && depthInfoEl.width > 0) {
+                  const dEl = depthInfoEl.getDepthInMeters(0.5, 0.5);
+                  if (Number.isFinite(dEl) && dEl > 0.1 && dEl < 3.0) {
+                    // Reconstruct the world-Y of the surface from depth + camera pose:
+                    // surfaceY = camY + lookDirY * depth
+                    // lookDirY = -camMatrix[9]  (camera looks in -Z; Y component of look dir)
+                    const cm = view.transform.matrix;
+                    const lookDirY = -cm[9]; // Y component of camera look direction in world
+                    surfaceElevationY = cm[13] + lookDirY * dEl;
+                  }
+                }
+              } catch (_) { /* fall through to percentile */ }
+            }
+
+            // Priority 2: 20th-percentile of hit-test samples (floor bias fallback)
+            if (surfaceElevationY === null) {
+              const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
+              const p20idx = Math.max(0, Math.floor(sorted.length * 0.20));
+              surfaceElevationY = sorted[p20idx];
+            }
+
+            const floorElevationY = surfaceElevationY;
 
             const signY = rawNormal.y >= 0 ? 1 : -1;
             state.surfacePlane = {
