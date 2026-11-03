@@ -143,6 +143,8 @@ const state = {
   scanRequested: false,
   scanRequestTime: 0,
   scanHistory: [],
+  phoneTiltDeg: 0,        // Angle (degrees) between camera look-direction and straight-down
+  isPhoneLevel: false,    // True when tilt <= 5° (phone pointing straight down)
 
   // Active Flow State
   flowState: STATES.SCANNING,
@@ -1318,6 +1320,16 @@ function onXRFrame(time, frame) {
   state.lastProjMatrix = new Float32Array(view.projectionMatrix);
   state.lastCameraMatrix = new Float32Array(view.transform.matrix);
 
+  // Phone Tilt / Level Check:
+  // view.transform.matrix[9] = Y-component of camera's -Z (back) axis in world space.
+  // When phone points straight down: lookDir ≈ (0, -1, 0), so m[9] ≈ 1.0
+  // Tilt angle from vertical = acos(|m[9]|)
+  const TILT_TOLERANCE_DEG = 5.0;
+  const lookDirYAbs = Math.abs(view.transform.matrix[9]);
+  const tiltAngleDeg = Math.acos(Math.min(1.0, lookDirYAbs)) * (180 / Math.PI);
+  state.phoneTiltDeg = tiltAngleDeg;
+  state.isPhoneLevel = tiltAngleDeg <= TILT_TOLERANCE_DEG;
+
   // 1. Track Camera Movement and Phone Stability
   // Extract camera position from the view transform matrix (columns 12–14 = translation)
   const camPos = {
@@ -1623,17 +1635,17 @@ function onXRFrame(time, frame) {
       }
     }
 
-    // Phase 2: Steady hold (60 frames)
+    // Phase 2: Steady hold (60 frames) — phone must also be level (within 5° of vertical)
     if (state.mappingComplete) {
       const isPhoneSteady = moveDist < 0.012;
-      if (isPhoneSteady) {
+      if (isPhoneSteady && state.isPhoneLevel) {
         state.steadyFrames = (state.steadyFrames || 0) + 1;
         if (state.steadyFrames >= STEADY_TARGET_FRAMES) {
           state.isTrackingStable = true;
         }
       } else {
-        // If phone is moved during steady phase, smoothly adjust steady frames
-        if (moveDist > 0.02) {
+        // If phone is moved OR tilted during steady phase, penalize steady frames
+        if (moveDist > 0.02 || !state.isPhoneLevel) {
           state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 4);
           state.isTrackingStable = false;
         }
@@ -1670,9 +1682,10 @@ function onXRFrame(time, frame) {
 
   // Update Top Distance Bar for HRNet mode (always live, never frozen)
   if (state.activeMode === MODES.HRNET) {
-    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
+    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Dist / Tilt:';
     if (elements.hudDistanceVal) {
-      elements.hudDistanceVal.textContent = displayDistText;
+      const tiltInfo = state.isSimulator ? '' : ` | ${state.phoneTiltDeg.toFixed(1)}°`;
+      elements.hudDistanceVal.textContent = displayDistText + tiltInfo;
     }
   }
 
@@ -1758,15 +1771,30 @@ function updateTrackingUI(hasSurface, isStable) {
           elements.stepIcon.textContent = '🔄';
         }
       } else {
-        // Phase 2: Holding phone steady to settle distance
-        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 60) * 100));
-        elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
-        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
-        if (elements.btnScanTrigger) {
-          elements.btnScanTrigger.disabled = true;
-          elements.scanActionLabel.textContent = `Stabilizing distance (${settlePct}%)...`;
-          elements.stepText.textContent = `Hold camera steady over trousers (${settlePct}%)`;
-          elements.stepIcon.textContent = '⏳';
+        // Phase 2: Holding phone steady and level to settle distance
+        if (!state.isPhoneLevel) {
+          // Phone is tilted — show tilt guidance with current angle
+          const tiltDeg = state.phoneTiltDeg.toFixed(1);
+          elements.hudTrackingDot.className = 'dot amber';
+          elements.hudTrackingText.textContent = `Tilt: ${tiltDeg}° — Hold phone straight down`;
+          if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Point phone directly downward at trousers (within 5°)';
+          if (elements.btnScanTrigger) {
+            elements.btnScanTrigger.disabled = true;
+            elements.scanActionLabel.textContent = `Level phone (${tiltDeg}° off)...`;
+            elements.stepText.textContent = `Hold phone straight down over trousers (tilt: ${tiltDeg}°)`;
+            elements.stepIcon.textContent = '📐';
+          }
+        } else {
+          // Phone is level — show normal stabilization progress
+          const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 60) * 100));
+          elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
+          if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
+          if (elements.btnScanTrigger) {
+            elements.btnScanTrigger.disabled = true;
+            elements.scanActionLabel.textContent = `Stabilizing distance (${settlePct}%)...`;
+            elements.stepText.textContent = `Hold camera steady over trousers (${settlePct}%)`;
+            elements.stepIcon.textContent = '⏳';
+          }
         }
       }
     } else {
@@ -2068,6 +2096,10 @@ function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth,
 function triggerScanCapture() {
   if (!state.surfacePlane) {
     showErrorBanner('No surface detected yet. Scan trousers until surface locks.');
+    return;
+  }
+  if (state.activeMode === MODES.HRNET && !state.isSimulator && !state.isPhoneLevel) {
+    showToast(`Hold phone straight down (tilt: ${state.phoneTiltDeg.toFixed(1)}° — need ≤ 5°)`);
     return;
   }
   if (state.activeMode === MODES.HRNET && !state.isSimulator && (!state.mappingComplete || !state.isTrackingStable)) {
@@ -3202,6 +3234,8 @@ function resetToScanning() {
   state.steadyFrames = 0;
   state.liveDistanceBuffer = [];
   state.currentYDistanceCm = null;
+  state.phoneTiltDeg = 0;
+  state.isPhoneLevel = false;
 
   hideToast();
   hideErrorBanner();
