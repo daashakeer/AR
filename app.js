@@ -146,6 +146,25 @@ const state = {
   phoneTiltDeg: 0,        // Angle (degrees) between camera look-direction and straight-down
   isPhoneLevel: false,    // True when tilt <= 5° (phone pointing straight down)
 
+  // Method B ONLY: Dedicated ARCore Hit-Test Vertical Separation State
+  methodB: {
+    rawVerticalDistCm: null,
+    medianVerticalDistCm: null,
+    meanVerticalDistCm: null,
+    stdDevCm: 0,
+    minCm: null,
+    maxCm: null,
+    validSamplesCount: 0,
+    buffer: [], // rolling buffer of 30-60 valid samples
+    lastHitPosition: null,
+    lastHitTime: 0,
+    hitAvailable: false,
+    isStable: false,
+    consecutiveMissing: 0,
+    totalAccepted: 0,
+    totalRejected: 0
+  },
+
   // Active Flow State
   flowState: STATES.SCANNING,
   frozenSnapshot: null,     // { camMatrix, projMatrix, invProjMatrix, surfacePlane, imageWidth, imageHeight, jpegBlob, dataUrl }
@@ -1353,254 +1372,145 @@ function onXRFrame(time, frame) {
   state.camMovement = moveDist;
   state.lastCamPosition = camPos;
 
-  // 2. Hit-Test against garment/table surface with quality-weighted floor elevation
+  // 2. ARCore Hit-Testing — METHOD B ONLY: Vertical Distance Engine
+  // Directly measures vertical separation: verticalDistance = Math.abs(hitPosition.y - cameraPosition.y)
+  // Both hitPosition and cameraPosition are in the exact same WebXR reference space (refSpace).
+  // Strictly eliminates Method A (SLAM floor) and Method C (Depth API) blending.
   let surfaceHitFound = false;
+
   if (state.hitTestSource) {
     const hitResults = frame.getHitTestResults(state.hitTestSource);
     if (hitResults.length > 0) {
       const hitPose = hitResults[0].getPose(refSpace);
       if (hitPose) {
-        surfaceHitFound = true;
-        const pos = hitPose.transform.position;
-        const matrix = hitPose.transform.matrix;
+        const hitPos = hitPose.transform.position;
+        const hitMatrix = hitPose.transform.matrix;
 
-        state.currentReticlePose = {
-          x: pos.x,
-          y: pos.y,
-          z: pos.z,
-          matrix: matrix
-        };
+        // Verify hit surface normal is sufficiently horizontal:
+        // hitMatrix columns: [4..6] is Y-axis (surface normal vector in world space)
+        const nLen = Math.hypot(hitMatrix[4], hitMatrix[5], hitMatrix[6]) || 1;
+        const normalY = hitMatrix[5] / nLen;
+        const absNormalY = Math.abs(normalY);
 
-        const nLen = Math.hypot(matrix[4], matrix[5], matrix[6]) || 1;
-        let rawNormal = {
-          x: matrix[4] / nLen,
-          y: matrix[5] / nLen,
-          z: matrix[6] / nLen
-        };
-        // Tables, desks, and floors are physically horizontal planes in WebXR's gravity space.
-        // Tightened to |ny| >= 0.95 (within ~18 deg of gravity vertical) for higher quality floor samples only.
-        const rawAbsNy = Math.abs(rawNormal.y);
-        const isHorizontal = rawAbsNy >= 0.88;
-        const isHighQualityHorizontal = rawAbsNy >= 0.95; // Strict quality threshold for elevation samples
+        // Reject hits that are not on a sufficiently horizontal surface (|ny| >= 0.88, within ~28° of gravity vertical)
+        const isHorizontal = absNormalY >= 0.88;
 
         if (isHorizontal) {
-          rawNormal = { x: 0, y: rawNormal.y >= 0 ? 1 : -1, z: 0 };
-        }
-        const rawPoint = { x: pos.x, y: pos.y, z: pos.z };
+          surfaceHitFound = true;
+          state.methodB.hitAvailable = true;
+          state.methodB.consecutiveMissing = 0;
 
-        if (!state.planeHeightSamples) state.planeHeightSamples = [];
+          state.currentReticlePose = {
+            x: hitPos.x,
+            y: hitPos.y,
+            z: hitPos.z,
+            matrix: hitMatrix
+          };
 
-        if (isHorizontal) {
-          // Only accept high-quality (nearly-perfect horizontal) samples into elevation buffer
-          // This filters out oblique-angle hits that overestimate floor depth
-          if (isHighQualityHorizontal) {
-            // Larger rolling window (60 samples ≈ 2 seconds at 30fps) for more stable median
-            state.planeHeightSamples.push(rawPoint.y);
-            if (state.planeHeightSamples.length > 60) {
-              state.planeHeightSamples.shift();
-            }
-          }
+          // Check duplicate or stale hit data (unchanged coordinates within 25ms)
+          const isDuplicate = state.methodB.lastHitPosition &&
+            Math.abs(hitPos.x - state.methodB.lastHitPosition.x) < 1e-5 &&
+            Math.abs(hitPos.y - state.methodB.lastHitPosition.y) < 1e-5 &&
+            Math.abs(hitPos.z - state.methodB.lastHitPosition.z) < 1e-5 &&
+            (time - state.methodB.lastHitTime < 25);
 
-          if (state.planeHeightSamples.length > 0) {
-            // --- Elevation anchoring ---
-            // Priority 1: Depth API world-Y at screen center → exact pants/table surface Y
-            // This is the Y coordinate of the surface the camera is actually looking at,
-            // NOT the statistical floor estimate (which biases toward the floor).
-            let surfaceElevationY = null;
+          if (!isDuplicate) {
+            state.methodB.lastHitPosition = { x: hitPos.x, y: hitPos.y, z: hitPos.z };
+            state.methodB.lastHitTime = time;
 
-            if (frame.getDepthInformation) {
-              try {
-                const depthInfoEl = frame.getDepthInformation(view);
-                if (depthInfoEl && depthInfoEl.width > 0) {
-                  const dEl = depthInfoEl.getDepthInMeters(0.5, 0.5);
-                  if (Number.isFinite(dEl) && dEl > 0.1 && dEl < 3.0) {
-                    // Reconstruct the world-Y of the surface from depth + camera pose:
-                    // surfaceY = camY + lookDirY * depth
-                    // lookDirY = -camMatrix[9]  (camera looks in -Z; Y component of look dir)
-                    const cm = view.transform.matrix;
-                    const lookDirY = -cm[9]; // Y component of camera look direction in world
-                    surfaceElevationY = cm[13] + lookDirY * dEl;
-                  }
+            // Direct vertical separation in meters:
+            // verticalDistance = Math.abs(hitPosition.y - cameraPosition.y)
+            const verticalDistance = Math.abs(hitPos.y - camPos.y);
+            // Convert metres to centimetres:
+            const verticalDistanceCm = verticalDistance * 100;
+
+            // Validate: finite and physically plausible (15 cm to 250 cm)
+            if (Number.isFinite(verticalDistanceCm) && verticalDistanceCm >= 15.0 && verticalDistanceCm <= 250.0) {
+              state.methodB.rawVerticalDistCm = verticalDistanceCm;
+
+              // Outlier rejection before pushing to rolling buffer:
+              // If buffer has at least 15 samples, reject sudden extreme spikes (> 3.5 * stdDev or > 20cm jump from median)
+              let isOutlier = false;
+              if (state.methodB.buffer.length >= 15) {
+                const currentMedian = state.methodB.medianVerticalDistCm;
+                const currentStd = state.methodB.stdDevCm || 1.0;
+                const maxAllowedDeviation = Math.max(12.0, 3.5 * currentStd);
+                if (Math.abs(verticalDistanceCm - currentMedian) > maxAllowedDeviation) {
+                  isOutlier = true;
+                  state.methodB.totalRejected++;
                 }
-              } catch (_) { /* fall through to percentile */ }
+              }
+
+              if (!isOutlier) {
+                state.methodB.buffer.push(verticalDistanceCm);
+                state.methodB.totalAccepted++;
+                // Rolling buffer of 60 valid samples (~2.0 seconds at 30 fps)
+                const MAX_BUFFER = 60;
+                if (state.methodB.buffer.length > MAX_BUFFER) {
+                  state.methodB.buffer.shift();
+                }
+              }
             }
-
-            // Priority 2: 20th-percentile of hit-test samples (floor bias fallback)
-            if (surfaceElevationY === null) {
-              const sorted = [...state.planeHeightSamples].sort((a, b) => a - b);
-              const p20idx = Math.max(0, Math.floor(sorted.length * 0.20));
-              surfaceElevationY = sorted[p20idx];
-            }
-
-            const floorElevationY = surfaceElevationY;
-
-            const signY = rawNormal.y >= 0 ? 1 : -1;
-            state.surfacePlane = {
-              point: { x: pos.x, y: floorElevationY, z: pos.z },
-              normal: { x: 0, y: signY, z: 0 },
-              elevationY: floorElevationY,
-              timestamp: time,
-              sampleCount: (state.surfacePlane?.sampleCount || 0) + 1
-            };
           }
-        } else {
-          if (!state.surfacePlane) {
-            state.surfacePlane = {
-              point: { ...rawPoint },
-              normal: { ...rawNormal },
-              timestamp: time,
-              sampleCount: 1
-            };
-          } else {
-            const dot = rawNormal.x * state.surfacePlane.normal.x +
-                        rawNormal.y * state.surfacePlane.normal.y +
-                        rawNormal.z * state.surfacePlane.normal.z;
-            const sign = dot < 0 ? -1 : 1;
-            const alignedNx = sign * rawNormal.x;
-            const alignedNy = sign * rawNormal.y;
-            const alignedNz = sign * rawNormal.z;
 
-            const isMovingFast = moveDist > 0.012;
-            const alpha = isMovingFast ? 0.85 : 0.25;
-
-            const smPtX = (1 - alpha) * state.surfacePlane.point.x + alpha * rawPoint.x;
-            const smPtY = (1 - alpha) * state.surfacePlane.point.y + alpha * rawPoint.y;
-            const smPtZ = (1 - alpha) * state.surfacePlane.point.z + alpha * rawPoint.z;
-
-            const smNormX = (1 - alpha) * state.surfacePlane.normal.x + alpha * alignedNx;
-            const smNormY = (1 - alpha) * state.surfacePlane.normal.y + alpha * alignedNy;
-            const smNormZ = (1 - alpha) * state.surfacePlane.normal.z + alpha * alignedNz;
-            const smLen = Math.hypot(smNormX, smNormY, smNormZ) || 1;
-
-            state.surfacePlane = {
-              point: { x: smPtX, y: smPtY, z: smPtZ },
-              normal: { x: smNormX / smLen, y: smNormY / smLen, z: smNormZ / smLen },
-              timestamp: time,
-              sampleCount: (state.surfacePlane?.sampleCount || 0) + 1
-            };
-          }
-        }
-
-        // Also compute the 3D hit-ray distance from camera to surface hit point.
-        // This is more reliable than (camY - floorY) because it avoids depending on
-        // ARCore's absolute Y axis, using the direct spatial distance instead.
-        if (isHorizontal && state.surfacePlane) {
-          const dx = pos.x - camPos.x;
-          const dy = pos.y - camPos.y;
-          const dz = pos.z - camPos.z;
-          const rayDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-          // Project ray distance onto vertical axis: vertical_height = rayDist * |dy/rayDist|
-          // This removes the horizontal component that occurs when pointing at an angle
-          const verticalComponent = Math.abs(dy);
-          if (Number.isFinite(rayDist) && rayDist > 0.05 && verticalComponent > 0.01) {
-            if (!state.hitRaySamples) state.hitRaySamples = [];
-            state.hitRaySamples.push(verticalComponent);
-            if (state.hitRaySamples.length > 60) state.hitRaySamples.shift();
-          }
+          // Maintain the 3D surface plane anchored strictly to Method B's hit position
+          // for accurate landmark 3D ray-plane unprojection
+          const signY = normalY >= 0 ? 1 : -1;
+          state.surfacePlane = {
+            point: { x: hitPos.x, y: hitPos.y, z: hitPos.z },
+            normal: { x: 0, y: signY, z: 0 },
+            elevationY: hitPos.y,
+            timestamp: time,
+            sampleCount: state.methodB.buffer.length
+          };
         }
       }
     }
   }
 
-  // Live Y-Distance calculation:
-  // Method C (Depth API)  → direct IR measurement at reticle center [PRIMARY, ±1–3cm]
-  // Method A (SLAM floor) → smoothed camera Y minus floor elevation  [FALLBACK A]
-  // Method B (hit-ray)    → 30th-pct vertical component of hit-tests [FALLBACK B]
+  // Gracefully handle missing hit-test results
+  if (!surfaceHitFound) {
+    state.methodB.consecutiveMissing++;
+    if (state.methodB.consecutiveMissing > 10) {
+      state.methodB.hitAvailable = false;
+    }
+  }
+
+  // Calculate Rolling Buffer Statistics (Median, Mean, Std Dev, Min, Max, Stability)
+  const bBuf = state.methodB.buffer;
+  state.methodB.validSamplesCount = bBuf.length;
+
+  if (bBuf.length > 0) {
+    const sorted = [...bBuf].sort((a, b) => a - b);
+    const n = sorted.length;
+    const mid = Math.floor(n / 2);
+    const medianVal = n % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    state.methodB.medianVerticalDistCm = medianVal;
+    state.methodB.minCm = sorted[0];
+    state.methodB.maxCm = sorted[n - 1];
+
+    const sum = sorted.reduce((acc, v) => acc + v, 0);
+    const meanVal = sum / n;
+    state.methodB.meanVerticalDistCm = meanVal;
+
+    const variance = sorted.reduce((acc, v) => acc + (v - meanVal) ** 2, 0) / n;
+    state.methodB.stdDevCm = Math.sqrt(variance);
+
+    // Stability criteria: at least 30 valid samples, std dev <= 1.5 cm, phone steady & level
+    const isStatisticallyStable = n >= 30 && state.methodB.stdDevCm <= 1.5;
+    const isPhysicalSteady = state.camMovement < 0.015;
+    state.methodB.isStable = isStatisticallyStable && isPhysicalSteady && state.isPhoneLevel;
+  } else {
+    state.methodB.isStable = false;
+  }
+
+  // METHOD B ONLY:
+  // verticalDistanceCm from ARCore hit-testing with rolling median filter
   let yDistCm = null;
-
-  // ------------------------------------------------------------------
-  // Method C: ARCore Depth API — direct hardware depth at screen center
-  // getDepthInformation() is only defined when depth-sensing was granted.
-  // We sample a 5×5 patch around (0.5, 0.5) normalized UV and take the
-  // median to reject edge/background outliers at the garment boundary.
-  // ------------------------------------------------------------------
-  let methodC = null;
-  if (frame.getDepthInformation) {
-    try {
-      const depthInfo = frame.getDepthInformation(view);
-      if (depthInfo && depthInfo.width > 0 && depthInfo.height > 0) {
-        const dW = depthInfo.width;
-        const dH = depthInfo.height;
-        const patchR = 2; // 5×5 patch centred on screen middle
-        const cx = Math.round(dW * 0.5);
-        const cy = Math.round(dH * 0.5);
-        const patchSamples = [];
-
-        for (let dy = -patchR; dy <= patchR; dy++) {
-          for (let dx = -patchR; dx <= patchR; dx++) {
-            const px = cx + dx;
-            const py = cy + dy;
-            if (px < 0 || px >= dW || py < 0 || py >= dH) continue;
-            // getDepthInMeters expects normalised UV [0,1]
-            const d = depthInfo.getDepthInMeters(
-              (px + 0.5) / dW,
-              (py + 0.5) / dH
-            );
-            // Accept only plausible camera-to-garment range (15cm – 250cm)
-            if (Number.isFinite(d) && d > 0.15 && d < 2.5) {
-              patchSamples.push(d);
-            }
-          }
-        }
-
-        if (patchSamples.length >= 4) {
-          patchSamples.sort((a, b) => a - b);
-          const slantDepthM = patchSamples[Math.floor(patchSamples.length / 2)];
-
-          // Project slant depth onto the vertical (gravity) axis.
-          const camMatrix = view.transform.matrix;
-          const lookDownFactor = Math.abs(camMatrix[9]); // cos(angle from vertical), ≈1 when pointing down
-          if (lookDownFactor > 0.1) { // reject near-horizontal aim (>84° tilt) — depth unusable
-            methodC = slantDepthM * lookDownFactor * 100; // metres → cm, vertical component
-          }
-        }
-      }
-    } catch (depthErr) {
-      // Depth API unavailable or threw — silently fall through to A/B
-    }
-  }
-
-  if (state.surfacePlane && state.surfacePlane.elevationY !== undefined) {
-    // Method A: smoothed camera Y minus floor elevation (both median-filtered)
-    const methodA = Math.abs(smoothCamY - state.surfacePlane.elevationY) * 100;
-
-    // Method B: direct 3D hit-ray vertical component (median of recent samples)
-    let methodB = null;
-    if (state.hitRaySamples && state.hitRaySamples.length >= 5) {
-      const sortedRay = [...state.hitRaySamples].sort((a, b) => a - b);
-      // Use 30th percentile (floor is minimum vertical component)
-      const p30 = sortedRay[Math.max(0, Math.floor(sortedRay.length * 0.30))];
-      methodB = p30 * 100;
-    }
-
-    // Priority: C (Depth API) > A+B fusion > A alone
-    if (methodC !== null) {
-      // Depth API wins — direct IR measurement, most accurate
-      yDistCm = methodC;
-      if (!state.lastYDistLog || time - state.lastYDistLog > 2000) {
-        state.lastYDistLog = time;
-        logMsg(`[Y-Dist] Depth-API: ${methodC.toFixed(1)} cm (SLAM-A: ${methodA.toFixed(1)} cm)`, 'info');
-      }
-    } else if (methodB !== null && state.hitRaySamples.length >= 30) {
-      // Weighted average: B gets more weight with more samples (more confident)
-      const wB = Math.min(1.0, state.hitRaySamples.length / 60);
-      const wA = 1.0 - wB;
-      yDistCm = wA * methodA + wB * methodB;
-    } else {
-      yDistCm = methodA;
-    }
-  } else if (methodC !== null) {
-    // Surface plane not yet established but depth is already available — use it directly
-    yDistCm = methodC;
-  } else if (camPos && state.surfacePlane && state.surfacePlane.point && state.surfacePlane.normal) {
-    const pt = state.surfacePlane.point;
-    const n = state.surfacePlane.normal;
-    const nLen = Math.hypot(n.x, n.y, n.z) || 1;
-    const unx = n.x / nLen; const uny = n.y / nLen; const unz = n.z / nLen;
-    const hPerp = Math.abs((smoothCamY - pt.y) * uny + (camPos.x - pt.x) * unx + (camPos.z - pt.z) * unz);
-    if (Number.isFinite(hPerp)) {
-      yDistCm = hPerp * 100;
-    }
+  if (state.methodB.medianVerticalDistCm !== null) {
+    yDistCm = state.methodB.medianVerticalDistCm;
+  } else if (state.methodB.rawVerticalDistCm !== null) {
+    yDistCm = state.methodB.rawVerticalDistCm;
   }
 
   if (Number.isFinite(yDistCm)) {
@@ -1608,24 +1518,21 @@ function onXRFrame(time, frame) {
   }
 
   // ------------------------------------------------------------------
-  // ------------------------------------------------------------------
-  // 3. 2-Phase Pre-Scan Calibration Engine (Increased Timings: 75 mapping + 60 steady)
-  // Phase 1: User moves phone slightly over trousers to map surface & establish SLAM/depth parallax (75 frames ~2.5s)
-  // Phase 2: User holds phone steady to settle tracking and build confidence (60 frames ~2.0s)
-  // Dynamic Real-Time Y-Distance: Never artificially locked; continuously responsive with rolling median smoothing
+  // 3. 2-Phase Pre-Scan Calibration Engine (Gated by Method B Hit-Test Stability)
+  // Phase 1: User moves phone slightly over trousers to map surface (75 frames)
+  // Phase 2: User holds phone steady to settle Method B buffer (60 frames, >=30 samples, stdDev <= 1.5cm)
   // ------------------------------------------------------------------
   const MAPPING_TARGET_FRAMES = 75;
   const STEADY_TARGET_FRAMES = 60;
   const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
 
   if (state.isSimulator) {
-    // Simulator desktop mode bypasses physical motion requirements
     state.mappingComplete = true;
     state.isTrackingStable = true;
   } else if (hasValidSurface) {
     // Phase 1: Motion mapping (75 frames)
     if (!state.mappingComplete) {
-      const isMotionHelpful = moveDist > 0.001 || (state.surfacePlane && state.surfacePlane.sampleCount > 2);
+      const isMotionHelpful = moveDist > 0.001 || state.methodB.validSamplesCount > 5;
       if (isMotionHelpful) {
         state.mappingFrames = (state.mappingFrames || 0) + 1;
         if (state.mappingFrames >= MAPPING_TARGET_FRAMES) {
@@ -1635,57 +1542,50 @@ function onXRFrame(time, frame) {
       }
     }
 
-    // Phase 2: Steady hold (60 frames) — phone must also be level (within 5° of vertical)
+    // Phase 2: Steady hold (60 frames) — gated on Method B stability and phone tilt
     if (state.mappingComplete) {
       const isPhoneSteady = moveDist < 0.012;
-      if (isPhoneSteady && state.isPhoneLevel) {
+      const isMethodBConverging = state.methodB.validSamplesCount >= 30 && state.methodB.stdDevCm <= 1.5;
+      if (isPhoneSteady && state.isPhoneLevel && isMethodBConverging) {
         state.steadyFrames = (state.steadyFrames || 0) + 1;
         if (state.steadyFrames >= STEADY_TARGET_FRAMES) {
           state.isTrackingStable = true;
         }
       } else {
-        // If phone is moved OR tilted during steady phase, penalize steady frames
-        if (moveDist > 0.02 || !state.isPhoneLevel) {
+        // If phone is moved, tilted, or Method B not settled, smoothly adjust steady frames
+        if (moveDist > 0.02 || !state.isPhoneLevel || (state.methodB.stdDevCm > 2.0)) {
           state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 4);
           state.isTrackingStable = false;
         }
       }
     }
   } else {
-    // Tracking lost
     state.isTrackingStable = false;
   }
 
-  // Live Continuous Y-Distance Smoothing (Never Artificially Locked):
-  // Keeps a rolling buffer across 12 recent frames to remove sensor noise/flicker
-  // while remaining 100% dynamic and reflecting current camera height in real-time.
-  if (!state.liveDistanceBuffer) state.liveDistanceBuffer = [];
-  let smoothedYDist = null;
-  if (Number.isFinite(yDistCm) && yDistCm > 15 && yDistCm < 250) {
-    state.liveDistanceBuffer.push(yDistCm);
-    if (state.liveDistanceBuffer.length > 12) state.liveDistanceBuffer.shift();
-    const sorted = [...state.liveDistanceBuffer].sort((a, b) => a - b);
-    smoothedYDist = sorted[Math.floor(sorted.length / 2)];
-  }
-
-  const currentDisplayVal = smoothedYDist !== null ? smoothedYDist : yDistCm;
-  let displayDistText = '-- cm';
-  if (Number.isFinite(currentDisplayVal)) {
-    if (!state.mappingComplete && !state.isSimulator) {
-      displayDistText = `${currentDisplayVal.toFixed(1)} cm (Mapping)`;
-    } else if (!state.isTrackingStable && !state.isSimulator) {
-      displayDistText = `${currentDisplayVal.toFixed(1)} cm (Stabilizing)`;
-    } else {
-      displayDistText = `${currentDisplayVal.toFixed(1)} cm`;
+  // Top Distance Bar: Method B Median & Std Dev Display
+  if (state.activeMode === MODES.HRNET) {
+    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Method B (Median):';
+    if (elements.hudDistanceVal) {
+      if (state.methodB.medianVerticalDistCm !== null) {
+        const medText = `${state.methodB.medianVerticalDistCm.toFixed(1)} cm`;
+        const stdText = state.methodB.validSamplesCount >= 2 ? ` (±${state.methodB.stdDevCm.toFixed(1)})` : '';
+        const tiltInfo = state.isSimulator ? '' : ` | ${state.phoneTiltDeg.toFixed(1)}°`;
+        elements.hudDistanceVal.textContent = medText + stdText + tiltInfo;
+      } else {
+        elements.hudDistanceVal.textContent = '-- cm';
+      }
     }
   }
 
-  // Update Top Distance Bar for HRNet mode (always live, never frozen)
-  if (state.activeMode === MODES.HRNET) {
-    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Dist / Tilt:';
-    if (elements.hudDistanceVal) {
-      const tiltInfo = state.isSimulator ? '' : ` | ${state.phoneTiltDeg.toFixed(1)}°`;
-      elements.hudDistanceVal.textContent = displayDistText + tiltInfo;
+  // Render on-screen live diagnostics for Method B
+  renderMethodBDiagnosticsUI();
+
+  // Periodically log Method B diagnostic telemetry (every 2.5 seconds)
+  if (!state.lastMethodBLog || time - state.lastMethodBLog > 2500) {
+    state.lastMethodBLog = time;
+    if (state.methodB.rawVerticalDistCm !== null) {
+      logMsg(`[Method B] Raw: ${state.methodB.rawVerticalDistCm.toFixed(1)}cm | Med: ${state.methodB.medianVerticalDistCm.toFixed(1)}cm | σ: ${state.methodB.stdDevCm.toFixed(2)}cm | N: ${state.methodB.validSamplesCount}/60 | Tilt: ${state.phoneTiltDeg.toFixed(1)}° | Hit: ${state.methodB.hitAvailable ? 'OK' : 'MISSING'} | Stable: ${state.isTrackingStable ? 'YES' : 'NO'}`, 'info');
     }
   }
 
@@ -1732,6 +1632,126 @@ function onXRFrame(time, frame) {
 
   // 5. Update HUD and visual markers
   renderGarmentHUD(view, window.innerWidth, window.innerHeight);
+}
+
+/**
+ * Renders on-screen live diagnostics for Method B (ARCore Hit-Test Vertical Separation)
+ * Displays:
+ * 1. Raw hit-test vertical distance (cm)
+ * 2. Rolling median (cm)
+ * 3. Standard deviation (cm)
+ * 4. Number of valid samples (out of 60)
+ * 5. Phone tilt (degrees)
+ * 6. Hit-test availability (Active / Lost)
+ * 7. Stability status (Stable / Calibrating / Level Phone / Hold Steady)
+ */
+function renderMethodBDiagnosticsUI() {
+  if (state.flowState !== STATES.SCANNING) {
+    const existing = document.getElementById('hud-method-b-diag');
+    if (existing) existing.style.display = 'none';
+    return;
+  }
+
+  let diagCard = document.getElementById('hud-method-b-diag');
+  if (!diagCard && elements.arOverlay) {
+    diagCard = document.createElement('div');
+    diagCard.id = 'hud-method-b-diag';
+    diagCard.className = 'hud-calib-card';
+    diagCard.style.cssText = 'position:absolute; top:68px; left:12px; right:12px; padding:10px 14px; background:rgba(10,16,28,0.94); border:1.5px solid rgba(0,229,255,0.45); border-radius:12px; pointer-events:none; z-index:15; box-shadow:0 6px 20px rgba(0,0,0,0.65);';
+    diagCard.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid rgba(255,255,255,0.12);">
+        <span style="font-family:monospace; font-size:0.75rem; font-weight:800; color:#00e5ff; letter-spacing:0.5px;">📐 METHOD B: HIT-TEST VERTICAL</span>
+        <span id="diag-b-status-badge" class="badge checking" style="font-size:0.68rem; padding:2px 8px; border-radius:10px;">SAMPLING</span>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; text-align:center;">
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Raw Hit</div>
+          <div id="diag-b-raw" style="font-size:0.86rem; font-weight:800; color:#fff; font-family:monospace;">-- cm</div>
+        </div>
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Median Y</div>
+          <div id="diag-b-median" style="font-size:0.86rem; font-weight:800; color:#00e5ff; font-family:monospace;">-- cm</div>
+        </div>
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Std Dev (σ)</div>
+          <div id="diag-b-std" style="font-size:0.86rem; font-weight:800; color:#ffe600; font-family:monospace;">-- cm</div>
+        </div>
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Samples</div>
+          <div id="diag-b-samples" style="font-size:0.86rem; font-weight:800; color:#fff; font-family:monospace;">0 / 60</div>
+        </div>
+      </div>
+      <div style="margin-top:6px; font-size:0.72rem; color:#c7d6e8; display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.08); padding-top:4px;">
+        <span>Tilt: <strong id="diag-b-tilt" style="color:#fff;">0.0°</strong></span>
+        <span>Hit-Test: <strong id="diag-b-hit" style="color:#00e676;">Active</strong></span>
+        <span>Stability: <strong id="diag-b-stability" style="color:#ffb300;">Stabilizing</strong></span>
+      </div>
+    `;
+    elements.arOverlay.appendChild(diagCard);
+  }
+
+  if (diagCard) {
+    diagCard.style.display = 'block';
+    const rawEl = document.getElementById('diag-b-raw');
+    const medEl = document.getElementById('diag-b-median');
+    const stdEl = document.getElementById('diag-b-std');
+    const sampEl = document.getElementById('diag-b-samples');
+    const tiltEl = document.getElementById('diag-b-tilt');
+    const hitEl = document.getElementById('diag-b-hit');
+    const stabEl = document.getElementById('diag-b-stability');
+    const badgeEl = document.getElementById('diag-b-status-badge');
+
+    const b = state.methodB;
+    if (rawEl) rawEl.textContent = b.rawVerticalDistCm !== null ? `${b.rawVerticalDistCm.toFixed(1)} cm` : '-- cm';
+    if (medEl) medEl.textContent = b.medianVerticalDistCm !== null ? `${b.medianVerticalDistCm.toFixed(1)} cm` : '-- cm';
+    if (stdEl) stdEl.textContent = b.validSamplesCount >= 2 ? `±${b.stdDevCm.toFixed(2)} cm` : '-- cm';
+    if (sampEl) sampEl.textContent = `${b.validSamplesCount} / 60`;
+    if (tiltEl) {
+      tiltEl.textContent = `${state.phoneTiltDeg.toFixed(1)}°`;
+      tiltEl.style.color = state.isPhoneLevel ? '#00e676' : '#ff9100';
+    }
+    if (hitEl) {
+      hitEl.textContent = b.hitAvailable ? 'Available' : 'Searching...';
+      hitEl.style.color = b.hitAvailable ? '#00e676' : '#ff5252';
+    }
+    if (stabEl) {
+      let stabText = 'Stabilizing...';
+      let stabColor = '#ffb300';
+      if (state.isTrackingStable) {
+        stabText = 'Locked & Stable';
+        stabColor = '#00e676';
+      } else if (!b.hitAvailable) {
+        stabText = 'No Horizontal Floor';
+        stabColor = '#ff5252';
+      } else if (b.validSamplesCount < 30) {
+        stabText = `Sampling (${b.validSamplesCount}/30)`;
+        stabColor = '#ffb300';
+      } else if (!state.isPhoneLevel) {
+        stabText = `Level Phone (${state.phoneTiltDeg.toFixed(1)}°)`;
+        stabColor = '#ff9100';
+      } else if (state.camMovement >= 0.012) {
+        stabText = 'Hold Steady';
+        stabColor = '#ffb300';
+      }
+      stabEl.textContent = stabText;
+      stabEl.style.color = stabColor;
+    }
+    if (badgeEl) {
+      if (state.isTrackingStable) {
+        badgeEl.textContent = 'STABLE';
+        badgeEl.className = 'badge success';
+      } else if (b.hitAvailable && b.validSamplesCount >= 10) {
+        badgeEl.textContent = 'CONVERGING';
+        badgeEl.className = 'badge checking';
+      } else if (b.hitAvailable) {
+        badgeEl.textContent = 'SAMPLING';
+        badgeEl.className = 'badge checking';
+      } else {
+        badgeEl.textContent = 'NO HIT';
+        badgeEl.className = 'badge error';
+      }
+    }
+  }
 }
 
 function updateTrackingUI(hasSurface, isStable) {
@@ -3236,6 +3256,22 @@ function resetToScanning() {
   state.currentYDistanceCm = null;
   state.phoneTiltDeg = 0;
   state.isPhoneLevel = false;
+
+  // Reset Method B state
+  state.methodB.buffer = [];
+  state.methodB.rawVerticalDistCm = null;
+  state.methodB.medianVerticalDistCm = null;
+  state.methodB.meanVerticalDistCm = null;
+  state.methodB.stdDevCm = 0;
+  state.methodB.minCm = null;
+  state.methodB.maxCm = null;
+  state.methodB.validSamplesCount = 0;
+  state.methodB.isStable = false;
+  state.methodB.lastHitPosition = null;
+  state.methodB.lastHitTime = 0;
+  state.methodB.consecutiveMissing = 0;
+  state.methodB.totalAccepted = 0;
+  state.methodB.totalRejected = 0;
 
   hideToast();
   hideErrorBanner();
