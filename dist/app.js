@@ -165,6 +165,16 @@ const state = {
     totalRejected: 0
   },
 
+  // Independent Depth Validation State
+  depthValidation: {
+    available: false,
+    rawDepthMeters: null,
+    depthVerticalCm: null,
+    disparityCm: null,
+    isValidated: false,
+    lastTime: 0
+  },
+
   // Active Flow State
   flowState: STATES.SCANNING,
   frozenSnapshot: null,     // { camMatrix, projMatrix, invProjMatrix, surfacePlane, imageWidth, imageHeight, jpegBlob, dataUrl }
@@ -1535,6 +1545,66 @@ function onXRFrame(time, frame) {
   }
 
   // ------------------------------------------------------------------
+  // Independent Floor Plane Validation using WebXR Depth Information
+  // Uses direct optical depth at screen center to independently verify that
+  // ARCore's tracked floor plane matches physical reality.
+  // ------------------------------------------------------------------
+  let depthValidationAvailable = false;
+  let depthVerticalCm = null;
+  let depthDisparityCm = null;
+
+  if (frame.getDepthInformation && view) {
+    try {
+      const depthInfo = frame.getDepthInformation(view);
+      if (depthInfo && depthInfo.width > 0 && depthInfo.height > 0) {
+        const dW = depthInfo.width;
+        const dH = depthInfo.height;
+        const patchR = 2; // 5x5 center patch
+        const cx = Math.round(dW * 0.5);
+        const cy = Math.round(dH * 0.5);
+        const patchSamples = [];
+
+        for (let dy = -patchR; dy <= patchR; dy++) {
+          for (let dx = -patchR; dx <= patchR; dx++) {
+            const px = cx + dx;
+            const py = cy + dy;
+            if (px < 0 || px >= dW || py < 0 || py >= dH) continue;
+            const d = depthInfo.getDepthInMeters((px + 0.5) / dW, (py + 0.5) / dH);
+            if (Number.isFinite(d) && d > 0.15 && d < 3.0) {
+              patchSamples.push(d);
+            }
+          }
+        }
+
+        if (patchSamples.length >= 4) {
+          patchSamples.sort((a, b) => a - b);
+          const medianSlantDepthM = patchSamples[Math.floor(patchSamples.length / 2)];
+          const lookDownFactor = Math.abs(view.transform.matrix[9]); // cos(tilt)
+          if (lookDownFactor > 0.2) {
+            depthVerticalCm = medianSlantDepthM * lookDownFactor * 100;
+            depthValidationAvailable = true;
+
+            if (Number.isFinite(yDistCm)) {
+              depthDisparityCm = Math.abs(yDistCm - depthVerticalCm);
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Depth API not ready or unavailable on this frame
+    }
+  }
+
+  state.depthValidation = {
+    available: depthValidationAvailable,
+    rawDepthMeters: depthVerticalCm !== null ? depthVerticalCm / 100 : null,
+    depthVerticalCm: depthVerticalCm,
+    disparityCm: depthDisparityCm,
+    isValidated: depthValidationAvailable && depthDisparityCm !== null && depthDisparityCm <= 4.5,
+    lastTime: time
+  };
+
+  // ------------------------------------------------------------------
   // 3. 2-Phase Pre-Scan Calibration Engine (Gated by Method B Hit-Test Stability)
   // Phase 1: User moves phone slightly over trousers to map surface (75 frames)
   // Phase 2: User holds phone steady to settle Method B buffer (60 frames, >=30 samples, stdDev <= 1.5cm)
@@ -1674,34 +1744,34 @@ function renderMethodBDiagnosticsUI() {
     diagCard = document.createElement('div');
     diagCard.id = 'hud-method-b-diag';
     diagCard.className = 'hud-calib-card';
-    diagCard.style.cssText = 'position:absolute; top:68px; left:12px; right:12px; padding:10px 14px; background:rgba(10,16,28,0.94); border:1.5px solid rgba(0,229,255,0.45); border-radius:12px; pointer-events:none; z-index:15; box-shadow:0 6px 20px rgba(0,0,0,0.65);';
+    diagCard.style.cssText = 'position:absolute; top:66px; left:12px; right:12px; padding:10px 14px; background:rgba(10,16,28,0.95); border:1.5px solid rgba(0,229,255,0.45); border-radius:12px; pointer-events:none; z-index:15; box-shadow:0 6px 20px rgba(0,0,0,0.65);';
     diagCard.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid rgba(255,255,255,0.12);">
-        <span style="font-family:monospace; font-size:0.75rem; font-weight:800; color:#00e5ff; letter-spacing:0.5px;">📐 METHOD B: HIT-TEST VERTICAL</span>
+        <span style="font-family:monospace; font-size:0.75rem; font-weight:800; color:#00e5ff; letter-spacing:0.5px;">📐 ARCORE TRACKING &amp; DEPTH VALIDATION</span>
         <span id="diag-b-status-badge" class="badge checking" style="font-size:0.68rem; padding:2px 8px; border-radius:10px;">SAMPLING</span>
       </div>
       <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; text-align:center;">
         <div>
-          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Raw Hit</div>
-          <div id="diag-b-raw" style="font-size:0.86rem; font-weight:800; color:#fff; font-family:monospace;">-- cm</div>
-        </div>
-        <div>
-          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Median Y</div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">AR Tracking</div>
           <div id="diag-b-median" style="font-size:0.86rem; font-weight:800; color:#00e5ff; font-family:monospace;">-- cm</div>
         </div>
         <div>
-          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Std Dev (σ)</div>
-          <div id="diag-b-std" style="font-size:0.86rem; font-weight:800; color:#ffe600; font-family:monospace;">-- cm</div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Depth Sensor</div>
+          <div id="diag-b-depth" style="font-size:0.86rem; font-weight:800; color:#a3e635; font-family:monospace;">-- cm</div>
         </div>
         <div>
-          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Samples</div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Disparity (&Delta;)</div>
+          <div id="diag-b-disparity" style="font-size:0.86rem; font-weight:800; color:#ffe600; font-family:monospace;">-- cm</div>
+        </div>
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Samples (Std)</div>
           <div id="diag-b-samples" style="font-size:0.86rem; font-weight:800; color:#fff; font-family:monospace;">0 / 60</div>
         </div>
       </div>
       <div style="margin-top:6px; font-size:0.72rem; color:#c7d6e8; display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.08); padding-top:4px;">
         <span>Tilt: <strong id="diag-b-tilt" style="color:#fff;">0.0°</strong></span>
-        <span>Hit-Test: <strong id="diag-b-hit" style="color:#00e676;">Active</strong></span>
-        <span>Stability: <strong id="diag-b-stability" style="color:#ffb300;">Stabilizing</strong></span>
+        <span>Floor Validation: <strong id="diag-b-depth-val" style="color:#00e676;">Checking</strong></span>
+        <span>Status: <strong id="diag-b-stability" style="color:#ffb300;">Stabilizing</strong></span>
       </div>
     `;
     elements.arOverlay.appendChild(diagCard);
@@ -1709,33 +1779,54 @@ function renderMethodBDiagnosticsUI() {
 
   if (diagCard) {
     diagCard.style.display = 'block';
-    const rawEl = document.getElementById('diag-b-raw');
     const medEl = document.getElementById('diag-b-median');
-    const stdEl = document.getElementById('diag-b-std');
+    const depthEl = document.getElementById('diag-b-depth');
+    const dispEl = document.getElementById('diag-b-disparity');
     const sampEl = document.getElementById('diag-b-samples');
     const tiltEl = document.getElementById('diag-b-tilt');
-    const hitEl = document.getElementById('diag-b-hit');
+    const dValEl = document.getElementById('diag-b-depth-val');
     const stabEl = document.getElementById('diag-b-stability');
     const badgeEl = document.getElementById('diag-b-status-badge');
 
     const b = state.methodB;
-    if (rawEl) rawEl.textContent = b.rawVerticalDistCm !== null ? `${b.rawVerticalDistCm.toFixed(1)} cm` : '-- cm';
+    const dv = state.depthValidation;
+
     if (medEl) medEl.textContent = b.medianVerticalDistCm !== null ? `${b.medianVerticalDistCm.toFixed(1)} cm` : '-- cm';
-    if (stdEl) stdEl.textContent = b.validSamplesCount >= 2 ? `±${b.stdDevCm.toFixed(2)} cm` : '-- cm';
-    if (sampEl) sampEl.textContent = `${b.validSamplesCount} / 60`;
+    if (depthEl) depthEl.textContent = dv && dv.depthVerticalCm !== null ? `${dv.depthVerticalCm.toFixed(1)} cm` : '--';
+    if (dispEl) {
+      if (dv && dv.disparityCm !== null) {
+        dispEl.textContent = `${dv.disparityCm.toFixed(1)} cm`;
+        dispEl.style.color = dv.disparityCm <= 4.5 ? '#00e676' : '#ff9100';
+      } else {
+        dispEl.textContent = '-- cm';
+        dispEl.style.color = '#ffe600';
+      }
+    }
+    if (sampEl) {
+      const stdStr = b.validSamplesCount >= 2 ? ` (±${b.stdDevCm.toFixed(1)})` : '';
+      sampEl.textContent = `${b.validSamplesCount}/60${stdStr}`;
+    }
     if (tiltEl) {
       tiltEl.textContent = `${state.phoneTiltDeg.toFixed(1)}°`;
       tiltEl.style.color = state.isPhoneLevel ? '#00e676' : '#ff9100';
     }
-    if (hitEl) {
-      hitEl.textContent = b.hitAvailable ? 'Available' : 'Searching...';
-      hitEl.style.color = b.hitAvailable ? '#00e676' : '#ff5252';
+    if (dValEl) {
+      if (dv && dv.isValidated) {
+        dValEl.textContent = `Verified (diff ${dv.disparityCm.toFixed(1)}cm)`;
+        dValEl.style.color = '#00e676';
+      } else if (dv && dv.available) {
+        dValEl.textContent = `Disparity (${dv.disparityCm !== null ? dv.disparityCm.toFixed(1) + 'cm' : 'calculating'})`;
+        dValEl.style.color = '#ff9100';
+      } else {
+        dValEl.textContent = 'Depth Sensor Active';
+        dValEl.style.color = '#00e5ff';
+      }
     }
     if (stabEl) {
       let stabText = 'Stabilizing...';
       let stabColor = '#ffb300';
       if (state.isTrackingStable) {
-        stabText = 'Locked & Stable';
+        stabText = dv && dv.isValidated ? 'Locked & Verified' : 'Locked & Stable';
         stabColor = '#00e676';
       } else if (!b.hitAvailable) {
         stabText = 'No Horizontal Floor';
@@ -1754,7 +1845,10 @@ function renderMethodBDiagnosticsUI() {
       stabEl.style.color = stabColor;
     }
     if (badgeEl) {
-      if (state.isTrackingStable) {
+      if (state.isTrackingStable && dv && dv.isValidated) {
+        badgeEl.textContent = 'VERIFIED';
+        badgeEl.className = 'badge success';
+      } else if (state.isTrackingStable) {
         badgeEl.textContent = 'STABLE';
         badgeEl.className = 'badge success';
       } else if (b.hitAvailable && b.validSamplesCount >= 10) {
@@ -3289,6 +3383,16 @@ function resetToScanning() {
   state.methodB.consecutiveMissing = 0;
   state.methodB.totalAccepted = 0;
   state.methodB.totalRejected = 0;
+
+  // Reset Depth Validation state
+  state.depthValidation = {
+    available: false,
+    rawDepthMeters: null,
+    depthVerticalCm: null,
+    disparityCm: null,
+    isValidated: false,
+    lastTime: 0
+  };
 
   hideToast();
   hideErrorBanner();
