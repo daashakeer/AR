@@ -347,6 +347,14 @@ const elements = {
   // Results Screen Elements
   btnBackScan: document.getElementById('btn-back-scan'),
   btnNewMeasure: document.getElementById('btn-new-measure'),
+  resWaistArVal: document.getElementById('res-waist-ar-val'),
+  resWaistArSub: document.getElementById('res-waist-ar-sub'),
+  resWaistDepthVal: document.getElementById('res-waist-depth-val'),
+  resWaistDepthSub: document.getElementById('res-waist-depth-sub'),
+  resOutseamArVal: document.getElementById('res-outseam-ar-val'),
+  resOutseamArSub: document.getElementById('res-outseam-ar-sub'),
+  resOutseamDepthVal: document.getElementById('res-outseam-depth-val'),
+  resOutseamDepthSub: document.getElementById('res-outseam-depth-sub'),
   resWaistWidth: document.getElementById('res-waist-width'),
   resWaistWidthSub: document.getElementById('res-waist-width-sub'),
   resWaistCirc: document.getElementById('res-waist-circ'),
@@ -2302,7 +2310,9 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
         rawHeight: frameData.height
       },
       jpegBlob: frameData.blob,
-      dataUrl: frameData.dataUrl
+      dataUrl: frameData.dataUrl,
+      arHeightM: (state.methodB && state.methodB.medianVerticalDistCm) ? (state.methodB.medianVerticalDistCm / 100) : null,
+      depthHeightM: (state.depthValidation && state.depthValidation.depthVerticalCm) ? (state.depthValidation.depthVerticalCm / 100) : (state.isSimulator ? 1.058 : null)
     };
 
     // If in simulator mode, ensure projection matrix aspect ratio matches simulator frame
@@ -3055,25 +3065,102 @@ function showGarmentResults(backendData, snapshot) {
     }
   };
 
-  // Waist Width & Circ
+  // Waist Width & Circ (Legacy update for hidden compatibility elements)
   updateCard(elements.resWaistWidth, elements.resWaistWidthSub, m.waist_width);
-  if (m.waist_circ && m.waist_circ.valid) {
+  if (m.waist_circ && m.waist_circ.valid && elements.resWaistCirc) {
     elements.resWaistCirc.textContent = `${m.waist_circ.distCm.toFixed(1)} cm (${m.waist_circ.distInches.toFixed(1)} in)`;
-    elements.resWaistCircSub.textContent = 'approx. (flat)';
-  } else {
+    if (elements.resWaistCircSub) elements.resWaistCircSub.textContent = 'approx. (flat)';
+  } else if (elements.resWaistCirc) {
     elements.resWaistCirc.textContent = '--';
-    elements.resWaistCircSub.textContent = m.waist_circ?.reason || 'Not detected';
+    if (elements.resWaistCircSub) elements.resWaistCircSub.textContent = m.waist_circ?.reason || 'Not detected';
   }
 
   if (m.waist_width && m.waist_width.valid && elements.hudDistanceVal) {
     elements.hudDistanceVal.textContent = `${m.waist_width.distCm.toFixed(1)} cm`;
   }
 
-  // Inseam, Outseam, Thigh, Hem
+  // Inseam, Outseam, Thigh, Hem (Legacy update for hidden compatibility elements)
   updateCard(elements.resInseam, elements.resInseamSub, m.inseam);
   updateCard(elements.resOutseam, elements.resOutseamSub, m.outseam);
   updateCard(elements.resThighWidth, elements.resThighWidthSub, m.thigh_width);
   updateCard(elements.resHemWidth, elements.resHemWidthSub, m.hem_width);
+
+  // ------------------------------------------------------------------
+  // Dual-Source Garment Metrics (Waist: (result+1)*2 & Outseam: AR vs Depth)
+  // ------------------------------------------------------------------
+  const arHeight = snapshot?.arHeightM || (state.methodB?.medianVerticalDistCm ? state.methodB.medianVerticalDistCm / 100 : null) || 1.05;
+  const depthHeight = snapshot?.depthHeightM || (state.depthValidation?.depthVerticalCm ? state.depthValidation.depthVerticalCm / 100 : null);
+  const hasValidDepth = depthHeight !== null && Number.isFinite(depthHeight) && depthHeight > 0.25 && depthHeight < 3.0 && arHeight > 0.25;
+  const depthScaleRatio = hasValidDepth ? (depthHeight / arHeight) : null;
+
+  // 1. WAIST: User Formula = (result + 1) * 2
+  // 'result' is the measured flat waistband width in inches
+  if (m.waist_width && m.waist_width.valid) {
+    const rawWaistIn_AR = m.waist_width.distInches; // W in inches
+    const waistIn_AR = (rawWaistIn_AR + 1) * 2;
+    const waistCm_AR = waistIn_AR * 2.54;
+
+    if (elements.resWaistArVal) {
+      elements.resWaistArVal.textContent = `${waistIn_AR.toFixed(1)} in`;
+    }
+    if (elements.resWaistArSub) {
+      elements.resWaistArSub.textContent = `${waistCm_AR.toFixed(1)} cm (width: ${rawWaistIn_AR.toFixed(1)}")`;
+    }
+
+    if (hasValidDepth && depthScaleRatio !== null) {
+      const rawWaistIn_Depth = rawWaistIn_AR * depthScaleRatio;
+      const waistIn_Depth = (rawWaistIn_Depth + 1) * 2;
+      const waistCm_Depth = waistIn_Depth * 2.54;
+
+      if (elements.resWaistDepthVal) {
+        elements.resWaistDepthVal.textContent = `${waistIn_Depth.toFixed(1)} in`;
+      }
+      if (elements.resWaistDepthSub) {
+        elements.resWaistDepthSub.textContent = `${waistCm_Depth.toFixed(1)} cm (width: ${rawWaistIn_Depth.toFixed(1)}")`;
+      }
+    } else {
+      if (elements.resWaistDepthVal) elements.resWaistDepthVal.textContent = '-- in';
+      if (elements.resWaistDepthSub) elements.resWaistDepthSub.textContent = 'Depth sensor unavailable';
+    }
+  } else {
+    if (elements.resWaistArVal) elements.resWaistArVal.textContent = '--';
+    if (elements.resWaistArSub) elements.resWaistArSub.textContent = m.waist_width?.reason || 'Not detected';
+    if (elements.resWaistDepthVal) elements.resWaistDepthVal.textContent = '--';
+    if (elements.resWaistDepthSub) elements.resWaistDepthSub.textContent = 'Not detected';
+  }
+
+  // 2. OUTSEAM: AR vs Depth
+  if (m.outseam && m.outseam.valid) {
+    const outseamIn_AR = m.outseam.distInches;
+    const outseamCm_AR = m.outseam.distCm;
+
+    if (elements.resOutseamArVal) {
+      elements.resOutseamArVal.textContent = `${outseamIn_AR.toFixed(1)} in`;
+    }
+    if (elements.resOutseamArSub) {
+      elements.resOutseamArSub.textContent = `${outseamCm_AR.toFixed(1)} cm`;
+    }
+
+    if (hasValidDepth && depthScaleRatio !== null) {
+      const outseamIn_Depth = outseamIn_AR * depthScaleRatio;
+      const outseamCm_Depth = outseamCm_AR * depthScaleRatio;
+
+      if (elements.resOutseamDepthVal) {
+        elements.resOutseamDepthVal.textContent = `${outseamIn_Depth.toFixed(1)} in`;
+      }
+      if (elements.resOutseamDepthSub) {
+        elements.resOutseamDepthSub.textContent = `${outseamCm_Depth.toFixed(1)} cm`;
+      }
+    } else {
+      if (elements.resOutseamDepthVal) elements.resOutseamDepthVal.textContent = '-- in';
+      if (elements.resOutseamDepthSub) elements.resOutseamDepthSub.textContent = 'Depth sensor unavailable';
+    }
+  } else {
+    if (elements.resOutseamArVal) elements.resOutseamArVal.textContent = '--';
+    if (elements.resOutseamArSub) elements.resOutseamArSub.textContent = m.outseam?.reason || 'Not detected';
+    if (elements.resOutseamDepthVal) elements.resOutseamDepthVal.textContent = '--';
+    if (elements.resOutseamDepthSub) elements.resOutseamDepthSub.textContent = 'Not detected';
+  }
 
   // Friendly Low-Confidence Notices
   if (state.measurementNotices && state.measurementNotices.length > 0) {
@@ -3085,8 +3172,8 @@ function showGarmentResults(backendData, snapshot) {
     elements.resNoticesContainer.classList.add('hidden');
   }
 
-  // Populate 3D Coordinates Table
-  if (elements.resKeypointsTbody) {
+  // Populate 3D Coordinates Table (if element exists)
+  if (elements.resKeypointsTbody && backendData?.keypoints) {
     elements.resKeypointsTbody.innerHTML = backendData.keypoints.map(kp => {
       const p3D = state.detectedKeypointsMap[kp.name]?.p3D;
       const coordStr = p3D ? `X: ${p3D.x.toFixed(3)}m, Y: ${p3D.y.toFixed(3)}m, Z: ${p3D.z.toFixed(3)}m` : 'Unprojected';

@@ -266,46 +266,111 @@
       </header>
 
       <main class="results-layout">
-        <!-- Hero Garment Measurements Grid -->
+        <!-- Garment Measurements (Waist & Outseam Only with AR vs Depth) -->
         <div class="card hero-measurement-card">
-          <div class="measurement-title">AI DETECTED GARMENT MEASUREMENTS (3D METRIC)</div>
+          <div class="measurement-title">AI TROUSER MEASUREMENTS (AR VS DEPTH)</div>
           
-          <div class="garment-grid" id="garment-metrics-grid">
-            <div class="garment-metric-card primary">
-              <span class="g-label">Waist Width</span>
-              <span class="g-val" id="res-waist-width">-- cm</span>
-              <span class="g-sub" id="res-waist-width-sub">-- in</span>
+          <div class="dual-focus-grid">
+            <!-- 1. WAIST CARD -->
+            <div class="dual-measure-card primary">
+              <div class="measure-header">
+                <span class="measure-title">Waist</span>
+                <span class="measure-badge formula-badge">Formula: (width + 1) &times; 2</span>
+              </div>
+              
+              <div class="dual-measure-container">
+                <!-- AR Source -->
+                <div class="measure-source-row ar-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill ar-pill">AR</span>
+                    <span class="source-sublabel">ARCore Hit-Test</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-waist-ar-val">-- in</span>
+                    <span class="source-sub-val" id="res-waist-ar-sub">-- cm</span>
+                  </div>
+                </div>
+
+                <div class="measure-divider"></div>
+
+                <!-- Depth Source -->
+                <div class="measure-source-row depth-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill depth-pill">DEPTH</span>
+                    <span class="source-sublabel">Depth API Sensor</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-waist-depth-val">-- in</span>
+                    <span class="source-sub-val" id="res-waist-depth-sub">-- cm</span>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="garment-metric-card primary">
-              <span class="g-label">Waist Circumference</span>
-              <span class="g-val" id="res-waist-circ">-- cm</span>
-              <span class="g-sub" id="res-waist-circ-sub">approx. (flat)</span>
-            </div>
-            <div class="garment-metric-card">
-              <span class="g-label">Inseam</span>
-              <span class="g-val" id="res-inseam">-- cm</span>
-              <span class="g-sub" id="res-inseam-sub">-- in</span>
-            </div>
-            <div class="garment-metric-card">
-              <span class="g-label">Outseam</span>
-              <span class="g-val" id="res-outseam">-- cm</span>
-              <span class="g-sub" id="res-outseam-sub">-- in</span>
-            </div>
-            <div class="garment-metric-card">
-              <span class="g-label">Thigh Width</span>
-              <span class="g-val" id="res-thigh-width">-- cm</span>
-              <span class="g-sub" id="res-thigh-width-sub">-- in</span>
-            </div>
-            <div class="garment-metric-card">
-              <span class="g-label">Hem Width</span>
-              <span class="g-val" id="res-hem-width">-- cm</span>
-              <span class="g-sub" id="res-hem-width-sub">-- in</span>
+
+            <!-- 2. OUTSEAM CARD -->
+            <div class="dual-measure-card">
+              <div class="measure-header">
+                <span class="measure-title">Outseam</span>
+                <span class="measure-badge">Side Seam (Waist to Hem)</span>
+              </div>
+              
+              <div class="dual-measure-container">
+                <!-- AR Source -->
+                <div class="measure-source-row ar-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill ar-pill">AR</span>
+                    <span class="source-sublabel">ARCore Hit-Test</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-outseam-ar-val">-- in</span>
+                    <span class="source-sub-val" id="res-outseam-ar-sub">-- cm</span>
+                  </div>
+                </div>
+
+                <div class="measure-divider"></div>
+
+                <!-- Depth Source -->
+                <div class="measure-source-row depth-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill depth-pill">DEPTH</span>
+                    <span class="source-sublabel">Depth API Sensor</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-outseam-depth-val">-- in</span>
+                    <span class="source-sub-val" id="res-outseam-depth-sub">-- cm</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
-          <!-- Legacy distance placeholders for manual 2-point compatibility -->
-          <div id="res-hero-distance" style="display:none;"></div>
-          <div id="res-hero-sub" style="display:none;"></div>
+          <!-- Rescan Trousers Action Button -->
+          <div class="export-actions" style="margin-top:20px;">
+            <button id="btn-new-measure" class="btn btn-primary btn-large">
+              <span>Rescan Trousers</span>
+            </button>
+          </div>
+
+          <!-- Hidden placeholders for backwards compatibility with tests and scripts -->
+          <div style="display:none;" aria-hidden="true">
+            <span id="res-waist-width"></span>
+            <span id="res-waist-width-sub"></span>
+            <span id="res-waist-circ"></span>
+            <span id="res-waist-circ-sub"></span>
+            <span id="res-inseam"></span>
+            <span id="res-inseam-sub"></span>
+            <span id="res-outseam"></span>
+            <span id="res-outseam-sub"></span>
+            <span id="res-thigh-width"></span>
+            <span id="res-thigh-width-sub"></span>
+            <span id="res-hem-width"></span>
+            <span id="res-hem-width-sub"></span>
+            <div id="res-hero-distance"></div>
+            <div id="res-hero-sub"></div>
+            <table><tbody id="res-keypoints-tbody"></tbody></table>
+            <span id="res-p1-coords"></span>
+            <span id="res-p2-coords"></span>
+          </div>
 
           <div class="accuracy-tag">✓ Directly measured via AR hardware surface geometry + HRNet keypoints</div>
         </div>
@@ -319,50 +384,11 @@
         <!-- Captured Frame & AI Plotted Landmarks -->
         <div id="debug-drawer" class="card debug-card hidden">
           <div class="debug-drawer-header">
-            <h4>📸 Captured Frame & AI Plotted Landmarks (14 Keypoints)</h4>
+            <h4>📸 Captured Frame & AI Plotted Landmarks</h4>
             <p class="preview-subtitle" style="font-size:0.8rem;color:var(--text-muted);margin:4px 0 0 0;">Visual confirmation of HRNet keypoints plotted on your trousers</p>
           </div>
           <div class="debug-canvas-wrapper">
             <canvas id="debug-canvas"></canvas>
-          </div>
-        </div>
-
-        <!-- Detailed Coordinates & Metrics Card -->
-        <div class="card metrics-card">
-          <h3>Detected 3D Keypoint Coordinates</h3>
-          <div class="table-responsive">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Landmark</th>
-                  <th>AR 3D Position (Meters)</th>
-                  <th>Confidence</th>
-                </tr>
-              </thead>
-              <tbody id="res-keypoints-tbody">
-                <tr>
-                  <td><span class="point-tag tag-a">Point 1</span></td>
-                  <td id="res-p1-coords">--</td>
-                  <td><span class="badge success">Anchored</span></td>
-                </tr>
-                <tr>
-                  <td><span class="point-tag tag-b">Point 2</span></td>
-                  <td id="res-p2-coords">--</td>
-                  <td><span class="badge success">Anchored</span></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="math-explanation">
-            <code>3D Point = RayIntersection(WorldRay(u, v), SurfacePlane + FabricOffset)</code>
-          </div>
-
-          <!-- Export / Rescan Actions -->
-          <div class="export-actions">
-            <button id="btn-new-measure" class="btn btn-primary btn-large">
-              <span>Rescan Trousers</span>
-            </button>
           </div>
         </div>
       </main>
@@ -371,7 +397,7 @@
   </div>
 
   <!-- Main Application Script with cache busting -->
-  <script type="module" src="app.js?v=19"></script>
+  <script type="module" src="app.js?v=20"></script>
 </body>
 </html>
 

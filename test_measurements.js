@@ -780,6 +780,53 @@ const stableYDist = Math.abs(camElev - floorElev);
 assert.ok(Math.abs(stableYDist - 0.50) < 0.005, `Y-Distance must equal 50.0 cm, got ${(stableYDist * 100).toFixed(2)} cm`);
 console.log(`✓ Acceptance Test 14 Passed: Tracked Horizontal Plane Median Elevation & Outlier Immunity verified`);
 
+// 15. Acceptance Test 15: Dual-Source Garment Metrics (Waist: (result+1)*2 & Outseam: AR vs Depth)
+function calculateDualMetrics(rawWaistWidthIn_AR, rawOutseamIn_AR, arHeightM, depthHeightM) {
+  // Waist: (result + 1) * 2
+  const waistIn_AR = (rawWaistWidthIn_AR + 1) * 2;
+  const outseamIn_AR = rawOutseamIn_AR;
+
+  let waistIn_Depth = null;
+  let outseamIn_Depth = null;
+
+  const hasDepth = depthHeightM !== null && Number.isFinite(depthHeightM) && depthHeightM > 0.25 && arHeightM > 0.25;
+  if (hasDepth) {
+    const scaleRatio = depthHeightM / arHeightM;
+    const rawWaistIn_Depth = rawWaistWidthIn_AR * scaleRatio;
+    waistIn_Depth = (rawWaistIn_Depth + 1) * 2;
+    outseamIn_Depth = rawOutseamIn_AR * scaleRatio;
+  }
+
+  return {
+    waist: {
+      ar: waistIn_AR,
+      depth: waistIn_Depth
+    },
+    outseam: {
+      ar: outseamIn_AR,
+      depth: outseamIn_Depth
+    }
+  };
+}
+
+// Case 1: 16-inch raw waist width (AR height = 100cm, Depth height = 103cm)
+const dualTest1 = calculateDualMetrics(16.0, 40.0, 1.00, 1.03);
+// AR waist: (16.0 + 1) * 2 = 34.0
+assert.strictEqual(dualTest1.waist.ar, 34.0, 'AR Waist must equal (16.0 + 1) * 2 = 34.0 in');
+// Depth waist: (16.0 * 1.03 + 1) * 2 = (16.48 + 1) * 2 = 34.96 in
+assert.strictEqual(Math.round(dualTest1.waist.depth * 100) / 100, 34.96, 'Depth Waist must reflect optical depth scaling');
+assert.strictEqual(dualTest1.outseam.ar, 40.0, 'AR Outseam must equal 40.0 in');
+assert.strictEqual(dualTest1.outseam.depth, 41.2, 'Depth Outseam must scale by depth ratio 1.03');
+
+// Case 2: Depth sensor unavailable -> Depth returns null
+const dualTest2 = calculateDualMetrics(16.0, 40.0, 1.00, null);
+assert.strictEqual(dualTest2.waist.ar, 34.0);
+assert.strictEqual(dualTest2.waist.depth, null);
+assert.strictEqual(dualTest2.outseam.depth, null);
+
+console.log(`✓ Acceptance Test 15 Passed: Dual-Source Waist (result+1)*2 & Outseam AR vs Depth verified`);
+
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
+
 
 
