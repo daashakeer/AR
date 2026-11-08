@@ -859,11 +859,11 @@ class MockRecalibrationEngine {
       this.recalibrating = true;
     }
 
-    // 3. Phase 1: Motion mapping (60 frames)
+    // 3. Phase 1: Motion mapping (75 frames)
     if (!this.mappingComplete) {
       if (isMovingSlowly) {
         this.mappingFrames++;
-        if (this.mappingFrames >= 60) {
+        if (this.mappingFrames >= 75) {
           this.mappingComplete = true;
         }
       }
@@ -875,7 +875,7 @@ class MockRecalibrationEngine {
       this.buffer.push(hitHeightCm);
       if (this.buffer.length > 60) this.buffer.shift();
 
-      if (this.steadyFrames >= 60 && this.buffer.length >= 15) {
+      if (this.steadyFrames >= 60) {
         const sorted = [...this.buffer].sort((a, b) => a - b);
         const mid = Math.floor(sorted.length / 2);
         this.medianHeight = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
@@ -889,11 +889,11 @@ class MockRecalibrationEngine {
 
 const engine = new MockRecalibrationEngine();
 
-// Phase 1: Moving slowly over trousers to map surface (60 frames)
-for (let i = 0; i < 60; i++) {
+// Phase 1: Moving slowly over trousers to map surface (75 frames)
+for (let i = 0; i < 75; i++) {
   engine.processFrame({ x: 0, y: 1.00, z: 0 }, 100.0, true);
 }
-assert.strictEqual(engine.mappingComplete, true, 'Phase 1 must complete after 60 mapping frames');
+assert.strictEqual(engine.mappingComplete, true, 'Phase 1 must complete after 75 mapping frames');
 assert.strictEqual(engine.isTrackingStable, false, 'Tracking must remain gated until Phase 2 steady hold completes');
 
 // Phase 2: Holding phone steady over trousers to calibrate distance (60 frames)

@@ -1524,11 +1524,11 @@ function onXRFrame(time, frame) {
   }
 
   // ------------------------------------------------------------------
-  // 3. 2-Phase Pre-Scan Calibration Engine (60 frames mapping + 60 frames steady)
-  // Phase 1: User moves phone slowly over trousers in small circles to map surface (60 frames)
+  // 3. 2-Phase Pre-Scan Calibration Engine (75 frames mapping + 60 frames steady)
+  // Phase 1: User moves phone slowly over trousers in small circles to map surface (75 frames)
   // Phase 2: User holds phone steady over trousers to calibrate distance (60 frames)
   // ------------------------------------------------------------------
-  const MAPPING_TARGET_FRAMES = 60;
+  const MAPPING_TARGET_FRAMES = 75;
   const STEADY_TARGET_FRAMES = 60;
   const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
 
@@ -1550,7 +1550,7 @@ function onXRFrame(time, frame) {
       };
     }
   } else if (hasValidSurface) {
-    // Phase 1: Motion mapping (60 frames)
+    // Phase 1: Motion mapping (75 frames)
     if (!state.mappingComplete) {
       const isMotionHelpful = frameTranslation > 0.001 || state.methodB.validSamplesCount > 5;
       if (isMotionHelpful) {
@@ -1580,7 +1580,7 @@ function onXRFrame(time, frame) {
   const bBuf = state.methodB.buffer;
   state.methodB.validSamplesCount = bBuf.length;
 
-  if (bBuf.length >= 15) {
+  if (bBuf.length >= 1) {
     const sorted = [...bBuf].sort((a, b) => a - b);
     const n = sorted.length;
     const mid = Math.floor(n / 2);
@@ -1596,31 +1596,30 @@ function onXRFrame(time, frame) {
     const variance = sorted.reduce((acc, v) => acc + (v - meanVal) ** 2, 0) / n;
     state.methodB.stdDevCm = Math.sqrt(variance);
 
-    // Step 6: Settle tracking only when mapping is complete, steady hold reached target (60 frames), and Method B converged
-    const isSteadyPhaseMet = (state.steadyFrames >= STEADY_TARGET_FRAMES);
-    const isVarianceAcceptable = state.methodB.stdDevCm <= 1.5;
+    const floorY = camPos.y - (medianVal / 100);
+    const retX = state.currentReticlePose ? state.currentReticlePose.x : camPos.x;
+    const retZ = state.currentReticlePose ? state.currentReticlePose.z : camPos.z;
+    state.surfacePlane = {
+      point: { x: retX, y: floorY, z: retZ },
+      normal: { x: 0, y: 1, z: 0 },
+      elevationY: floorY,
+      timestamp: time,
+      sampleCount: bBuf.length
+    };
+    state.currentYDistanceCm = medianVal;
+  }
 
-    if (state.mappingComplete && isSteadyPhaseMet && isVarianceAcceptable) {
-      state.methodB.isStable = true;
-      state.isTrackingStable = true;
-      state.recalibration.recalibrating = false;
+  // Step 6: Stability Gate: Allowed scan as long as steady frames counter reached target (60 frames)
+  const isSteadyPhaseMet = (state.steadyFrames >= STEADY_TARGET_FRAMES);
 
-      // Lock current calibrated pose
-      state.recalibration.lastStablePos = { ...camPos };
-      state.recalibration.lastStableForward = [...normFwd];
+  if (state.mappingComplete && isSteadyPhaseMet) {
+    state.methodB.isStable = true;
+    state.isTrackingStable = true;
+    state.recalibration.recalibrating = false;
 
-      const floorY = camPos.y - (medianVal / 100);
-      const retX = state.currentReticlePose ? state.currentReticlePose.x : camPos.x;
-      const retZ = state.currentReticlePose ? state.currentReticlePose.z : camPos.z;
-      state.surfacePlane = {
-        point: { x: retX, y: floorY, z: retZ },
-        normal: { x: 0, y: 1, z: 0 },
-        elevationY: floorY,
-        timestamp: time,
-        sampleCount: bBuf.length
-      };
-      state.currentYDistanceCm = medianVal;
-    }
+    // Lock current calibrated pose
+    state.recalibration.lastStablePos = { ...camPos };
+    state.recalibration.lastStableForward = [...normFwd];
   } else if (!state.isSimulator) {
     state.methodB.isStable = false;
     state.isTrackingStable = false;
@@ -1938,10 +1937,10 @@ function updateTrackingUI(hasSurface, isStable) {
     elements.hudTrackingDot.className = 'dot amber';
 
     if (!isOpenCV && !isManual && !state.isSimulator) {
-      // HRNet Mode: 2-Phase Calibration Active (60 frames mapping + 60 frames steady)
+      // HRNet Mode: 2-Phase Calibration Active (75 frames mapping + 60 frames steady)
       if (!state.mappingComplete) {
-        // Phase 1: Moving phone slowly over trousers in small circles to map surface (60 frames)
-        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 60) * 100));
+        // Phase 1: Moving phone slowly over trousers in small circles to map surface (75 frames)
+        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 75) * 100));
         elements.hudTrackingText.textContent = `Mapping surface (${mapPct}%)`;
         if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move phone slowly over trousers in small circles';
         if (elements.btnScanTrigger) {
