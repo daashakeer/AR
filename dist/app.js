@@ -1349,15 +1349,11 @@ function onXRFrame(time, frame) {
   state.lastProjMatrix = new Float32Array(view.projectionMatrix);
   state.lastCameraMatrix = new Float32Array(view.transform.matrix);
 
-  // Phone Tilt / Level Check:
-  // view.transform.matrix[9] = Y-component of camera's -Z (back) axis in world space.
-  // When phone points straight down: lookDir ≈ (0, -1, 0), so m[9] ≈ 1.0
-  // Tilt angle from vertical = acos(|m[9]|)
-  const TILT_TOLERANCE_DEG = 5.0;
+  // Phone Tilt Telemetry (Tilt check temporarily disabled per user request)
   const lookDirYAbs = Math.abs(view.transform.matrix[9]);
   const tiltAngleDeg = Math.acos(Math.min(1.0, lookDirYAbs)) * (180 / Math.PI);
   state.phoneTiltDeg = tiltAngleDeg;
-  state.isPhoneLevel = tiltAngleDeg <= TILT_TOLERANCE_DEG;
+  state.isPhoneLevel = true; // Temporarily unlocked
 
   // 1. Track Camera Movement and Phone Stability
   // Extract camera position from the view transform matrix (columns 12–14 = translation)
@@ -1509,10 +1505,10 @@ function onXRFrame(time, frame) {
     const variance = sorted.reduce((acc, v) => acc + (v - meanVal) ** 2, 0) / n;
     state.methodB.stdDevCm = Math.sqrt(variance);
 
-    // Stability criteria: at least 30 valid samples, std dev <= 1.5 cm, phone steady & level
+    // Stability criteria: at least 30 valid samples, std dev <= 1.5 cm, phone steady
     const isStatisticallyStable = n >= 30 && state.methodB.stdDevCm <= 1.5;
     const isPhysicalSteady = state.camMovement < 0.015;
-    state.methodB.isStable = isStatisticallyStable && isPhysicalSteady && state.isPhoneLevel;
+    state.methodB.isStable = isStatisticallyStable && isPhysicalSteady;
   } else {
     state.methodB.isStable = false;
   }
@@ -1629,18 +1625,18 @@ function onXRFrame(time, frame) {
       }
     }
 
-    // Phase 2: Steady hold (60 frames) — gated on Method B stability and phone tilt
+    // Phase 2: Steady hold (60 frames) — gated on Method B stability
     if (state.mappingComplete) {
       const isPhoneSteady = moveDist < 0.012;
       const isMethodBConverging = state.methodB.validSamplesCount >= 30 && state.methodB.stdDevCm <= 1.5;
-      if (isPhoneSteady && state.isPhoneLevel && isMethodBConverging) {
+      if (isPhoneSteady && isMethodBConverging) {
         state.steadyFrames = (state.steadyFrames || 0) + 1;
         if (state.steadyFrames >= STEADY_TARGET_FRAMES) {
           state.isTrackingStable = true;
         }
       } else {
-        // If phone is moved, tilted, or Method B not settled, smoothly adjust steady frames
-        if (moveDist > 0.02 || !state.isPhoneLevel || (state.methodB.stdDevCm > 2.0)) {
+        // If phone is moved or Method B not settled, smoothly adjust steady frames
+        if (moveDist > 0.02 || (state.methodB.stdDevCm > 2.0)) {
           state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 4);
           state.isTrackingStable = false;
         }
@@ -1902,30 +1898,15 @@ function updateTrackingUI(hasSurface, isStable) {
           elements.stepIcon.textContent = '🔄';
         }
       } else {
-        // Phase 2: Holding phone steady and level to settle distance
-        if (!state.isPhoneLevel) {
-          // Phone is tilted — show tilt guidance with current angle
-          const tiltDeg = state.phoneTiltDeg.toFixed(1);
-          elements.hudTrackingDot.className = 'dot amber';
-          elements.hudTrackingText.textContent = `Tilt: ${tiltDeg}° — Hold phone straight down`;
-          if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Point phone directly downward at trousers (within 5°)';
-          if (elements.btnScanTrigger) {
-            elements.btnScanTrigger.disabled = true;
-            elements.scanActionLabel.textContent = `Level phone (${tiltDeg}° off)...`;
-            elements.stepText.textContent = `Hold phone straight down over trousers (tilt: ${tiltDeg}°)`;
-            elements.stepIcon.textContent = '📐';
-          }
-        } else {
-          // Phone is level — show normal stabilization progress
-          const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 60) * 100));
-          elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
-          if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
-          if (elements.btnScanTrigger) {
-            elements.btnScanTrigger.disabled = true;
-            elements.scanActionLabel.textContent = `Stabilizing distance (${settlePct}%)...`;
-            elements.stepText.textContent = `Hold camera steady over trousers (${settlePct}%)`;
-            elements.stepIcon.textContent = '⏳';
-          }
+        // Phase 2: Holding phone steady to settle distance
+        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 60) * 100));
+        elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
+        if (elements.btnScanTrigger) {
+          elements.btnScanTrigger.disabled = true;
+          elements.scanActionLabel.textContent = `Stabilizing distance (${settlePct}%)...`;
+          elements.stepText.textContent = `Hold camera steady over trousers (${settlePct}%)`;
+          elements.stepIcon.textContent = '⏳';
         }
       }
     } else {
@@ -2227,10 +2208,6 @@ function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth,
 function triggerScanCapture() {
   if (!state.surfacePlane) {
     showErrorBanner('No surface detected yet. Scan trousers until surface locks.');
-    return;
-  }
-  if (state.activeMode === MODES.HRNET && !state.isSimulator && !state.isPhoneLevel) {
-    showToast(`Hold phone straight down (tilt: ${state.phoneTiltDeg.toFixed(1)}° — need ≤ 5°)`);
     return;
   }
   if (state.activeMode === MODES.HRNET && !state.isSimulator && (!state.mappingComplete || !state.isTrackingStable)) {
@@ -3366,7 +3343,7 @@ function resetToScanning() {
   state.liveDistanceBuffer = [];
   state.currentYDistanceCm = null;
   state.phoneTiltDeg = 0;
-  state.isPhoneLevel = false;
+  state.isPhoneLevel = true;
 
   // Reset Method B state
   state.methodB.buffer = [];
