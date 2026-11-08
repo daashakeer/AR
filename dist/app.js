@@ -1428,16 +1428,30 @@ function onXRFrame(time, frame) {
             if (Number.isFinite(verticalDistanceCm) && verticalDistanceCm >= 15.0 && verticalDistanceCm <= 250.0) {
               state.methodB.rawVerticalDistCm = verticalDistanceCm;
 
-              // Outlier rejection before pushing to rolling buffer:
-              // If buffer has at least 15 samples, reject sudden extreme spikes (> 3.5 * stdDev or > 20cm jump from median)
+              // Outlier rejection with adaptive height tracking:
+              // Reject single-frame glitches (> 3.5 * stdDev or > 18cm jump).
+              // If user intentionally raises/lowers phone (e.g. standing at >110cm), 
+              // after 6 consecutive consistent frames, adapt the buffer immediately.
               let isOutlier = false;
-              if (state.methodB.buffer.length >= 15) {
+              if (!state.methodB.consecutiveOutliers) state.methodB.consecutiveOutliers = 0;
+
+              if (state.methodB.buffer.length >= 10 && state.methodB.medianVerticalDistCm !== null) {
                 const currentMedian = state.methodB.medianVerticalDistCm;
                 const currentStd = state.methodB.stdDevCm || 1.0;
-                const maxAllowedDeviation = Math.max(12.0, 3.5 * currentStd);
+                const maxAllowedDeviation = Math.max(14.0, 3.5 * currentStd);
+                
                 if (Math.abs(verticalDistanceCm - currentMedian) > maxAllowedDeviation) {
-                  isOutlier = true;
-                  state.methodB.totalRejected++;
+                  state.methodB.consecutiveOutliers++;
+                  if (state.methodB.consecutiveOutliers >= 6) {
+                    // Intentional camera movement / height change: flush stale buffer and adapt
+                    state.methodB.buffer = [verticalDistanceCm];
+                    state.methodB.consecutiveOutliers = 0;
+                  } else {
+                    isOutlier = true;
+                    state.methodB.totalRejected++;
+                  }
+                } else {
+                  state.methodB.consecutiveOutliers = 0;
                 }
               }
 
@@ -1452,17 +1466,6 @@ function onXRFrame(time, frame) {
               }
             }
           }
-
-          // Maintain the 3D surface plane anchored strictly to Method B's hit position
-          // for accurate landmark 3D ray-plane unprojection
-          const signY = normalY >= 0 ? 1 : -1;
-          state.surfacePlane = {
-            point: { x: hitPos.x, y: hitPos.y, z: hitPos.z },
-            normal: { x: 0, y: signY, z: 0 },
-            elevationY: hitPos.y,
-            timestamp: time,
-            sampleCount: state.methodB.buffer.length
-          };
         }
       }
     }
@@ -1515,6 +1518,20 @@ function onXRFrame(time, frame) {
 
   if (Number.isFinite(yDistCm)) {
     state.currentYDistanceCm = yDistCm;
+
+    // Anchor the 3D surface plane strictly to the calibrated median floor elevation:
+    // This guarantees that 3D ray-plane intersection uses the exact stable distance
+    // rather than raw single-frame hit-test noise.
+    const floorY = camPos.y - (yDistCm / 100);
+    const retX = state.currentReticlePose ? state.currentReticlePose.x : camPos.x;
+    const retZ = state.currentReticlePose ? state.currentReticlePose.z : camPos.z;
+    state.surfacePlane = {
+      point: { x: retX, y: floorY, z: retZ },
+      normal: { x: 0, y: 1, z: 0 },
+      elevationY: floorY,
+      timestamp: time,
+      sampleCount: state.methodB.buffer.length
+    };
   }
 
   // ------------------------------------------------------------------
