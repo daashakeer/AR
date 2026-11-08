@@ -830,18 +830,19 @@ assert.strictEqual(formatOutseamHalf(40.48), '40.5 in');
 
 console.log(`✓ Acceptance Test 15 Passed: Dual-Source Waist (whole numbers) & Outseam (0.5 steps) verified`);
 
-// 16. Acceptance Test 16: Movement-Aware Recalibration Engine
+// 16. Acceptance Test 16: 2-Phase 60-Frame Calibration & Movement-Aware Recalibration Engine
 class MockRecalibrationEngine {
   constructor() {
     this.buffer = [];
     this.isTrackingStable = false;
+    this.mappingFrames = 0;
+    this.mappingComplete = false;
+    this.steadyFrames = 0;
     this.lastStablePos = null;
-    this.consecutiveSteadyFrames = 0;
-    this.isSteady = false;
     this.recalibrating = false;
   }
 
-  processFrame(camPos, hitHeightCm) {
+  processFrame(camPos, hitHeightCm, isMovingSlowly = false) {
     // 1. Detect significant translation from last stable position
     let heightShift = 0;
     if (this.lastStablePos) {
@@ -854,59 +855,68 @@ class MockRecalibrationEngine {
     if (isSignificantMovement) {
       this.buffer = [];
       this.isTrackingStable = false;
-      this.consecutiveSteadyFrames = 0;
-      this.isSteady = false;
+      this.steadyFrames = 0;
       this.recalibrating = true;
     }
 
-    // 3. Wait until steady
-    this.consecutiveSteadyFrames++;
-    if (this.consecutiveSteadyFrames >= 10) {
-      this.isSteady = true;
+    // 3. Phase 1: Motion mapping (60 frames)
+    if (!this.mappingComplete) {
+      if (isMovingSlowly) {
+        this.mappingFrames++;
+        if (this.mappingFrames >= 60) {
+          this.mappingComplete = true;
+        }
+      }
     }
 
-    // 4. Collect fresh samples only while steady
-    if (this.isSteady) {
+    // 4. Phase 2: Steady hold (60 frames)
+    if (this.mappingComplete && !isMovingSlowly) {
+      this.steadyFrames++;
       this.buffer.push(hitHeightCm);
-      if (this.buffer.length > 25) this.buffer.shift();
-    }
+      if (this.buffer.length > 60) this.buffer.shift();
 
-    // 5. Recalculate camera height once >= 15 fresh samples are collected
-    if (this.buffer.length >= 15 && this.isSteady) {
-      const sorted = [...this.buffer].sort((a, b) => a - b);
-      const mid = Math.floor(sorted.length / 2);
-      const medianVal = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-      this.medianHeight = medianVal;
-      this.isTrackingStable = true;
-      this.recalibrating = false;
-      this.lastStablePos = { ...camPos };
+      if (this.steadyFrames >= 60 && this.buffer.length >= 15) {
+        const sorted = [...this.buffer].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        this.medianHeight = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+        this.isTrackingStable = true;
+        this.recalibrating = false;
+        this.lastStablePos = { ...camPos };
+      }
     }
   }
 }
 
 const engine = new MockRecalibrationEngine();
 
-// Phase 1: Camera stationary at 100cm height (10 frames to steady + 15 frames to fill sample buffer = 25 frames)
-for (let i = 0; i < 25; i++) {
-  engine.processFrame({ x: 0, y: 1.00, z: 0 }, 100.0);
+// Phase 1: Moving slowly over trousers to map surface (60 frames)
+for (let i = 0; i < 60; i++) {
+  engine.processFrame({ x: 0, y: 1.00, z: 0 }, 100.0, true);
 }
-assert.strictEqual(engine.isTrackingStable, true, 'Engine must stabilize when stationary');
+assert.strictEqual(engine.mappingComplete, true, 'Phase 1 must complete after 60 mapping frames');
+assert.strictEqual(engine.isTrackingStable, false, 'Tracking must remain gated until Phase 2 steady hold completes');
+
+// Phase 2: Holding phone steady over trousers to calibrate distance (60 frames)
+for (let i = 0; i < 60; i++) {
+  engine.processFrame({ x: 0, y: 1.00, z: 0 }, 100.0, false);
+}
+assert.strictEqual(engine.isTrackingStable, true, 'Engine must stabilize after 60 steady frames');
 assert.strictEqual(engine.medianHeight, 100.0, 'Median height must calibrate to 100cm');
 
-// Phase 2: User lifts camera to 115cm height (15cm height shift > 3.5cm threshold)
-engine.processFrame({ x: 0, y: 1.15, z: 0 }, 115.0);
+// Movement recalibration: User lifts camera to 115cm height (15cm height shift > 3.5cm threshold)
+engine.processFrame({ x: 0, y: 1.15, z: 0 }, 115.0, true);
 assert.strictEqual(engine.isTrackingStable, false, 'Movement must immediately unlock tracking gate');
 assert.strictEqual(engine.recalibrating, true, 'Recalibrating state must be active');
 assert.strictEqual(engine.buffer.length, 0, 'Stale 100cm samples must be completely purged');
 
-// Phase 3: Phone held steady at 115cm height (10 steady frames + 15 samples = 25 frames)
-for (let i = 0; i < 25; i++) {
-  engine.processFrame({ x: 0, y: 1.15, z: 0 }, 115.0);
+// Phone held steady at 115cm height (60 steady frames to recalibrate)
+for (let i = 0; i < 60; i++) {
+  engine.processFrame({ x: 0, y: 1.15, z: 0 }, 115.0, false);
 }
 assert.strictEqual(engine.isTrackingStable, true, 'Engine must restabilize at new height');
 assert.strictEqual(engine.medianHeight, 115.0, 'Recalculated height must reflect fresh 115cm height with zero 100cm lag');
 
-console.log(`✓ Acceptance Test 16 Passed: Movement-Aware Recalibration (Motion Detection, Buffer Invalidation, Steady Hold, Recalculation) verified`);
+console.log(`✓ Acceptance Test 16 Passed: 2-Phase 60-Frame Calibration & Movement-Aware Recalibration verified`);
 
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
 

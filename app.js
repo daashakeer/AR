@@ -1425,47 +1425,32 @@ function onXRFrame(time, frame) {
     rotShift = Math.acos(Math.max(-1, Math.min(1, dotStable))) * (180 / Math.PI);
   }
 
-  // Step 1: Detect significant camera translation or rotation
-  // - Sudden frame jump: translation > 2.5cm/frame or rotation > 3.5°/frame
+  // Step 1: Detect significant camera translation or rotation once calibrated
+  // - Sudden frame jump: translation > 3.5cm/frame or rotation > 4.5°/frame
   // - Height shift from last calibrated height: > 3.5cm
-  // - Horizontal shift from last calibrated position: > 8.0cm
-  // - Reorientation from last calibrated forward vector: > 5.0°
+  // - Horizontal shift from last calibrated position: > 10.0cm
+  // - Reorientation from last calibrated forward vector: > 6.0°
   const isSignificantMovement =
-    (frameTranslation > 0.025) ||
-    (frameRotationDeg > 3.5) ||
-    (state.isTrackingStable && (heightShift > 0.035 || horizShift > 0.080 || rotShift > 5.0));
+    (frameTranslation > 0.035) ||
+    (frameRotationDeg > 4.5) ||
+    (state.isTrackingStable && (heightShift > 0.035 || horizShift > 0.100 || rotShift > 6.0));
 
   // Step 2: Invalidate old Method B samples upon significant movement
-  if (isSignificantMovement) {
-    if (state.methodB.buffer.length > 0 || state.isTrackingStable) {
-      logMsg(`[Recalibrate] Movement detected (ΔY: ${(heightShift * 100).toFixed(1)}cm, ΔXZ: ${(horizShift * 100).toFixed(1)}cm, Δθ: ${rotShift.toFixed(1)}°). Invalidating stale height samples.`, 'info');
-    }
+  if (isSignificantMovement && state.isTrackingStable) {
+    logMsg(`[Recalibrate] Movement detected (ΔY: ${(heightShift * 100).toFixed(1)}cm, ΔXZ: ${(horizShift * 100).toFixed(1)}cm, Δθ: ${rotShift.toFixed(1)}°). Invalidating stale height samples.`, 'info');
     state.methodB.buffer = [];
     state.methodB.validSamplesCount = 0;
     state.methodB.isStable = false;
     state.isTrackingStable = false;
-    state.recalibration.consecutiveSteadyFrames = 0;
+    state.steadyFrames = 0;
     state.recalibration.isSteady = false;
     state.recalibration.recalibrating = true;
-    state.recalibration.movementReason = heightShift > 0.035 ? `Height shift ${(heightShift * 100).toFixed(1)}cm` : horizShift > 0.08 ? `Position shift ${(horizShift * 100).toFixed(1)}cm` : `Rotation shift ${rotShift.toFixed(1)}°`;
+    state.recalibration.movementReason = heightShift > 0.035 ? `Height shift ${(heightShift * 100).toFixed(1)}cm` : horizShift > 0.100 ? `Position shift ${(horizShift * 100).toFixed(1)}cm` : `Rotation shift ${rotShift.toFixed(1)}°`;
   }
 
   // Step 3: Wait until AR tracking stabilises (phone held physically steady)
-  const isPhoneStill = frameTranslation < 0.008 && frameRotationDeg < 0.8;
-  if (isPhoneStill) {
-    state.recalibration.consecutiveSteadyFrames++;
-    if (state.recalibration.consecutiveSteadyFrames >= 10) {
-      state.recalibration.isSteady = true;
-    }
-  } else {
-    state.recalibration.consecutiveSteadyFrames = 0;
-    state.recalibration.isSteady = false;
-    // Purge buffer if motion interrupts sample collection
-    if (!state.isTrackingStable && state.methodB.buffer.length > 0) {
-      state.methodB.buffer = [];
-      state.methodB.validSamplesCount = 0;
-    }
-  }
+  const isPhoneStill = frameTranslation < 0.012 && frameRotationDeg < 1.0;
+  state.recalibration.isSteady = isPhoneStill;
 
   state.lastCamPosition = { ...camPos };
   state.lastCamForward = [...normFwd];
@@ -1516,14 +1501,12 @@ function onXRFrame(time, frame) {
             if (Number.isFinite(verticalDistanceCm) && verticalDistanceCm >= 15.0 && verticalDistanceCm <= 250.0) {
               state.methodB.rawVerticalDistCm = verticalDistanceCm;
 
-              // Step 4: Collect a fresh set of hit-test samples (ONLY when phone is steady!)
-              if (state.recalibration.isSteady) {
-                state.methodB.buffer.push(verticalDistanceCm);
-                state.methodB.totalAccepted++;
-                const MAX_BUFFER = 25; // Fresh 25-sample stationary buffer
-                if (state.methodB.buffer.length > MAX_BUFFER) {
-                  state.methodB.buffer.shift();
-                }
+              // Step 4: Collect hit-test samples into rolling 60-sample buffer
+              state.methodB.buffer.push(verticalDistanceCm);
+              state.methodB.totalAccepted++;
+              const MAX_BUFFER = 60; // 60-sample rolling buffer
+              if (state.methodB.buffer.length > MAX_BUFFER) {
+                state.methodB.buffer.shift();
               }
             }
           }
@@ -1540,11 +1523,64 @@ function onXRFrame(time, frame) {
     }
   }
 
-  // Step 5: Recalculate camera height once >= 15 fresh samples are collected
+  // ------------------------------------------------------------------
+  // 3. 2-Phase Pre-Scan Calibration Engine (60 frames mapping + 60 frames steady)
+  // Phase 1: User moves phone slowly over trousers in small circles to map surface (60 frames)
+  // Phase 2: User holds phone steady over trousers to calibrate distance (60 frames)
+  // ------------------------------------------------------------------
+  const MAPPING_TARGET_FRAMES = 60;
+  const STEADY_TARGET_FRAMES = 60;
+  const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
+
+  if (state.isSimulator) {
+    state.mappingComplete = true;
+    state.isTrackingStable = true;
+    state.methodB.isStable = true;
+    state.methodB.medianVerticalDistCm = 105.0;
+    state.currentYDistanceCm = 105.0;
+    state.recalibration.isSteady = true;
+    state.recalibration.recalibrating = false;
+    if (!state.surfacePlane) {
+      state.surfacePlane = {
+        point: { x: 0, y: -1.05, z: 0 },
+        normal: { x: 0, y: 1, z: 0 },
+        elevationY: -1.05,
+        timestamp: time,
+        sampleCount: 60
+      };
+    }
+  } else if (hasValidSurface) {
+    // Phase 1: Motion mapping (60 frames)
+    if (!state.mappingComplete) {
+      const isMotionHelpful = frameTranslation > 0.001 || state.methodB.validSamplesCount > 5;
+      if (isMotionHelpful) {
+        state.mappingFrames = (state.mappingFrames || 0) + 1;
+        if (state.mappingFrames >= MAPPING_TARGET_FRAMES) {
+          state.mappingComplete = true;
+          logMsg('Pre-scan Phase 1 complete: Surface mapped with optical parallax. Now hold steady.', 'success');
+        }
+      }
+    }
+
+    // Phase 2: Steady hold (60 frames)
+    if (state.mappingComplete) {
+      if (isPhoneStill) {
+        state.steadyFrames = (state.steadyFrames || 0) + 1;
+      } else if (frameTranslation > 0.02 || frameRotationDeg > 2.0) {
+        // Step down steady frames if phone moves during hold
+        state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 4);
+        state.isTrackingStable = false;
+      }
+    }
+  } else {
+    state.isTrackingStable = false;
+  }
+
+  // Step 5: Recalculate camera height over Method B buffer
   const bBuf = state.methodB.buffer;
   state.methodB.validSamplesCount = bBuf.length;
 
-  if (bBuf.length >= 15 && state.recalibration.isSteady) {
+  if (bBuf.length >= 15) {
     const sorted = [...bBuf].sort((a, b) => a - b);
     const n = sorted.length;
     const mid = Math.floor(n / 2);
@@ -1560,11 +1596,11 @@ function onXRFrame(time, frame) {
     const variance = sorted.reduce((acc, v) => acc + (v - meanVal) ** 2, 0) / n;
     state.methodB.stdDevCm = Math.sqrt(variance);
 
-    const rangeCm = state.methodB.maxCm - state.methodB.minCm;
-    const isStatisticallyStable = state.methodB.stdDevCm <= 1.2 && rangeCm <= 3.0;
+    // Step 6: Settle tracking only when mapping is complete, steady hold reached target (60 frames), and Method B converged
+    const isSteadyPhaseMet = (state.steadyFrames >= STEADY_TARGET_FRAMES);
+    const isVarianceAcceptable = state.methodB.stdDevCm <= 1.5;
 
-    // Step 6: Only then allow garment measurement
-    if (isStatisticallyStable) {
+    if (state.mappingComplete && isSteadyPhaseMet && isVarianceAcceptable) {
       state.methodB.isStable = true;
       state.isTrackingStable = true;
       state.recalibration.recalibrating = false;
@@ -1585,23 +1621,7 @@ function onXRFrame(time, frame) {
       };
       state.currentYDistanceCm = medianVal;
     }
-  } else if (state.isSimulator) {
-    state.isTrackingStable = true;
-    state.methodB.isStable = true;
-    state.methodB.medianVerticalDistCm = 105.0;
-    state.currentYDistanceCm = 105.0;
-    state.recalibration.isSteady = true;
-    state.recalibration.recalibrating = false;
-    if (!state.surfacePlane) {
-      state.surfacePlane = {
-        point: { x: 0, y: -1.05, z: 0 },
-        normal: { x: 0, y: 1, z: 0 },
-        elevationY: -1.05,
-        timestamp: time,
-        sampleCount: 25
-      };
-    }
-  } else {
+  } else if (!state.isSimulator) {
     state.methodB.isStable = false;
     state.isTrackingStable = false;
   }
@@ -1673,18 +1693,24 @@ function onXRFrame(time, frame) {
     state.isTrackingStable = true;
   }
 
-  // Top Distance Bar: Method B Median & Std Dev Display
+  // Top Distance Bar: Dynamic 2-Phase & Method B Distance Display
   if (state.activeMode === MODES.HRNET) {
-    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Method B (Median):';
+    if (elements.hudDistLabel) elements.hudDistLabel.textContent = 'Y-Distance:';
     if (elements.hudDistanceVal) {
-      if (state.methodB.medianVerticalDistCm !== null) {
-        const medText = `${state.methodB.medianVerticalDistCm.toFixed(1)} cm`;
-        const stdText = state.methodB.validSamplesCount >= 2 ? ` (±${state.methodB.stdDevCm.toFixed(1)})` : '';
-        const tiltInfo = state.isSimulator ? '' : ` | ${state.phoneTiltDeg.toFixed(1)}°`;
-        elements.hudDistanceVal.textContent = medText + stdText + tiltInfo;
-      } else {
-        elements.hudDistanceVal.textContent = '-- cm';
+      let displayDistText = '-- cm';
+      const currentDisplayVal = state.methodB.medianVerticalDistCm || state.currentYDistanceCm || state.methodB.rawVerticalDistCm;
+      if (Number.isFinite(currentDisplayVal)) {
+        if (!state.mappingComplete && !state.isSimulator) {
+          displayDistText = `${currentDisplayVal.toFixed(1)} cm (Mapping)`;
+        } else if (!state.isTrackingStable && !state.isSimulator) {
+          displayDistText = `${currentDisplayVal.toFixed(1)} cm (Settling)`;
+        } else {
+          const stdText = state.methodB.validSamplesCount >= 2 ? ` (±${state.methodB.stdDevCm.toFixed(1)})` : '';
+          displayDistText = `${currentDisplayVal.toFixed(1)} cm${stdText}`;
+        }
       }
+      const tiltInfo = state.isSimulator ? '' : ` | ${state.phoneTiltDeg.toFixed(1)}°`;
+      elements.hudDistanceVal.textContent = displayDistText + tiltInfo;
     }
   }
 
@@ -1912,26 +1938,27 @@ function updateTrackingUI(hasSurface, isStable) {
     elements.hudTrackingDot.className = 'dot amber';
 
     if (!isOpenCV && !isManual && !state.isSimulator) {
-      if (!state.recalibration?.isSteady) {
-        // Step 1 & 2: Camera moved or rotating - waiting for user to hold steady
-        elements.hudTrackingText.textContent = state.recalibration?.recalibrating ? 'Recalibrating (Hold steady)' : 'Camera moving...';
-        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold camera steady over trousers to calibrate height';
+      // HRNet Mode: 2-Phase Calibration Active (60 frames mapping + 60 frames steady)
+      if (!state.mappingComplete) {
+        // Phase 1: Moving phone slowly over trousers in small circles to map surface (60 frames)
+        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 60) * 100));
+        elements.hudTrackingText.textContent = `Mapping surface (${mapPct}%)`;
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move phone slowly over trousers in small circles';
         if (elements.btnScanTrigger) {
           elements.btnScanTrigger.disabled = true;
-          elements.scanActionLabel.textContent = 'Hold camera steady...';
-          elements.stepText.textContent = 'Hold camera steady over trousers to calibrate height';
-          elements.stepIcon.textContent = '⏳';
+          elements.scanActionLabel.textContent = `Mapping surface (${mapPct}%)...`;
+          elements.stepText.textContent = `Move phone slowly over trousers to map surface (${mapPct}%)`;
+          elements.stepIcon.textContent = '🔄';
         }
       } else {
-        // Step 3 & 4: Phone is steady, collecting 15 fresh stationary samples
-        const sampleCount = state.methodB.validSamplesCount || 0;
-        const pct = Math.min(100, Math.round((sampleCount / 15) * 100));
-        elements.hudTrackingText.textContent = `Calibrating height (${pct}%)`;
-        if (elements.hudReticleHint) elements.hudReticleHint.textContent = `Collecting stable height samples (${sampleCount}/15)... hold still`;
+        // Phase 2: Holding phone steady to settle distance (60 frames)
+        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 60) * 100));
+        elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
         if (elements.btnScanTrigger) {
           elements.btnScanTrigger.disabled = true;
-          elements.scanActionLabel.textContent = `Calibrating height (${pct}%)...`;
-          elements.stepText.textContent = `Sampling distance from floor (${pct}%)`;
+          elements.scanActionLabel.textContent = `Stabilizing distance (${settlePct}%)...`;
+          elements.stepText.textContent = `Hold camera steady over trousers (${settlePct}%)`;
           elements.stepIcon.textContent = '⏳';
         }
       }
@@ -2236,11 +2263,11 @@ function triggerScanCapture() {
     showErrorBanner('No floor surface detected yet. Point camera at floor over trousers.');
     return;
   }
-  if (state.activeMode === MODES.HRNET && !state.isSimulator && !state.isTrackingStable) {
-    if (state.recalibration?.recalibrating) {
-      showToast('Hold camera steady over trousers while height recalibrates');
+  if (state.activeMode === MODES.HRNET && !state.isSimulator && (!state.mappingComplete || !state.isTrackingStable)) {
+    if (!state.mappingComplete) {
+      showToast('Move phone slowly over trousers in small circles to map surface');
     } else {
-      showToast('Hold camera steady over trousers until height settles');
+      showToast('Hold camera steady over trousers until distance settles');
     }
     return;
   }
