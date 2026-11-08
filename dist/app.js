@@ -142,9 +142,18 @@ const state = {
   currentYDistanceCm: null,
   scanRequested: false,
   scanRequestTime: 0,
-  scanHistory: [],
   phoneTiltDeg: 0,        // Angle (degrees) between camera look-direction and straight-down
   isPhoneLevel: false,    // True when tilt <= 5° (phone pointing straight down)
+
+  // Movement-Aware Recalibration Engine State
+  recalibration: {
+    lastStablePos: null,        // { x, y, z } camera position when last calibrated
+    lastStableForward: null,    // [fx, fy, fz] camera orientation when last calibrated
+    consecutiveSteadyFrames: 0, // frames where motion is below threshold
+    isSteady: false,            // phone is physically held still
+    recalibrating: false,       // true when motion invalidated buffer and fresh samples are needed
+    movementReason: ''          // diagnostic reason for invalidation
+  },
 
   // Method B ONLY: Dedicated ARCore Hit-Test Vertical Separation State
   methodB: {
@@ -1363,33 +1372,107 @@ function onXRFrame(time, frame) {
   state.phoneTiltDeg = tiltAngleDeg;
   state.isPhoneLevel = true; // Temporarily unlocked
 
-  // 1. Track Camera Movement and Phone Stability
-  // Extract camera position from the view transform matrix (columns 12–14 = translation)
+  // ------------------------------------------------------------------
+  // 1. Movement-Aware Recalibration: Motion & Orientation Tracking
+  // ------------------------------------------------------------------
+  // Extract camera world position
   const camPos = {
     x: view.transform.matrix[12],
     y: view.transform.matrix[13],
     z: view.transform.matrix[14]
   };
 
-  // Rolling median of camPos.y over 60 frames smooths out ARCore IMU drift on the vertical axis
-  if (!state.camYSamples) state.camYSamples = [];
-  state.camYSamples.push(camPos.y);
-  if (state.camYSamples.length > 60) state.camYSamples.shift();
-  const sortedCamY = [...state.camYSamples].sort((a, b) => a - b);
-  const smoothCamY = sortedCamY[Math.floor(sortedCamY.length / 2)];
+  // Camera forward vector in world space (-Z column of view transform matrix)
+  const camFwd = [
+    -view.transform.matrix[8],
+    -view.transform.matrix[9],
+    -view.transform.matrix[10]
+  ];
+  const fwdLen = Math.hypot(camFwd[0], camFwd[1], camFwd[2]) || 1;
+  const normFwd = [camFwd[0] / fwdLen, camFwd[1] / fwdLen, camFwd[2] / fwdLen];
 
-  const moveDist = state.lastCamPosition ? Math.hypot(
+  // Frame-to-frame translation
+  const frameTranslation = state.lastCamPosition ? Math.hypot(
     camPos.x - state.lastCamPosition.x,
     camPos.y - state.lastCamPosition.y,
     camPos.z - state.lastCamPosition.z
   ) : 0;
-  state.camMovement = moveDist;
-  state.lastCamPosition = camPos;
+  state.camMovement = frameTranslation;
 
+  // Frame-to-frame rotation angle (degrees)
+  let frameRotationDeg = 0;
+  if (state.lastCamForward) {
+    const dotFwd = normFwd[0] * state.lastCamForward[0] + normFwd[1] * state.lastCamForward[1] + normFwd[2] * state.lastCamForward[2];
+    frameRotationDeg = Math.acos(Math.max(-1, Math.min(1, dotFwd))) * (180 / Math.PI);
+  }
+
+  // Displacement from the anchor pose where the last stable calibration was completed
+  let heightShift = 0;
+  let horizShift = 0;
+  let rotShift = 0;
+
+  if (state.recalibration.lastStablePos) {
+    heightShift = Math.abs(camPos.y - state.recalibration.lastStablePos.y);
+    horizShift = Math.hypot(
+      camPos.x - state.recalibration.lastStablePos.x,
+      camPos.z - state.recalibration.lastStablePos.z
+    );
+  }
+  if (state.recalibration.lastStableForward) {
+    const dotStable = normFwd[0] * state.recalibration.lastStableForward[0] +
+                      normFwd[1] * state.recalibration.lastStableForward[1] +
+                      normFwd[2] * state.recalibration.lastStableForward[2];
+    rotShift = Math.acos(Math.max(-1, Math.min(1, dotStable))) * (180 / Math.PI);
+  }
+
+  // Step 1: Detect significant camera translation or rotation
+  // - Sudden frame jump: translation > 2.5cm/frame or rotation > 3.5°/frame
+  // - Height shift from last calibrated height: > 3.5cm
+  // - Horizontal shift from last calibrated position: > 8.0cm
+  // - Reorientation from last calibrated forward vector: > 5.0°
+  const isSignificantMovement =
+    (frameTranslation > 0.025) ||
+    (frameRotationDeg > 3.5) ||
+    (state.isTrackingStable && (heightShift > 0.035 || horizShift > 0.080 || rotShift > 5.0));
+
+  // Step 2: Invalidate old Method B samples upon significant movement
+  if (isSignificantMovement) {
+    if (state.methodB.buffer.length > 0 || state.isTrackingStable) {
+      logMsg(`[Recalibrate] Movement detected (ΔY: ${(heightShift * 100).toFixed(1)}cm, ΔXZ: ${(horizShift * 100).toFixed(1)}cm, Δθ: ${rotShift.toFixed(1)}°). Invalidating stale height samples.`, 'info');
+    }
+    state.methodB.buffer = [];
+    state.methodB.validSamplesCount = 0;
+    state.methodB.isStable = false;
+    state.isTrackingStable = false;
+    state.recalibration.consecutiveSteadyFrames = 0;
+    state.recalibration.isSteady = false;
+    state.recalibration.recalibrating = true;
+    state.recalibration.movementReason = heightShift > 0.035 ? `Height shift ${(heightShift * 100).toFixed(1)}cm` : horizShift > 0.08 ? `Position shift ${(horizShift * 100).toFixed(1)}cm` : `Rotation shift ${rotShift.toFixed(1)}°`;
+  }
+
+  // Step 3: Wait until AR tracking stabilises (phone held physically steady)
+  const isPhoneStill = frameTranslation < 0.008 && frameRotationDeg < 0.8;
+  if (isPhoneStill) {
+    state.recalibration.consecutiveSteadyFrames++;
+    if (state.recalibration.consecutiveSteadyFrames >= 10) {
+      state.recalibration.isSteady = true;
+    }
+  } else {
+    state.recalibration.consecutiveSteadyFrames = 0;
+    state.recalibration.isSteady = false;
+    // Purge buffer if motion interrupts sample collection
+    if (!state.isTrackingStable && state.methodB.buffer.length > 0) {
+      state.methodB.buffer = [];
+      state.methodB.validSamplesCount = 0;
+    }
+  }
+
+  state.lastCamPosition = { ...camPos };
+  state.lastCamForward = [...normFwd];
+
+  // ------------------------------------------------------------------
   // 2. ARCore Hit-Testing — METHOD B ONLY: Vertical Distance Engine
-  // Directly measures vertical separation: verticalDistance = Math.abs(hitPosition.y - cameraPosition.y)
-  // Both hitPosition and cameraPosition are in the exact same WebXR reference space (refSpace).
-  // Strictly eliminates Method A (SLAM floor) and Method C (Depth API) blending.
+  // ------------------------------------------------------------------
   let surfaceHitFound = false;
 
   if (state.hitTestSource) {
@@ -1400,13 +1483,9 @@ function onXRFrame(time, frame) {
         const hitPos = hitPose.transform.position;
         const hitMatrix = hitPose.transform.matrix;
 
-        // Verify hit surface normal is sufficiently horizontal:
-        // hitMatrix columns: [4..6] is Y-axis (surface normal vector in world space)
         const nLen = Math.hypot(hitMatrix[4], hitMatrix[5], hitMatrix[6]) || 1;
         const normalY = hitMatrix[5] / nLen;
         const absNormalY = Math.abs(normalY);
-
-        // Reject hits that are not on a sufficiently horizontal surface (|ny| >= 0.88, within ~28° of gravity vertical)
         const isHorizontal = absNormalY >= 0.88;
 
         if (isHorizontal) {
@@ -1421,7 +1500,6 @@ function onXRFrame(time, frame) {
             matrix: hitMatrix
           };
 
-          // Check duplicate or stale hit data (unchanged coordinates within 25ms)
           const isDuplicate = state.methodB.lastHitPosition &&
             Math.abs(hitPos.x - state.methodB.lastHitPosition.x) < 1e-5 &&
             Math.abs(hitPos.y - state.methodB.lastHitPosition.y) < 1e-5 &&
@@ -1432,48 +1510,17 @@ function onXRFrame(time, frame) {
             state.methodB.lastHitPosition = { x: hitPos.x, y: hitPos.y, z: hitPos.z };
             state.methodB.lastHitTime = time;
 
-            // Direct vertical separation in meters:
-            // verticalDistance = Math.abs(hitPosition.y - cameraPosition.y)
             const verticalDistance = Math.abs(hitPos.y - camPos.y);
-            // Convert metres to centimetres:
             const verticalDistanceCm = verticalDistance * 100;
 
-            // Validate: finite and physically plausible (15 cm to 250 cm)
             if (Number.isFinite(verticalDistanceCm) && verticalDistanceCm >= 15.0 && verticalDistanceCm <= 250.0) {
               state.methodB.rawVerticalDistCm = verticalDistanceCm;
 
-              // Outlier rejection with adaptive height tracking:
-              // Reject single-frame glitches (> 3.5 * stdDev or > 18cm jump).
-              // If user intentionally raises/lowers phone (e.g. standing at >110cm), 
-              // after 6 consecutive consistent frames, adapt the buffer immediately.
-              let isOutlier = false;
-              if (!state.methodB.consecutiveOutliers) state.methodB.consecutiveOutliers = 0;
-
-              if (state.methodB.buffer.length >= 10 && state.methodB.medianVerticalDistCm !== null) {
-                const currentMedian = state.methodB.medianVerticalDistCm;
-                const currentStd = state.methodB.stdDevCm || 1.0;
-                const maxAllowedDeviation = Math.max(14.0, 3.5 * currentStd);
-                
-                if (Math.abs(verticalDistanceCm - currentMedian) > maxAllowedDeviation) {
-                  state.methodB.consecutiveOutliers++;
-                  if (state.methodB.consecutiveOutliers >= 6) {
-                    // Intentional camera movement / height change: flush stale buffer and adapt
-                    state.methodB.buffer = [verticalDistanceCm];
-                    state.methodB.consecutiveOutliers = 0;
-                  } else {
-                    isOutlier = true;
-                    state.methodB.totalRejected++;
-                  }
-                } else {
-                  state.methodB.consecutiveOutliers = 0;
-                }
-              }
-
-              if (!isOutlier) {
+              // Step 4: Collect a fresh set of hit-test samples (ONLY when phone is steady!)
+              if (state.recalibration.isSteady) {
                 state.methodB.buffer.push(verticalDistanceCm);
                 state.methodB.totalAccepted++;
-                // Rolling buffer of 60 valid samples (~2.0 seconds at 30 fps)
-                const MAX_BUFFER = 60;
+                const MAX_BUFFER = 25; // Fresh 25-sample stationary buffer
                 if (state.methodB.buffer.length > MAX_BUFFER) {
                   state.methodB.buffer.shift();
                 }
@@ -1493,11 +1540,11 @@ function onXRFrame(time, frame) {
     }
   }
 
-  // Calculate Rolling Buffer Statistics (Median, Mean, Std Dev, Min, Max, Stability)
+  // Step 5: Recalculate camera height once >= 15 fresh samples are collected
   const bBuf = state.methodB.buffer;
   state.methodB.validSamplesCount = bBuf.length;
 
-  if (bBuf.length > 0) {
+  if (bBuf.length >= 15 && state.recalibration.isSteady) {
     const sorted = [...bBuf].sort((a, b) => a - b);
     const n = sorted.length;
     const mid = Math.floor(n / 2);
@@ -1513,39 +1560,50 @@ function onXRFrame(time, frame) {
     const variance = sorted.reduce((acc, v) => acc + (v - meanVal) ** 2, 0) / n;
     state.methodB.stdDevCm = Math.sqrt(variance);
 
-    // Stability criteria: at least 30 valid samples, std dev <= 1.5 cm, phone steady
-    const isStatisticallyStable = n >= 30 && state.methodB.stdDevCm <= 1.5;
-    const isPhysicalSteady = state.camMovement < 0.015;
-    state.methodB.isStable = isStatisticallyStable && isPhysicalSteady;
+    const rangeCm = state.methodB.maxCm - state.methodB.minCm;
+    const isStatisticallyStable = state.methodB.stdDevCm <= 1.2 && rangeCm <= 3.0;
+
+    // Step 6: Only then allow garment measurement
+    if (isStatisticallyStable) {
+      state.methodB.isStable = true;
+      state.isTrackingStable = true;
+      state.recalibration.recalibrating = false;
+
+      // Lock current calibrated pose
+      state.recalibration.lastStablePos = { ...camPos };
+      state.recalibration.lastStableForward = [...normFwd];
+
+      const floorY = camPos.y - (medianVal / 100);
+      const retX = state.currentReticlePose ? state.currentReticlePose.x : camPos.x;
+      const retZ = state.currentReticlePose ? state.currentReticlePose.z : camPos.z;
+      state.surfacePlane = {
+        point: { x: retX, y: floorY, z: retZ },
+        normal: { x: 0, y: 1, z: 0 },
+        elevationY: floorY,
+        timestamp: time,
+        sampleCount: bBuf.length
+      };
+      state.currentYDistanceCm = medianVal;
+    }
+  } else if (state.isSimulator) {
+    state.isTrackingStable = true;
+    state.methodB.isStable = true;
+    state.methodB.medianVerticalDistCm = 105.0;
+    state.currentYDistanceCm = 105.0;
+    state.recalibration.isSteady = true;
+    state.recalibration.recalibrating = false;
+    if (!state.surfacePlane) {
+      state.surfacePlane = {
+        point: { x: 0, y: -1.05, z: 0 },
+        normal: { x: 0, y: 1, z: 0 },
+        elevationY: -1.05,
+        timestamp: time,
+        sampleCount: 25
+      };
+    }
   } else {
     state.methodB.isStable = false;
-  }
-
-  // METHOD B ONLY:
-  // verticalDistanceCm from ARCore hit-testing with rolling median filter
-  let yDistCm = null;
-  if (state.methodB.medianVerticalDistCm !== null) {
-    yDistCm = state.methodB.medianVerticalDistCm;
-  } else if (state.methodB.rawVerticalDistCm !== null) {
-    yDistCm = state.methodB.rawVerticalDistCm;
-  }
-
-  if (Number.isFinite(yDistCm)) {
-    state.currentYDistanceCm = yDistCm;
-
-    // Anchor the 3D surface plane strictly to the calibrated median floor elevation:
-    // This guarantees that 3D ray-plane intersection uses the exact stable distance
-    // rather than raw single-frame hit-test noise.
-    const floorY = camPos.y - (yDistCm / 100);
-    const retX = state.currentReticlePose ? state.currentReticlePose.x : camPos.x;
-    const retZ = state.currentReticlePose ? state.currentReticlePose.z : camPos.z;
-    state.surfacePlane = {
-      point: { x: retX, y: floorY, z: retZ },
-      normal: { x: 0, y: 1, z: 0 },
-      elevationY: floorY,
-      timestamp: time,
-      sampleCount: state.methodB.buffer.length
-    };
+    state.isTrackingStable = false;
   }
 
   // ------------------------------------------------------------------
@@ -1609,49 +1667,10 @@ function onXRFrame(time, frame) {
   };
 
   // ------------------------------------------------------------------
-  // 3. 2-Phase Pre-Scan Calibration Engine (Gated by Method B Hit-Test Stability)
-  // Phase 1: User moves phone slightly over trousers to map surface (75 frames)
-  // Phase 2: User holds phone steady to settle Method B buffer (60 frames, >=30 samples, stdDev <= 1.5cm)
+  // 3. Movement-Aware Recalibration Telemetry
   // ------------------------------------------------------------------
-  const MAPPING_TARGET_FRAMES = 75;
-  const STEADY_TARGET_FRAMES = 60;
-  const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
-
   if (state.isSimulator) {
-    state.mappingComplete = true;
     state.isTrackingStable = true;
-  } else if (hasValidSurface) {
-    // Phase 1: Motion mapping (75 frames)
-    if (!state.mappingComplete) {
-      const isMotionHelpful = moveDist > 0.001 || state.methodB.validSamplesCount > 5;
-      if (isMotionHelpful) {
-        state.mappingFrames = (state.mappingFrames || 0) + 1;
-        if (state.mappingFrames >= MAPPING_TARGET_FRAMES) {
-          state.mappingComplete = true;
-          logMsg('Pre-scan Phase 1 complete: Surface mapped with optical parallax. Now hold steady.', 'success');
-        }
-      }
-    }
-
-    // Phase 2: Steady hold (60 frames) — gated on Method B stability
-    if (state.mappingComplete) {
-      const isPhoneSteady = moveDist < 0.012;
-      const isMethodBConverging = state.methodB.validSamplesCount >= 30 && state.methodB.stdDevCm <= 1.5;
-      if (isPhoneSteady && isMethodBConverging) {
-        state.steadyFrames = (state.steadyFrames || 0) + 1;
-        if (state.steadyFrames >= STEADY_TARGET_FRAMES) {
-          state.isTrackingStable = true;
-        }
-      } else {
-        // If phone is moved or Method B not settled, smoothly adjust steady frames
-        if (moveDist > 0.02 || (state.methodB.stdDevCm > 2.0)) {
-          state.steadyFrames = Math.max(0, (state.steadyFrames || 0) - 4);
-          state.isTrackingStable = false;
-        }
-      }
-    }
-  } else {
-    state.isTrackingStable = false;
   }
 
   // Top Distance Bar: Method B Median & Std Dev Display
@@ -1893,27 +1912,26 @@ function updateTrackingUI(hasSurface, isStable) {
     elements.hudTrackingDot.className = 'dot amber';
 
     if (!isOpenCV && !isManual && !state.isSimulator) {
-      // HRNet Mode: 2-Phase Calibration Active (75 frames mapping + 60 frames steady)
-      if (!state.mappingComplete) {
-        // Phase 1: Moving phone to map surface
-        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 75) * 100));
-        elements.hudTrackingText.textContent = `Mapping surface (${mapPct}%)`;
-        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move phone slowly over trousers in small circles';
+      if (!state.recalibration?.isSteady) {
+        // Step 1 & 2: Camera moved or rotating - waiting for user to hold steady
+        elements.hudTrackingText.textContent = state.recalibration?.recalibrating ? 'Recalibrating (Hold steady)' : 'Camera moving...';
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold camera steady over trousers to calibrate height';
         if (elements.btnScanTrigger) {
           elements.btnScanTrigger.disabled = true;
-          elements.scanActionLabel.textContent = `Mapping surface (${mapPct}%)...`;
-          elements.stepText.textContent = `Move phone slowly over trousers to map surface (${mapPct}%)`;
-          elements.stepIcon.textContent = '🔄';
+          elements.scanActionLabel.textContent = 'Hold camera steady...';
+          elements.stepText.textContent = 'Hold camera steady over trousers to calibrate height';
+          elements.stepIcon.textContent = '⏳';
         }
       } else {
-        // Phase 2: Holding phone steady to settle distance
-        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 60) * 100));
-        elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
-        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
+        // Step 3 & 4: Phone is steady, collecting 15 fresh stationary samples
+        const sampleCount = state.methodB.validSamplesCount || 0;
+        const pct = Math.min(100, Math.round((sampleCount / 15) * 100));
+        elements.hudTrackingText.textContent = `Calibrating height (${pct}%)`;
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = `Collecting stable height samples (${sampleCount}/15)... hold still`;
         if (elements.btnScanTrigger) {
           elements.btnScanTrigger.disabled = true;
-          elements.scanActionLabel.textContent = `Stabilizing distance (${settlePct}%)...`;
-          elements.stepText.textContent = `Hold camera steady over trousers (${settlePct}%)`;
+          elements.scanActionLabel.textContent = `Calibrating height (${pct}%)...`;
+          elements.stepText.textContent = `Sampling distance from floor (${pct}%)`;
           elements.stepIcon.textContent = '⏳';
         }
       }
@@ -2215,21 +2233,21 @@ function projectPointToPixel(point3D, viewMatrix, projectionMatrix, screenWidth,
 
 function triggerScanCapture() {
   if (!state.surfacePlane) {
-    showErrorBanner('No surface detected yet. Scan trousers until surface locks.');
+    showErrorBanner('No floor surface detected yet. Point camera at floor over trousers.');
     return;
   }
-  if (state.activeMode === MODES.HRNET && !state.isSimulator && (!state.mappingComplete || !state.isTrackingStable)) {
-    if (!state.mappingComplete) {
-      showToast('Move phone slowly over trousers in small circles to map surface');
+  if (state.activeMode === MODES.HRNET && !state.isSimulator && !state.isTrackingStable) {
+    if (state.recalibration?.recalibrating) {
+      showToast('Hold camera steady over trousers while height recalibrates');
     } else {
-      showToast('Hold camera steady over trousers until distance settles');
+      showToast('Hold camera steady over trousers until height settles');
     }
     return;
   }
   hideErrorBanner();
   state.scanRequested = true;
   state.scanRequestTime = 0;
-  logMsg('Scan triggered. Stabilizing surface height and freezing calibration...', 'info');
+  logMsg('Scan triggered with calibrated height: ' + (state.methodB.medianVerticalDistCm ? state.methodB.medianVerticalDistCm.toFixed(1) + 'cm' : 'N/A'), 'info');
 }
 
 /**

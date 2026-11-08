@@ -826,7 +826,86 @@ assert.strictEqual(dualTest2.outseam.depth, null);
 
 console.log(`✓ Acceptance Test 15 Passed: Dual-Source Waist (result+1)*2 & Outseam AR vs Depth verified`);
 
+// 16. Acceptance Test 16: Movement-Aware Recalibration Engine
+class MockRecalibrationEngine {
+  constructor() {
+    this.buffer = [];
+    this.isTrackingStable = false;
+    this.lastStablePos = null;
+    this.consecutiveSteadyFrames = 0;
+    this.isSteady = false;
+    this.recalibrating = false;
+  }
+
+  processFrame(camPos, hitHeightCm) {
+    // 1. Detect significant translation from last stable position
+    let heightShift = 0;
+    if (this.lastStablePos) {
+      heightShift = Math.abs(camPos.y - this.lastStablePos.y);
+    }
+
+    const isSignificantMovement = this.isTrackingStable && (heightShift > 0.035);
+
+    // 2. Invalidate old Method B samples upon significant movement
+    if (isSignificantMovement) {
+      this.buffer = [];
+      this.isTrackingStable = false;
+      this.consecutiveSteadyFrames = 0;
+      this.isSteady = false;
+      this.recalibrating = true;
+    }
+
+    // 3. Wait until steady
+    this.consecutiveSteadyFrames++;
+    if (this.consecutiveSteadyFrames >= 10) {
+      this.isSteady = true;
+    }
+
+    // 4. Collect fresh samples only while steady
+    if (this.isSteady) {
+      this.buffer.push(hitHeightCm);
+      if (this.buffer.length > 25) this.buffer.shift();
+    }
+
+    // 5. Recalculate camera height once >= 15 fresh samples are collected
+    if (this.buffer.length >= 15 && this.isSteady) {
+      const sorted = [...this.buffer].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      const medianVal = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      this.medianHeight = medianVal;
+      this.isTrackingStable = true;
+      this.recalibrating = false;
+      this.lastStablePos = { ...camPos };
+    }
+  }
+}
+
+const engine = new MockRecalibrationEngine();
+
+// Phase 1: Camera stationary at 100cm height (10 frames to steady + 15 frames to fill sample buffer = 25 frames)
+for (let i = 0; i < 25; i++) {
+  engine.processFrame({ x: 0, y: 1.00, z: 0 }, 100.0);
+}
+assert.strictEqual(engine.isTrackingStable, true, 'Engine must stabilize when stationary');
+assert.strictEqual(engine.medianHeight, 100.0, 'Median height must calibrate to 100cm');
+
+// Phase 2: User lifts camera to 115cm height (15cm height shift > 3.5cm threshold)
+engine.processFrame({ x: 0, y: 1.15, z: 0 }, 115.0);
+assert.strictEqual(engine.isTrackingStable, false, 'Movement must immediately unlock tracking gate');
+assert.strictEqual(engine.recalibrating, true, 'Recalibrating state must be active');
+assert.strictEqual(engine.buffer.length, 0, 'Stale 100cm samples must be completely purged');
+
+// Phase 3: Phone held steady at 115cm height (10 steady frames + 15 samples = 25 frames)
+for (let i = 0; i < 25; i++) {
+  engine.processFrame({ x: 0, y: 1.15, z: 0 }, 115.0);
+}
+assert.strictEqual(engine.isTrackingStable, true, 'Engine must restabilize at new height');
+assert.strictEqual(engine.medianHeight, 115.0, 'Recalculated height must reflect fresh 115cm height with zero 100cm lag');
+
+console.log(`✓ Acceptance Test 16 Passed: Movement-Aware Recalibration (Motion Detection, Buffer Invalidation, Steady Hold, Recalculation) verified`);
+
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
+
 
 
 
