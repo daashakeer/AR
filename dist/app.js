@@ -3111,30 +3111,32 @@ function showGarmentResults(backendData, snapshot) {
   const hasValidDepth = depthHeight !== null && Number.isFinite(depthHeight) && depthHeight > 0.25 && depthHeight < 3.0 && arHeight > 0.25;
   const depthScaleRatio = hasValidDepth ? (depthHeight / arHeight) : null;
 
-  // 1. WAIST: User Formula = (result + 1) * 2
+  // 1. WAIST: User Formula = (result + 1) * 2, displayed in WHOLE NUMBERS (e.g. 32, 33, 34, 35, 36)
   // 'result' is the measured flat waistband width in inches
   if (m.waist_width && m.waist_width.valid) {
     const rawWaistIn_AR = m.waist_width.distInches; // W in inches
     const waistIn_AR = (rawWaistIn_AR + 1) * 2;
+    const wholeWaist_AR = Math.round(waistIn_AR);
     const waistCm_AR = waistIn_AR * 2.54;
 
     if (elements.resWaistArVal) {
-      elements.resWaistArVal.textContent = `${waistIn_AR.toFixed(1)} in`;
+      elements.resWaistArVal.textContent = `${wholeWaist_AR} in`;
     }
     if (elements.resWaistArSub) {
-      elements.resWaistArSub.textContent = `${waistCm_AR.toFixed(1)} cm (width: ${rawWaistIn_AR.toFixed(1)}")`;
+      elements.resWaistArSub.textContent = `${waistCm_AR.toFixed(1)} cm (exact: ${waistIn_AR.toFixed(1)}")`;
     }
 
     if (hasValidDepth && depthScaleRatio !== null) {
       const rawWaistIn_Depth = rawWaistIn_AR * depthScaleRatio;
       const waistIn_Depth = (rawWaistIn_Depth + 1) * 2;
+      const wholeWaist_Depth = Math.round(waistIn_Depth);
       const waistCm_Depth = waistIn_Depth * 2.54;
 
       if (elements.resWaistDepthVal) {
-        elements.resWaistDepthVal.textContent = `${waistIn_Depth.toFixed(1)} in`;
+        elements.resWaistDepthVal.textContent = `${wholeWaist_Depth} in`;
       }
       if (elements.resWaistDepthSub) {
-        elements.resWaistDepthSub.textContent = `${waistCm_Depth.toFixed(1)} cm (width: ${rawWaistIn_Depth.toFixed(1)}")`;
+        elements.resWaistDepthSub.textContent = `${waistCm_Depth.toFixed(1)} cm (exact: ${waistIn_Depth.toFixed(1)}")`;
       }
     } else {
       if (elements.resWaistDepthVal) elements.resWaistDepthVal.textContent = '-- in';
@@ -3147,27 +3149,31 @@ function showGarmentResults(backendData, snapshot) {
     if (elements.resWaistDepthSub) elements.resWaistDepthSub.textContent = 'Not detected';
   }
 
-  // 2. OUTSEAM: AR vs Depth
+  // 2. OUTSEAM: AR vs Depth, rounded to nearest 0.5 (e.g. 30, 30.5, 40, 40.5)
   if (m.outseam && m.outseam.valid) {
     const outseamIn_AR = m.outseam.distInches;
-    const outseamCm_AR = m.outseam.distCm;
+    const roundedOutseam_AR = Math.round(outseamIn_AR * 2) / 2;
+    const outseamStr_AR = (roundedOutseam_AR % 1 === 0 ? roundedOutseam_AR.toFixed(0) : roundedOutseam_AR.toFixed(1)) + ' in';
+    const outseamCm_AR = outseamIn_AR * 2.54;
 
     if (elements.resOutseamArVal) {
-      elements.resOutseamArVal.textContent = `${outseamIn_AR.toFixed(1)} in`;
+      elements.resOutseamArVal.textContent = outseamStr_AR;
     }
     if (elements.resOutseamArSub) {
-      elements.resOutseamArSub.textContent = `${outseamCm_AR.toFixed(1)} cm`;
+      elements.resOutseamArSub.textContent = `${m.outseam.distCm.toFixed(1)} cm (exact: ${outseamIn_AR.toFixed(1)}")`;
     }
 
     if (hasValidDepth && depthScaleRatio !== null) {
       const outseamIn_Depth = outseamIn_AR * depthScaleRatio;
-      const outseamCm_Depth = outseamCm_AR * depthScaleRatio;
+      const roundedOutseam_Depth = Math.round(outseamIn_Depth * 2) / 2;
+      const outseamStr_Depth = (roundedOutseam_Depth % 1 === 0 ? roundedOutseam_Depth.toFixed(0) : roundedOutseam_Depth.toFixed(1)) + ' in';
+      const outseamCm_Depth = outseamIn_Depth * 2.54;
 
       if (elements.resOutseamDepthVal) {
-        elements.resOutseamDepthVal.textContent = `${outseamIn_Depth.toFixed(1)} in`;
+        elements.resOutseamDepthVal.textContent = outseamStr_Depth;
       }
       if (elements.resOutseamDepthSub) {
-        elements.resOutseamDepthSub.textContent = `${outseamCm_Depth.toFixed(1)} cm`;
+        elements.resOutseamDepthSub.textContent = `${(m.outseam.distCm * depthScaleRatio).toFixed(1)} cm (exact: ${outseamIn_Depth.toFixed(1)}")`;
       }
     } else {
       if (elements.resOutseamDepthVal) elements.resOutseamDepthVal.textContent = '-- in';

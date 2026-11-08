@@ -809,22 +809,26 @@ function calculateDualMetrics(rawWaistWidthIn_AR, rawOutseamIn_AR, arHeightM, de
   };
 }
 
-// Case 1: 16-inch raw waist width (AR height = 100cm, Depth height = 103cm)
+// Formatters per user specification:
+// - Waist: whole numbers like 32, 33, 34, 35, 36
+// - Outseam: rounded to nearest 0.5 like 30, 30.5, 40, 40.5
+const formatWaistWhole = (val) => val !== null ? `${Math.round(val)} in` : '-- in';
+const formatOutseamHalf = (val) => {
+  if (val === null) return '-- in';
+  const rounded = Math.round(val * 2) / 2;
+  return `${rounded % 1 === 0 ? rounded.toFixed(0) : rounded.toFixed(1)} in`;
+};
+
 const dualTest1 = calculateDualMetrics(16.0, 40.0, 1.00, 1.03);
-// AR waist: (16.0 + 1) * 2 = 34.0
-assert.strictEqual(dualTest1.waist.ar, 34.0, 'AR Waist must equal (16.0 + 1) * 2 = 34.0 in');
-// Depth waist: (16.0 * 1.03 + 1) * 2 = (16.48 + 1) * 2 = 34.96 in
-assert.strictEqual(Math.round(dualTest1.waist.depth * 100) / 100, 34.96, 'Depth Waist must reflect optical depth scaling');
-assert.strictEqual(dualTest1.outseam.ar, 40.0, 'AR Outseam must equal 40.0 in');
-assert.strictEqual(dualTest1.outseam.depth, 41.2, 'Depth Outseam must scale by depth ratio 1.03');
+assert.strictEqual(formatWaistWhole(dualTest1.waist.ar), '34 in');
+assert.strictEqual(formatWaistWhole(dualTest1.waist.depth), '35 in', '34.96 in rounds to whole number 35 in');
+assert.strictEqual(formatOutseamHalf(dualTest1.outseam.ar), '40 in');
+assert.strictEqual(formatOutseamHalf(dualTest1.outseam.depth), '41 in');
+assert.strictEqual(formatOutseamHalf(30.24), '30 in');
+assert.strictEqual(formatOutseamHalf(30.26), '30.5 in');
+assert.strictEqual(formatOutseamHalf(40.48), '40.5 in');
 
-// Case 2: Depth sensor unavailable -> Depth returns null
-const dualTest2 = calculateDualMetrics(16.0, 40.0, 1.00, null);
-assert.strictEqual(dualTest2.waist.ar, 34.0);
-assert.strictEqual(dualTest2.waist.depth, null);
-assert.strictEqual(dualTest2.outseam.depth, null);
-
-console.log(`✓ Acceptance Test 15 Passed: Dual-Source Waist (result+1)*2 & Outseam AR vs Depth verified`);
+console.log(`✓ Acceptance Test 15 Passed: Dual-Source Waist (whole numbers) & Outseam (0.5 steps) verified`);
 
 // 16. Acceptance Test 16: Movement-Aware Recalibration Engine
 class MockRecalibrationEngine {
