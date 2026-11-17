@@ -410,6 +410,24 @@ function logMsg(msg, type = 'info') {
 async function checkCompatibility() {
   logMsg('Checking WebXR capabilities...', 'info');
 
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isDesktop = !/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+  const compatBanner = document.getElementById('device-compatibility-banner');
+  const compatTitle = document.getElementById('device-compat-title');
+  const compatDesc = document.getElementById('device-compat-desc');
+
+  if (compatBanner && compatTitle && compatDesc) {
+    if (isIOS) {
+      compatTitle.textContent = 'Not Supported on iPhone & iPad';
+      compatDesc.innerHTML = 'iOS Safari does not support the WebXR <code>immersive-ar</code> camera specification. Native AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>Use <strong>WebXR Emulator Mode</strong> below to test all measurements.';
+    } else if (isDesktop) {
+      compatTitle.textContent = 'Not Supported on PC & Desktop';
+      compatDesc.innerHTML = 'PC browsers lack native AR camera spatial tracking. Native AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>Use <strong>WebXR Emulator Mode</strong> below to test all measurements.';
+    }
+  }
+
   if (!window.isSecureContext) {
     logMsg('Security check: HTTPS or localhost required for WebXR.', 'error');
     if (elements.compatibilityMessage) {
@@ -423,7 +441,7 @@ async function checkCompatibility() {
   if (!('xr' in navigator)) {
     logMsg('WebXR Device API is not available on this browser.', 'error');
     updateBadge(elements.badgeWebXR, 'WebXR: Unsupported', 'error');
-    updateBadge(elements.badgeAR, 'AR: Unavailable', 'error');
+    updateBadge(elements.badgeAR, isIOS ? 'AR: Unsupported (iPhone)' : (isDesktop ? 'AR: Unsupported (PC)' : 'AR: Unsupported'), 'error');
     updateBadge(elements.badgeHitTest, 'Hit-Test: N/A', 'error');
     if (elements.compatibilityMessage) {
       elements.compatibilityMessage.innerHTML = 
@@ -442,9 +460,14 @@ async function checkCompatibility() {
       logMsg('immersive-ar is supported with hardware AR tracking.', 'success');
       updateBadge(elements.badgeAR, 'AR: Supported', 'success');
       updateBadge(elements.badgeHitTest, 'Hit-Test: Ready', 'success');
+      if (compatBanner && compatTitle && compatDesc) {
+        compatBanner.classList.add('banner-supported');
+        compatTitle.textContent = 'AR Hardware Ready';
+        compatDesc.textContent = 'Android ARCore spatial tracking active. Ready for metric spatial measurement.';
+      }
       if (elements.compatibilityMessage) {
         elements.compatibilityMessage.innerHTML = 
-          `AR sensors ready! Click <strong>Start AR Measurement</strong> to scan trousers and auto-measure.`;
+          `AR sensors ready! Click <strong>Start HRNet AI Scan</strong> to scan trousers and auto-measure.`;
       }
       if (elements.btnStartScan) elements.btnStartScan.disabled = false;
       if (elements.btnStartOpenCV) elements.btnStartOpenCV.disabled = false;
@@ -452,7 +475,7 @@ async function checkCompatibility() {
       if (elements.btnStartManual) elements.btnStartManual.disabled = false;
     } else {
       logMsg('immersive-ar is not supported on this device. (Requires ARCore).', 'warn');
-      updateBadge(elements.badgeAR, 'AR: Unsupported', 'error');
+      updateBadge(elements.badgeAR, isIOS ? 'AR: Unsupported (iPhone)' : (isDesktop ? 'AR: Unsupported (PC)' : 'AR: Unsupported'), 'error');
       updateBadge(elements.badgeHitTest, 'Hit-Test: N/A', 'error');
       if (elements.compatibilityMessage) {
         elements.compatibilityMessage.innerHTML = 
@@ -4087,8 +4110,42 @@ function setupEventListeners() {
   });
 }
 
+// Apple Dark & Light Theme Controller
+function initTheme() {
+  const saved = localStorage.getItem('ar-theme');
+  const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+  const initialTheme = saved || (prefersLight ? 'light' : 'dark');
+  applyTheme(initialTheme);
+
+  const toggleBtn = document.getElementById('theme-toggle');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      try {
+        localStorage.setItem('ar-theme', next);
+      } catch (e) {}
+    });
+  }
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const toggleBtn = document.getElementById('theme-toggle');
+  const labelEl = document.getElementById('theme-toggle-label');
+  if (toggleBtn) {
+    toggleBtn.setAttribute('data-theme', theme);
+    toggleBtn.setAttribute('aria-label', `Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`);
+  }
+  if (labelEl) {
+    labelEl.textContent = theme === 'dark' ? 'Dark' : 'Light';
+  }
+}
+
 // Initialize on DOM ready or immediately if already loaded
 function init() {
+  initTheme();
   setupEventListeners();
   checkCompatibility();
   initOpenCVModule();
@@ -4099,3 +4156,4 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
+
