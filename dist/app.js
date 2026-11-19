@@ -1213,6 +1213,7 @@ function setAppMode(newMode) {
    ========================================================================== */
 
 async function startARSession() {
+  prewarmBackend();
   try {
     state.isSimulator = false;
     logMsg('Initializing WebXR immersive-ar session...', 'info');
@@ -2433,6 +2434,49 @@ async function captureFallbackCameraFrame() {
    7. Backend Communication (POST /predict) & Keypoint Unprojection
    ========================================================================== */
 
+let prewarmPromise = null;
+let isBackendPrewarmed = false;
+
+/**
+ * Proactively pre-warms the Hugging Face ZeroGPU container in the background
+ * as soon as the user opens the page, hovers/clicks 'Start Camera Scan', or enters AR.
+ * This completely eliminates the ~50-second cold-start wait when the user takes a scan!
+ */
+export function prewarmBackend() {
+  if (isBackendPrewarmed || prewarmPromise) return prewarmPromise;
+
+  const isHFSpace = BACKEND_URL.includes('hf.space') || BACKEND_URL.includes('huggingface.co');
+  if (!isHFSpace) return Promise.resolve();
+
+  logMsg('Proactively pre-warming Hugging Face model container in background...', 'info');
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 60000) : null;
+
+  prewarmPromise = fetch(`${BACKEND_URL}/config`, {
+    method: 'GET',
+    signal: controller?.signal
+  })
+    .then(res => {
+      if (timeoutId) clearTimeout(timeoutId);
+      isBackendPrewarmed = true;
+      logMsg('Hugging Face model container pre-warmed & ready.', 'success');
+      return res;
+    })
+    .catch(err => {
+      if (timeoutId) clearTimeout(timeoutId);
+      // Secondary fallback ping with no-cors to root
+      return fetch(BACKEND_URL, { method: 'GET', mode: 'no-cors' })
+        .then(() => {
+          isBackendPrewarmed = true;
+          logMsg('Hugging Face model container pinged via fallback.', 'info');
+        })
+        .catch(() => {});
+    });
+
+  return prewarmPromise;
+}
+
 async function dispatchToBackend(snapshot) {
   showToast('Detecting trouser landmarks...');
   hideErrorBanner();
@@ -3618,6 +3662,7 @@ function renderManualHUD(view, width, height) {
    ========================================================================== */
 
 async function startSimulatorMode() {
+  prewarmBackend();
   state.isSimulator = true;
   logMsg('Starting WebXR desktop simulator mode...', 'info');
 
@@ -3785,7 +3830,9 @@ function setupEventListeners() {
   }
 
   if (elements.btnStartHRNet) {
+    elements.btnStartHRNet.addEventListener('pointerenter', prewarmBackend);
     elements.btnStartHRNet.addEventListener('click', () => {
+      prewarmBackend();
       if (elements.btnStartHRNet.disabled) {
         startSimulatorMode();
         return;
@@ -3816,7 +3863,9 @@ function setupEventListeners() {
 
   // Start AR Scan (Legacy / Generic)
   if (elements.btnStartScan) {
+    elements.btnStartScan.addEventListener('pointerenter', prewarmBackend);
     elements.btnStartScan.addEventListener('click', () => {
+      prewarmBackend();
       if (elements.btnStartScan.disabled) {
         alert('AR Scan requires Google Chrome on Android with ARCore.\n\nYou can click "Test in WebXR Emulator Mode" to test all features now.');
         return;
@@ -4042,6 +4091,7 @@ function init() {
   setupEventListeners();
   checkCompatibility();
   initOpenCVModule();
+  prewarmBackend();
 }
 
 if (document.readyState === 'loading') {
