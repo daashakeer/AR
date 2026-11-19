@@ -417,24 +417,17 @@ async function checkCompatibility() {
   const compatBanner = document.getElementById('device-compatibility-banner');
   const compatTitle = document.getElementById('device-compat-title');
   const compatDesc = document.getElementById('device-compat-desc');
-
-  if (compatBanner && compatTitle && compatDesc) {
-    if (isIOS) {
-      compatTitle.textContent = 'Not Supported on iPhone & iPad';
-      compatDesc.innerHTML = 'iOS Safari does not support the WebXR <code>immersive-ar</code> camera specification. Native AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>Use <strong>WebXR Emulator Mode</strong> below to test all measurements.';
-    } else if (isDesktop) {
-      compatTitle.textContent = 'Not Supported on PC & Desktop';
-      compatDesc.innerHTML = 'PC browsers lack native AR camera spatial tracking. Native AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>Use <strong>WebXR Emulator Mode</strong> below to test all measurements.';
-    }
-  }
+  const statusPillText = document.querySelector('.status-pill-text');
 
   if (!window.isSecureContext) {
     logMsg('Security check: HTTPS or localhost required for WebXR.', 'error');
-    if (elements.compatibilityMessage) {
-      elements.compatibilityMessage.innerHTML = 
-        `<strong style="color:var(--accent-red)">HTTPS Required:</strong> WebXR requires HTTPS or localhost.`;
+    if (compatBanner && compatTitle && compatDesc) {
+      compatBanner.classList.remove('hidden');
+      compatTitle.textContent = 'HTTPS Security Required';
+      compatDesc.innerHTML = 'WebXR camera access requires a secure HTTPS connection or localhost.';
     }
     updateBadge(elements.badgeWebXR, 'Insecure Context', 'error');
+    if (statusPillText) statusPillText.textContent = 'Insecure';
     return;
   }
 
@@ -443,12 +436,14 @@ async function checkCompatibility() {
     updateBadge(elements.badgeWebXR, 'WebXR: Unsupported', 'error');
     updateBadge(elements.badgeAR, isIOS ? 'AR: Unsupported (iPhone)' : (isDesktop ? 'AR: Unsupported (PC)' : 'AR: Unsupported'), 'error');
     updateBadge(elements.badgeHitTest, 'Hit-Test: N/A', 'error');
-    if (elements.compatibilityMessage) {
-      elements.compatibilityMessage.innerHTML = 
-        `WebXR is not supported on this browser engine.<br>` +
-        `Native AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>` +
-        `You can use <strong>Test in WebXR Emulator Mode</strong> on any desktop or mobile device.`;
+    if (compatBanner && compatTitle && compatDesc) {
+      compatBanner.classList.remove('hidden');
+      compatTitle.textContent = isIOS ? 'AR Camera Scan Not Supported on iPhone' : (isDesktop ? 'AR Camera Scan Not Supported on Desktop PC' : 'AR Camera Scan Not Available');
+      compatDesc.innerHTML = isIOS 
+        ? 'iOS Safari does not support the WebXR <code>immersive-ar</code> camera specification. Live AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>You can still test and measure any trouser photo right now using our <strong>Interactive 3D Simulator</strong> below.'
+        : 'Desktop browsers do not have native AR spatial camera sensors. Live AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>You can still test and measure any trouser photo right now using our <strong>Interactive 3D Simulator</strong> below.';
     }
+    if (statusPillText) statusPillText.textContent = isDesktop ? 'PC / Simulator Ready' : (isIOS ? 'iPhone / Simulator Ready' : 'Simulator Ready');
     return;
   }
 
@@ -460,15 +455,11 @@ async function checkCompatibility() {
       logMsg('immersive-ar is supported with hardware AR tracking.', 'success');
       updateBadge(elements.badgeAR, 'AR: Supported', 'success');
       updateBadge(elements.badgeHitTest, 'Hit-Test: Ready', 'success');
-      if (compatBanner && compatTitle && compatDesc) {
-        compatBanner.classList.add('banner-supported');
-        compatTitle.textContent = 'AR Hardware Ready';
-        compatDesc.textContent = 'Android ARCore spatial tracking active. Ready for metric spatial measurement.';
+      // Hide the unsupported banner completely when AR hardware is ready!
+      if (compatBanner) {
+        compatBanner.classList.add('hidden');
       }
-      if (elements.compatibilityMessage) {
-        elements.compatibilityMessage.innerHTML = 
-          `AR sensors ready! Click <strong>Start HRNet AI Scan</strong> to scan trousers and auto-measure.`;
-      }
+      if (statusPillText) statusPillText.textContent = 'Camera AR Ready';
       if (elements.btnStartScan) elements.btnStartScan.disabled = false;
       if (elements.btnStartOpenCV) elements.btnStartOpenCV.disabled = false;
       if (elements.btnStartHRNet) elements.btnStartHRNet.disabled = false;
@@ -477,11 +468,14 @@ async function checkCompatibility() {
       logMsg('immersive-ar is not supported on this device. (Requires ARCore).', 'warn');
       updateBadge(elements.badgeAR, isIOS ? 'AR: Unsupported (iPhone)' : (isDesktop ? 'AR: Unsupported (PC)' : 'AR: Unsupported'), 'error');
       updateBadge(elements.badgeHitTest, 'Hit-Test: N/A', 'error');
-      if (elements.compatibilityMessage) {
-        elements.compatibilityMessage.innerHTML = 
-          `WebXR is present, but <strong>immersive-ar</strong> is unavailable on this device.<br>` +
-          `Test all automatic scanning features using <strong>Test in WebXR Emulator Mode</strong> below.`;
+      if (compatBanner && compatTitle && compatDesc) {
+        compatBanner.classList.remove('hidden');
+        compatTitle.textContent = isIOS ? 'AR Camera Scan Not Supported on iPhone' : (isDesktop ? 'AR Camera Scan Not Supported on Desktop PC' : 'AR Camera Scan Not Available on this Device');
+        compatDesc.innerHTML = isIOS
+          ? 'iOS Safari does not support WebXR <code>immersive-ar</code> camera tracking. Native AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>You can test all measurements right now using our <strong>Interactive 3D Simulator</strong> below.'
+          : 'Desktop browsers lack native AR camera spatial tracking. Native AR requires <strong>Google Chrome on Android</strong> with ARCore.<br>You can test all measurements right now using our <strong>Interactive 3D Simulator</strong> below.';
       }
+      if (statusPillText) statusPillText.textContent = 'Simulator Ready';
     }
   } catch (err) {
     logMsg(`Capability query error: ${err.message}`, 'error');
@@ -3902,11 +3896,19 @@ function setupEventListeners() {
   if (elements.btnStartHRNet) {
     elements.btnStartHRNet.addEventListener('click', () => {
       if (elements.btnStartHRNet.disabled) {
-        alert('AR requires Google Chrome on Android with ARCore.\n\nYou can click "Test in WebXR Emulator Mode" to test all features now.');
+        startSimulatorMode();
         return;
       }
       setAppMode(MODES.HRNET);
       startARSession();
+    });
+  }
+
+  const btnCompatSim = document.getElementById('btn-compat-sim');
+  if (btnCompatSim) {
+    btnCompatSim.addEventListener('click', (e) => {
+      e.stopPropagation();
+      startSimulatorMode();
     });
   }
 
