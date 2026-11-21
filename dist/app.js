@@ -13,7 +13,16 @@
  * 3. Preserved Manual 2-Point Distance Calculator (screen tapping / reticle).
  * 4. Desktop WebXR Emulator Mode with sample/upload testing.
  * 5. Debug Mode (?debug=1): 2D keypoint visual inspection on captured frame.
+ * 6. Experimental Wide-FOV Camera Capture Subsystem (4:3 sensor, min zoom, framing guide).
  */
+
+import {
+  CameraDiagnostics,
+  WideCameraController,
+  CameraDeviceSelector,
+  CameraPreview,
+  GarmentFramingOverlay
+} from './wideCamera.js';
 
 // ==============================================================================
 // 1. CONSTANTS & CONFIGURATION
@@ -271,7 +280,12 @@ const state = {
   isSimulator: false,
   simulatorInterval: null,
   simVideo: null,
-  simPointer: { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+  simPointer: { x: window.innerWidth / 2, y: window.innerHeight / 2 },
+
+  // Experimental Wide-FOV Camera Subsystem
+  isWideFovMode: false,
+  wideController: null,
+  widePreviewContainer: null
 };
 
 // Cached DOM Elements
@@ -398,7 +412,14 @@ const elements = {
   resHeroDistance: document.getElementById('res-hero-distance'),
   resHeroSub: document.getElementById('res-hero-sub'),
   resP1Coords: document.getElementById('res-p1-coords'),
-  resP2Coords: document.getElementById('res-p2-coords')
+  resP2Coords: document.getElementById('res-p2-coords'),
+
+  // Wide-FOV Camera Mode & Lens Diagnostics
+  btnToggleFov: document.getElementById('btn-toggle-fov'),
+  fovModeIcon: document.getElementById('fov-mode-icon'),
+  fovModeText: document.getElementById('fov-mode-text'),
+  btnRunCameraDiag: document.getElementById('btn-run-camera-diag'),
+  cameraDiagOutput: document.getElementById('camera-diag-output')
 };
 
 /* ==========================================================================
@@ -1341,6 +1362,11 @@ async function startARSession() {
 function onSessionEnded() {
   cleanupOpenCVBuffers();
   state.cvState.isProcessing = false;
+  if (state.isWideFovMode) {
+    toggleWideFovMode(false);
+  } else if (state.wideController) {
+    state.wideController.stopStream();
+  }
   state.xrSession = null;
   state.hitTestSource = null;
   state.glBinding = null;
@@ -1353,6 +1379,11 @@ function onSessionEnded() {
 function exitAR() {
   cleanupOpenCVBuffers();
   state.cvState.isProcessing = false;
+  if (state.isWideFovMode) {
+    toggleWideFovMode(false);
+  } else if (state.wideController) {
+    state.wideController.stopStream();
+  }
   if (state.xrSession) {
     state.xrSession.end();
   } else if (state.isSimulator) {
@@ -1790,6 +1821,20 @@ function onXRFrame(time, frame) {
         state.scanRequestTime = 0;
         showErrorBanner('Surface tracking lost. Hold camera steady over trousers to relock.');
       }
+    }
+  }
+
+  // 4c. Update Wide-FOV Trouser Framing Guidance when Wide Mode is active
+  if (state.isWideFovMode) {
+    const currentDistCm = state.methodB.medianVerticalDistCm || state.methodB.rawVerticalDistCm || state.currentYDistanceCm;
+    if (state.phoneTiltDeg > 15.0) {
+      GarmentFramingOverlay.updateGuidance('Tilt camera straight down towards floor/trousers', true);
+    } else if (Number.isFinite(currentDistCm) && currentDistCm < 45.0) {
+      GarmentFramingOverlay.updateGuidance('Raise phone higher (60-90cm) to fit entire trouser in frame', true);
+    } else if (!state.isTrackingStable) {
+      GarmentFramingOverlay.updateGuidance('Hold steady • Align waistband at top & hems at bottom', false);
+    } else {
+      GarmentFramingOverlay.updateGuidance('Entire trousers framed • Tap shutter to measure', false);
     }
   }
 
@@ -2344,13 +2389,40 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
       }
     }
 
-    // Secondary capture path: Simulator mode only
+    // Wide-FOV capture logging (for optical FOV comparison diagnostics)
+    if (state.isWideFovMode && state.wideController && state.widePreviewContainer) {
+      try {
+        const videoEl = state.widePreviewContainer.querySelector('#wide-preview-video');
+        if (videoEl && videoEl.videoWidth > 0) {
+          const wideFrame = await state.wideController.captureFrame(videoEl);
+          logMsg(`[Wide FOV Diagnostic] 4:3 Frame: ${wideFrame.width}×${wideFrame.height} (${(wideFrame.width / wideFrame.height).toFixed(2)}) • Zoom: ${wideFrame.zoom}x`, 'info');
+        }
+      } catch (wErr) {
+        console.warn('Wide frame diagnostic capture note:', wErr);
+      }
+    }
+
+    // Secondary capture path: Simulator mode or Wide Camera fallback if XRCamera unavailable
     if (!frameData) {
-      if (state.isSimulator) {
+      if (state.isWideFovMode && state.wideController && state.widePreviewContainer) {
+        try {
+          const videoEl = state.widePreviewContainer.querySelector('#wide-preview-video');
+          if (videoEl && videoEl.videoWidth > 0) {
+            logMsg('Attempting fallback capture from wide video stream...', 'info');
+            frameData = await state.wideController.captureFrame(videoEl);
+            captureSource = `Wide-FOV Camera fallback (${frameData.width}x${frameData.height})`;
+            logMsg(`Captured fallback wide camera frame: ${frameData.width}x${frameData.height}`, 'success');
+          }
+        } catch (wErr) {
+          console.warn('Wide camera fallback capture error:', wErr);
+        }
+      }
+
+      if (!frameData && state.isSimulator) {
         logMsg('Capturing simulator camera frame...', 'info');
         frameData = await captureFallbackCameraFrame();
         captureSource = 'WebXR desktop simulator stream';
-      } else {
+      } else if (!frameData) {
         // In native WebXR, fallback camera stream cannot be calibrated to WebXR tracking
         throw new Error('WebXR raw camera access (XRCamera) is unavailable. Fallback camera stream cannot be calibrated to WebXR tracking.');
       }
@@ -3964,6 +4036,142 @@ function handleSimulatorImageUpload(file) {
 }
 
 /* ==========================================================================
+   10b. Experimental Wide-Angle Camera Controller & Lens Subsystem
+   ========================================================================== */
+
+/**
+ * Initializes the experimental Wide-Angle Camera Controller and mounts preview container.
+ */
+function initWideCameraController() {
+  if (state.wideController) return;
+
+  state.wideController = new WideCameraController({
+    onStatus: (msg, type) => {
+      if (type === 'error') {
+        logMsg(`[WideCamera Error] ${msg}`, 'error');
+        if (state.widePreviewContainer) {
+          CameraPreview.showError(state.widePreviewContainer, true, msg);
+        }
+      } else {
+        logMsg(`[WideCamera] ${msg}`, 'info');
+      }
+    },
+    onStreamChanged: (stream, settings) => {
+      if (state.widePreviewContainer) {
+        CameraPreview.attachStream(state.widePreviewContainer, stream, state.wideController);
+      }
+    }
+  });
+
+  if (elements.arOverlay) {
+    state.widePreviewContainer = CameraPreview.create(elements.arOverlay, state.wideController);
+  }
+}
+
+/**
+ * Toggles Wide-FOV Camera Mode on or off during AR scanning.
+ * When enabled, acquires the uncropped 4:3 camera stream with minimum zoom and displays the trouser framing guide.
+ * When disabled or upon exit, gracefully releases the camera stream and returns to standard WebXR view.
+ * @param {boolean} [forceState]
+ */
+async function toggleWideFovMode(forceState = null) {
+  const shouldEnable = (forceState !== null) ? forceState : !state.isWideFovMode;
+
+  if (shouldEnable === state.isWideFovMode) return;
+
+  state.isWideFovMode = shouldEnable;
+
+  if (elements.btnToggleFov) {
+    if (state.isWideFovMode) {
+      elements.btnToggleFov.classList.add('active');
+      if (elements.fovModeText) elements.fovModeText.textContent = 'Normal FOV';
+      if (elements.fovModeIcon) elements.fovModeIcon.textContent = '📐';
+    } else {
+      elements.btnToggleFov.classList.remove('active');
+      if (elements.fovModeText) elements.fovModeText.textContent = 'Wide FOV';
+      if (elements.fovModeIcon) elements.fovModeIcon.textContent = '🔍';
+    }
+  }
+
+  if (state.isWideFovMode) {
+    initWideCameraController();
+    if (state.widePreviewContainer) {
+      CameraPreview.setVisible(state.widePreviewContainer, true);
+      CameraPreview.showLoader(state.widePreviewContainer, true, 'Acquiring 4:3 wide lens...');
+    }
+    try {
+      showToast('Switching to 4:3 Wide Camera...');
+      await state.wideController.acquireWideStream();
+      logMsg('Wide-FOV 4:3 camera mode enabled.', 'success');
+    } catch (err) {
+      console.warn('Failed to start wide camera mode, falling back:', err);
+      showToast('Wide camera failed. Using ARCore camera.');
+      toggleWideFovMode(false);
+    }
+  } else {
+    if (state.wideController) {
+      state.wideController.stopStream();
+    }
+    if (state.widePreviewContainer) {
+      CameraPreview.setVisible(state.widePreviewContainer, false);
+    }
+    logMsg('Wide-FOV mode closed, using standard ARCore camera.', 'info');
+  }
+}
+
+/**
+ * Runs camera and lens diagnostics, logging details to developer drawer.
+ */
+async function runCameraHardwareDiagnostics() {
+  if (!elements.cameraDiagOutput) return;
+  elements.cameraDiagOutput.innerHTML = 'Probing camera devices, lenses, and zoom capabilities...';
+
+  try {
+    const report = await CameraDiagnostics.runDiagnostics({
+      xrSession: state.xrSession,
+      view: state.lastView
+    });
+
+    CameraDiagnostics.logReport(report, (line) => logMsg(line, 'info'));
+
+    let html = `<div style="margin-bottom:6px;"><strong>Summary:</strong> ${report.summary}</div>`;
+    html += `<div style="margin-bottom:4px;"><strong>Total Video Devices:</strong> ${report.videoDevices.length} (${report.rearDevices.length} rear candidates)</div>`;
+    
+    if (report.videoDevices.length > 0) {
+      html += '<ul style="margin:4px 0 6px 16px; padding:0;">';
+      report.videoDevices.forEach(d => {
+        const badge = d.isRearCandidate ? '<span style="color:var(--accent-green);font-weight:600;">[REAR]</span>' : '<span style="color:var(--text-tertiary);">[FRONT]</span>';
+        html += `<li>${badge} ${d.label || 'Camera'} <code style="font-size:0.7rem;">(${d.deviceId})</code></li>`;
+      });
+      html += '</ul>';
+    }
+
+    if (report.probedSettings) {
+      const w = report.probedSettings.width;
+      const h = report.probedSettings.height;
+      const aspect = (w && h) ? (w / h).toFixed(2) : 'N/A';
+      html += `<div style="margin-bottom:4px;"><strong>Probed Rear Settings:</strong> ${w}×${h} (Aspect ${aspect})</div>`;
+    }
+
+    if (report.zoomSupported) {
+      html += `<div style="margin-bottom:4px; color:var(--accent-blue);"><strong>Zoom API:</strong> Supported — Min: ${report.zoomRange.min}x, Max: ${report.zoomRange.max}x, Step: ${report.zoomRange.step}</div>`;
+    } else {
+      html += `<div style="margin-bottom:4px; color:var(--text-tertiary);"><strong>Zoom API:</strong> Not exposed by browser</div>`;
+    }
+
+    if (report.webxr.cameraAccessSupported) {
+      html += `<div style="color:var(--accent-green);"><strong>WebXR XRCamera:</strong> Supported</div>`;
+    } else {
+      html += `<div style="color:var(--text-tertiary);"><strong>WebXR XRCamera:</strong> Not supported</div>`;
+    }
+
+    elements.cameraDiagOutput.innerHTML = html;
+  } catch (err) {
+    elements.cameraDiagOutput.innerHTML = `<span style="color:var(--accent-red);">Diagnostics failed: ${err.message}</span>`;
+  }
+}
+
+/* ==========================================================================
    11. Event Listeners & Bootstrapping
    ========================================================================== */
 
@@ -4182,6 +4390,22 @@ function setupEventListeners() {
       } else {
         if (elements.hudCalibrationCard) elements.hudCalibrationCard.classList.add('hidden');
       }
+    });
+  }
+
+  // Wide FOV Toggle Button in AR HUD
+  if (elements.btnToggleFov) {
+    elements.btnToggleFov.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleWideFovMode();
+    });
+  }
+
+  // Camera Hardware Diagnostics Button in Developer Drawer
+  if (elements.btnRunCameraDiag) {
+    elements.btnRunCameraDiag.addEventListener('click', (e) => {
+      e.stopPropagation();
+      runCameraHardwareDiagnostics();
     });
   }
 

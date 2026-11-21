@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>AR Distance Calculator — Precision Spatial Measurement</title>
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
   <!-- Inline theme preloader to eliminate theme flash -->
   <script>
     (function() {
@@ -308,6 +308,17 @@
               </div>
             </div>
 
+            <!-- Camera & Lens Diagnostics Card -->
+            <div class="card status-card" style="margin:0;">
+              <div class="card-title-row">
+                <h3 class="card-title" style="font-size:0.92rem;">Camera Hardware &amp; Field of View</h3>
+                <button type="button" id="btn-run-camera-diag" class="btn btn-small btn-secondary" style="font-size:0.72rem; padding:3px 10px;">🔍 Run Diagnostics</button>
+              </div>
+              <div id="camera-diag-output" style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-secondary); line-height:1.5;">
+                Click "Run Diagnostics" to inspect available rear lenses, resolutions, aspect ratios, and zoom limits.
+              </div>
+            </div>
+
             <!-- Diagnostics Log Card -->
             <div class="card log-card" style="margin:0;">
               <div class="log-header">
@@ -348,6 +359,11 @@
             <span id="hud-dist-label" class="dist-label">Y-Distance:</span>
             <span id="hud-distance-val" class="dist-val">--</span>
           </div>
+          <!-- Wide-FOV Camera Mode Toggle Pill -->
+          <button type="button" id="btn-toggle-fov" class="btn-fov-pill" title="Toggle Wide Camera Mode (4:3 Full Sensor)">
+            <span id="fov-mode-icon">🔍</span>
+            <span id="fov-mode-text">Wide FOV</span>
+          </button>
         </div>
 
         <!-- In-AR Mode Switcher & Calibration Indicator (Kept for compatibility) -->
@@ -641,6 +657,6 @@
   </div>
 
   <!-- Main Application Script with cache busting -->
-  <script type="module" src="app.js?v=29"></script>
+  <script type="module" src="app.js?v=30"></script>
 </body>
 </html>
