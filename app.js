@@ -1425,11 +1425,11 @@ function onXRFrame(time, frame) {
   state.lastProjMatrix = new Float32Array(view.projectionMatrix);
   state.lastCameraMatrix = new Float32Array(view.transform.matrix);
 
-  // Phone Tilt Telemetry (Tilt check temporarily disabled per user request)
+  // Phone Tilt Telemetry (Enforce tilt < 5.0 degrees)
   const lookDirYAbs = Math.abs(view.transform.matrix[9]);
   const tiltAngleDeg = Math.acos(Math.min(1.0, lookDirYAbs)) * (180 / Math.PI);
   state.phoneTiltDeg = tiltAngleDeg;
-  state.isPhoneLevel = true; // Temporarily unlocked
+  state.isPhoneLevel = tiltAngleDeg < 5.0;
 
   // ------------------------------------------------------------------
   // 1. Movement-Aware Recalibration: Motion & Orientation Tracking
@@ -1560,10 +1560,10 @@ function onXRFrame(time, frame) {
             if (Number.isFinite(verticalDistanceCm) && verticalDistanceCm >= 15.0 && verticalDistanceCm <= 250.0) {
               state.methodB.rawVerticalDistCm = verticalDistanceCm;
 
-              // Step 4: Collect hit-test samples into rolling 60-sample buffer
+              // Step 4: Collect hit-test samples into rolling 75-sample buffer
               state.methodB.buffer.push(verticalDistanceCm);
               state.methodB.totalAccepted++;
-              const MAX_BUFFER = 60; // 60-sample rolling buffer
+              const MAX_BUFFER = 75; // 75-sample rolling buffer (updated from 60)
               if (state.methodB.buffer.length > MAX_BUFFER) {
                 state.methodB.buffer.shift();
               }
@@ -1583,12 +1583,12 @@ function onXRFrame(time, frame) {
   }
 
   // ------------------------------------------------------------------
-  // 3. 2-Phase Pre-Scan Calibration Engine (75 frames mapping + 60 frames steady)
-  // Phase 1: User moves phone slowly over trousers in small circles to map surface (75 frames)
-  // Phase 2: User holds phone steady over trousers to calibrate distance (60 frames)
+  // 3. 2-Phase Pre-Scan Calibration Engine (125 frames mapping + 75 frames steady)
+  // Phase 1: User moves phone slowly over trousers in small circles to map surface (125 frames)
+  // Phase 2: User holds phone steady over trousers to calibrate distance (75 frames)
   // ------------------------------------------------------------------
-  const MAPPING_TARGET_FRAMES = 75;
-  const STEADY_TARGET_FRAMES = 60;
+  const MAPPING_TARGET_FRAMES = 125;
+  const STEADY_TARGET_FRAMES = 75;
   const hasValidSurface = surfaceHitFound || state.surfacePlane !== null;
 
   if (state.isSimulator) {
@@ -1779,7 +1779,7 @@ function onXRFrame(time, frame) {
   if (!state.lastMethodBLog || time - state.lastMethodBLog > 2500) {
     state.lastMethodBLog = time;
     if (state.methodB.rawVerticalDistCm !== null) {
-      logMsg(`[Method B] Raw: ${state.methodB.rawVerticalDistCm.toFixed(1)}cm | Med: ${state.methodB.medianVerticalDistCm.toFixed(1)}cm | σ: ${state.methodB.stdDevCm.toFixed(2)}cm | N: ${state.methodB.validSamplesCount}/60 | Tilt: ${state.phoneTiltDeg.toFixed(1)}° | Hit: ${state.methodB.hitAvailable ? 'OK' : 'MISSING'} | Stable: ${state.isTrackingStable ? 'YES' : 'NO'}`, 'info');
+      logMsg(`[Method B] Raw: ${state.methodB.rawVerticalDistCm.toFixed(1)}cm | Med: ${state.methodB.medianVerticalDistCm.toFixed(1)}cm | σ: ${state.methodB.stdDevCm.toFixed(2)}cm | N: ${state.methodB.validSamplesCount}/75 | Tilt: ${state.phoneTiltDeg.toFixed(1)}° | Hit: ${state.methodB.hitAvailable ? 'OK' : 'MISSING'} | Stable: ${state.isTrackingStable ? 'YES' : 'NO'}`, 'info');
     }
   }
 
@@ -1827,8 +1827,8 @@ function onXRFrame(time, frame) {
   // 4c. Update Wide-FOV Trouser Framing Guidance when Wide Mode is active
   if (state.isWideFovMode) {
     const currentDistCm = state.methodB.medianVerticalDistCm || state.methodB.rawVerticalDistCm || state.currentYDistanceCm;
-    if (state.phoneTiltDeg > 15.0) {
-      GarmentFramingOverlay.updateGuidance('Tilt camera straight down towards floor/trousers', true);
+    if (state.phoneTiltDeg >= 5.0) {
+      GarmentFramingOverlay.updateGuidance(`Level camera straight down (tilt: ${state.phoneTiltDeg.toFixed(1)}°, required: < 5°)`, true);
     } else if (Number.isFinite(currentDistCm) && currentDistCm < 45.0) {
       GarmentFramingOverlay.updateGuidance('Raise phone higher (60-90cm) to fit entire trouser in frame', true);
     } else if (!state.isTrackingStable) {
@@ -1991,8 +1991,9 @@ function updateTrackingUI(hasSurface, isStable) {
 
   const isOpenCV = state.activeMode === MODES.OPENCV_LIVE;
   const isManual = state.activeMode === MODES.MANUAL_2POINT;
+  const isLevel = state.isSimulator || state.phoneTiltDeg < 5.0;
 
-  if (hasSurface && isStable) {
+  if (hasSurface && isStable && isLevel) {
     elements.hudTrackingDot.className = 'dot green';
     elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Calibrated & steady)';
     if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Ready: Hold steady, tap Scan & Measure';
@@ -2006,14 +2007,25 @@ function updateTrackingUI(hasSurface, isStable) {
         elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
       }
     }
+  } else if (hasSurface && isStable && !isLevel) {
+    // Surface is calibrated & steady, but phone tilt is >= 5.0 degrees
+    elements.hudTrackingDot.className = 'dot amber';
+    elements.hudTrackingText.textContent = `Level Phone (${state.phoneTiltDeg.toFixed(1)}° • tilt < 5° required)`;
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = `Tilt camera straight down towards trousers (current: ${state.phoneTiltDeg.toFixed(1)}°, required: < 5°)`;
+    if (elements.btnScanTrigger) {
+      elements.btnScanTrigger.disabled = true;
+      elements.scanActionLabel.textContent = `Level Phone (${state.phoneTiltDeg.toFixed(1)}° < 5°)...`;
+      elements.stepText.textContent = `Tilt camera straight down towards trousers (< 5° tilt required)`;
+      elements.stepIcon.textContent = '📐';
+    }
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot amber';
 
     if (!isOpenCV && !isManual && !state.isSimulator) {
-      // HRNet Mode: 2-Phase Calibration Active (75 frames mapping + 60 frames steady)
+      // HRNet Mode: 2-Phase Calibration Active (125 frames mapping + 75 frames steady)
       if (!state.mappingComplete) {
-        // Phase 1: Moving phone slowly over trousers in small circles to map surface (75 frames)
-        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 75) * 100));
+        // Phase 1: Moving phone slowly over trousers in small circles to map surface (125 frames)
+        const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 125) * 100));
         elements.hudTrackingText.textContent = `Mapping surface (${mapPct}%)`;
         if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move phone slowly over trousers in small circles';
         if (elements.btnScanTrigger) {
@@ -2023,8 +2035,8 @@ function updateTrackingUI(hasSurface, isStable) {
           elements.stepIcon.textContent = '🔄';
         }
       } else {
-        // Phase 2: Holding phone steady to settle distance (60 frames)
-        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 60) * 100));
+        // Phase 2: Holding phone steady to settle distance (75 frames)
+        const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 75) * 100));
         elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
         if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
         if (elements.btnScanTrigger) {
@@ -2343,10 +2355,15 @@ function triggerScanCapture() {
     }
     return;
   }
+  // Enforce phone tilt < 5 degrees when scanning
+  if (!state.isSimulator && state.phoneTiltDeg >= 5.0) {
+    showToast(`Level phone: tilt is ${state.phoneTiltDeg.toFixed(1)}° (must be < 5.0° to scan)`);
+    return;
+  }
   hideErrorBanner();
   state.scanRequested = true;
   state.scanRequestTime = 0;
-  logMsg('Scan triggered with calibrated height: ' + (state.methodB.medianVerticalDistCm ? state.methodB.medianVerticalDistCm.toFixed(1) + 'cm' : 'N/A'), 'info');
+  logMsg('Scan triggered with calibrated height: ' + (state.methodB.medianVerticalDistCm ? state.methodB.medianVerticalDistCm.toFixed(1) + 'cm' : 'N/A') + ` | Tilt: ${state.phoneTiltDeg.toFixed(1)}°`, 'info');
 }
 
 /**
@@ -4259,10 +4276,14 @@ function setupEventListeners() {
         return;
       }
     }
-    // Block scan in HRNet mode until surface ready and phone steady (green dot)
+    // Block scan in HRNet mode until surface ready, phone steady, and tilt < 5 degrees
     if (state.activeMode === MODES.HRNET && !state.isSimulator) {
       if (!state.surfacePlane || !state.isTrackingStable) {
         showToast('Wait for green "Surface ready (Phone steady)" dot before tapping');
+        return;
+      }
+      if (state.phoneTiltDeg >= 5.0) {
+        showToast(`Level phone: tilt is ${state.phoneTiltDeg.toFixed(1)}° (must be < 5.0° to scan)`);
         return;
       }
     }

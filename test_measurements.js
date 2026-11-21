@@ -859,23 +859,23 @@ class MockRecalibrationEngine {
       this.recalibrating = true;
     }
 
-    // 3. Phase 1: Motion mapping (75 frames)
+    // 3. Phase 1: Motion mapping (125 frames)
     if (!this.mappingComplete) {
       if (isMovingSlowly) {
         this.mappingFrames++;
-        if (this.mappingFrames >= 75) {
+        if (this.mappingFrames >= 125) {
           this.mappingComplete = true;
         }
       }
     }
 
-    // 4. Phase 2: Steady hold (60 frames)
+    // 4. Phase 2: Steady hold (75 frames)
     if (this.mappingComplete && !isMovingSlowly) {
       this.steadyFrames++;
       this.buffer.push(hitHeightCm);
-      if (this.buffer.length > 60) this.buffer.shift();
+      if (this.buffer.length > 75) this.buffer.shift();
 
-      if (this.steadyFrames >= 60) {
+      if (this.steadyFrames >= 75) {
         const sorted = [...this.buffer].sort((a, b) => a - b);
         const mid = Math.floor(sorted.length / 2);
         this.medianHeight = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
@@ -889,19 +889,24 @@ class MockRecalibrationEngine {
 
 const engine = new MockRecalibrationEngine();
 
-// Phase 1: Moving slowly over trousers to map surface (75 frames)
-for (let i = 0; i < 75; i++) {
+// Phase 1: Moving slowly over trousers to map surface (125 frames)
+for (let i = 0; i < 125; i++) {
   engine.processFrame({ x: 0, y: 1.00, z: 0 }, 100.0, true);
 }
-assert.strictEqual(engine.mappingComplete, true, 'Phase 1 must complete after 75 mapping frames');
+assert.strictEqual(engine.mappingComplete, true, 'Phase 1 must complete after 125 mapping frames');
 assert.strictEqual(engine.isTrackingStable, false, 'Tracking must remain gated until Phase 2 steady hold completes');
 
-// Phase 2: Holding phone steady over trousers to calibrate distance (60 frames)
-for (let i = 0; i < 60; i++) {
+// Phase 2: Holding phone steady over trousers to calibrate distance (75 frames)
+for (let i = 0; i < 75; i++) {
   engine.processFrame({ x: 0, y: 1.00, z: 0 }, 100.0, false);
 }
-assert.strictEqual(engine.isTrackingStable, true, 'Engine must stabilize after 60 steady frames');
+assert.strictEqual(engine.isTrackingStable, true, 'Engine must stabilize after 75 steady frames');
 assert.strictEqual(engine.medianHeight, 100.0, 'Median height must calibrate to 100cm');
+
+// Shutter scan tilt check: Tilt must be < 5 degrees
+const canScanWithTilt = (isTrackingStable, tiltDeg) => isTrackingStable && tiltDeg < 5.0;
+assert.strictEqual(canScanWithTilt(engine.isTrackingStable, 6.2), false, 'Scan must be blocked when tilt >= 5 deg');
+assert.strictEqual(canScanWithTilt(engine.isTrackingStable, 3.4), true, 'Scan must be allowed when tilt < 5 deg');
 
 // Movement recalibration: User lifts camera to 115cm height (15cm height shift > 3.5cm threshold)
 engine.processFrame({ x: 0, y: 1.15, z: 0 }, 115.0, true);
@@ -909,14 +914,14 @@ assert.strictEqual(engine.isTrackingStable, false, 'Movement must immediately un
 assert.strictEqual(engine.recalibrating, true, 'Recalibrating state must be active');
 assert.strictEqual(engine.buffer.length, 0, 'Stale 100cm samples must be completely purged');
 
-// Phone held steady at 115cm height (60 steady frames to recalibrate)
-for (let i = 0; i < 60; i++) {
+// Phone held steady at 115cm height (75 steady frames to recalibrate)
+for (let i = 0; i < 75; i++) {
   engine.processFrame({ x: 0, y: 1.15, z: 0 }, 115.0, false);
 }
 assert.strictEqual(engine.isTrackingStable, true, 'Engine must restabilize at new height');
 assert.strictEqual(engine.medianHeight, 115.0, 'Recalculated height must reflect fresh 115cm height with zero 100cm lag');
 
-console.log(`✓ Acceptance Test 16 Passed: 2-Phase 60-Frame Calibration & Movement-Aware Recalibration verified`);
+console.log(`✓ Acceptance Test 16 Passed: 2-Phase 125/75-Frame Calibration, <5° Tilt Lock & Movement Recalibration verified`);
 
 console.log('\nALL MATHEMATICAL & ARCHITECTURAL ACCEPTANCE TESTS PASSED!');
 
