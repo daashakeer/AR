@@ -1346,6 +1346,15 @@ async function startARSession() {
 
     session.addEventListener('end', onSessionEnded);
 
+    // Show initial quick guidance tip
+    const arQuickTip = document.getElementById('ar-quick-tip');
+    if (arQuickTip) {
+      arQuickTip.style.display = 'inline-flex';
+      setTimeout(() => {
+        if (arQuickTip) arQuickTip.style.display = 'none';
+      }, 7000);
+    }
+
     resetToScanning();
     setAppMode(state.activeMode);
     session.requestAnimationFrame(onXRFrame);
@@ -1899,7 +1908,7 @@ function renderMethodBDiagnosticsUI() {
   }
 
   if (diagCard) {
-    diagCard.style.display = 'block';
+    diagCard.style.display = 'none'; // Hidden per user request for consumer UI
     const medEl = document.getElementById('diag-b-median');
     const depthEl = document.getElementById('diag-b-depth');
     const dispEl = document.getElementById('diag-b-disparity');
@@ -1993,31 +2002,60 @@ function updateTrackingUI(hasSurface, isStable) {
   const isManual = state.activeMode === MODES.MANUAL_2POINT;
   const isLevel = state.isSimulator || state.phoneTiltDeg < 5.0;
 
+  // Stepper UI Elements
+  const stepNode1 = document.getElementById('step-node-1');
+  const stepNode2 = document.getElementById('step-node-2');
+  const stepNode3 = document.getElementById('step-node-3');
+  const stepConn1 = document.getElementById('step-conn-1');
+  const stepConn2 = document.getElementById('step-conn-2');
+  const stepSub1 = document.getElementById('step-sub-1');
+  const stepSub2 = document.getElementById('step-sub-2');
+  const stepSub3 = document.getElementById('step-sub-3');
+  const stepIcon1 = document.getElementById('step-icon-1');
+  const stepIcon2 = document.getElementById('step-icon-2');
+  const stepIcon3 = document.getElementById('step-icon-3');
+
   if (hasSurface && isStable && isLevel) {
     elements.hudTrackingDot.className = 'dot green';
-    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Surface ready (Calibrated & steady)';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'Ready: Hold steady, tap Scan & Measure';
+    elements.hudTrackingText.textContent = isOpenCV ? 'Surface locked (Tracking live)' : isManual ? 'Surface ready (Tap to place points)' : 'Ready! Hold steady, tap Scan';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = isOpenCV ? 'Continuous OpenCV measurement active' : isManual ? 'Aim reticle & tap or click shutter' : 'All set • Tap glowing SCAN button';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = false;
       if (isManual) {
         updateManualHUDControls();
       } else {
-        elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Ready! Tap Scan & Measure';
-        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Ready! Hold steady, tap Scan & Measure';
-        elements.stepIcon.textContent = isOpenCV ? '⚡' : '📸';
+        elements.scanActionLabel.textContent = isOpenCV ? '⚡ Live Tracking Active' : 'Ready! Tap to Measure';
+        elements.stepText.textContent = isOpenCV ? 'OpenCV Live: Continuous 3D waistband tracking' : 'Step 3 of 3: Ready! Tap SCAN to measure';
+        elements.stepIcon.textContent = isOpenCV ? '⚡' : '✨';
       }
     }
+
+    // Stepper: All Completed / Ready to Scan
+    if (stepNode1) { stepNode1.className = 'stepper-step completed'; if (stepIcon1) stepIcon1.textContent = '✓'; if (stepSub1) stepSub1.textContent = 'Mapped'; }
+    if (stepConn1) stepConn1.className = 'stepper-connector filled';
+    if (stepNode2) { stepNode2.className = 'stepper-step completed'; if (stepIcon2) stepIcon2.textContent = '✓'; if (stepSub2) stepSub2.textContent = 'Steady'; }
+    if (stepConn2) stepConn2.className = 'stepper-connector filled';
+    if (stepNode3) { stepNode3.className = 'stepper-step active'; if (stepIcon3) stepIcon3.textContent = '📸'; if (stepSub3) stepSub3.textContent = 'Tap Scan'; }
+
   } else if (hasSurface && isStable && !isLevel) {
     // Surface is calibrated & steady, but phone tilt is >= 5.0 degrees
     elements.hudTrackingDot.className = 'dot amber';
     elements.hudTrackingText.textContent = `Level Phone (${state.phoneTiltDeg.toFixed(1)}° • tilt < 5° required)`;
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = `Tilt camera straight down towards trousers (current: ${state.phoneTiltDeg.toFixed(1)}°, required: < 5°)`;
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = `Tilt is ${state.phoneTiltDeg.toFixed(1)}° • Point camera flat down`;
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = true;
-      elements.scanActionLabel.textContent = `Level Phone (${state.phoneTiltDeg.toFixed(1)}° < 5°)...`;
-      elements.stepText.textContent = `Tilt camera straight down towards trousers (< 5° tilt required)`;
+      elements.scanActionLabel.textContent = `Level phone flat (< 5°)...`;
+      elements.stepText.textContent = `Step 2 of 3: Point camera flat down (current: ${state.phoneTiltDeg.toFixed(1)}°, keep < 5°)`;
       elements.stepIcon.textContent = '📐';
     }
+
+    // Stepper: Step 2 Needs Leveling
+    if (stepNode1) { stepNode1.className = 'stepper-step completed'; if (stepIcon1) stepIcon1.textContent = '✓'; if (stepSub1) stepSub1.textContent = 'Mapped'; }
+    if (stepConn1) stepConn1.className = 'stepper-connector filled';
+    if (stepNode2) { stepNode2.className = 'stepper-step active'; if (stepIcon2) stepIcon2.textContent = '📐'; if (stepSub2) stepSub2.textContent = `Tilt ${state.phoneTiltDeg.toFixed(1)}° (<5°)`; }
+    if (stepConn2) stepConn2.className = 'stepper-connector';
+    if (stepNode3) { stepNode3.className = 'stepper-step'; if (stepIcon3) stepIcon3.textContent = '3'; if (stepSub3) stepSub3.textContent = 'Tap Shutter'; }
+
   } else if (hasSurface) {
     elements.hudTrackingDot.className = 'dot amber';
 
@@ -2026,25 +2064,40 @@ function updateTrackingUI(hasSurface, isStable) {
       if (!state.mappingComplete) {
         // Phase 1: Moving phone slowly over trousers in small circles to map surface (125 frames)
         const mapPct = Math.min(100, Math.round(((state.mappingFrames || 0) / 125) * 100));
-        elements.hudTrackingText.textContent = `Mapping surface (${mapPct}%)`;
-        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move phone slowly over trousers in small circles';
+        elements.hudTrackingText.textContent = `Mapping trousers (${mapPct}%)`;
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move phone gently in small circles';
         if (elements.btnScanTrigger) {
           elements.btnScanTrigger.disabled = true;
-          elements.scanActionLabel.textContent = `Mapping surface (${mapPct}%)...`;
-          elements.stepText.textContent = `Move phone slowly over trousers to map surface (${mapPct}%)`;
+          elements.scanActionLabel.textContent = `Mapping trousers (${mapPct}%)...`;
+          elements.stepText.textContent = `Step 1 of 3: Move phone in small circles over trousers (${mapPct}%)`;
           elements.stepIcon.textContent = '🔄';
         }
+
+        // Stepper: Step 1 Active
+        if (stepNode1) { stepNode1.className = 'stepper-step active'; if (stepIcon1) stepIcon1.textContent = '1'; if (stepSub1) stepSub1.textContent = `${mapPct}%`; }
+        if (stepConn1) stepConn1.className = 'stepper-connector';
+        if (stepNode2) { stepNode2.className = 'stepper-step'; if (stepIcon2) stepIcon2.textContent = '2'; if (stepSub2) stepSub2.textContent = 'Hold still'; }
+        if (stepConn2) stepConn2.className = 'stepper-connector';
+        if (stepNode3) { stepNode3.className = 'stepper-step'; if (stepIcon3) stepIcon3.textContent = '3'; if (stepSub3) stepSub3.textContent = 'Tap Shutter'; }
+
       } else {
         // Phase 2: Holding phone steady to settle distance (75 frames)
         const settlePct = Math.min(100, Math.round(((state.steadyFrames || 0) / 75) * 100));
-        elements.hudTrackingText.textContent = `Hold steady (${settlePct}%)`;
-        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone steady over trousers to calibrate distance';
+        elements.hudTrackingText.textContent = `Locking distance (${settlePct}%)`;
+        if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold camera completely still';
         if (elements.btnScanTrigger) {
           elements.btnScanTrigger.disabled = true;
-          elements.scanActionLabel.textContent = `Stabilizing distance (${settlePct}%)...`;
-          elements.stepText.textContent = `Hold camera steady over trousers (${settlePct}%)`;
+          elements.scanActionLabel.textContent = `Stabilizing height (${settlePct}%)...`;
+          elements.stepText.textContent = `Step 2 of 3: Hold camera steady over trousers (${settlePct}%)`;
           elements.stepIcon.textContent = '⏳';
         }
+
+        // Stepper: Step 2 Active
+        if (stepNode1) { stepNode1.className = 'stepper-step completed'; if (stepIcon1) stepIcon1.textContent = '✓'; if (stepSub1) stepSub1.textContent = 'Mapped'; }
+        if (stepConn1) stepConn1.className = 'stepper-connector filled';
+        if (stepNode2) { stepNode2.className = 'stepper-step active'; if (stepIcon2) stepIcon2.textContent = '2'; if (stepSub2) stepSub2.textContent = `${settlePct}%`; }
+        if (stepConn2) stepConn2.className = 'stepper-connector';
+        if (stepNode3) { stepNode3.className = 'stepper-step'; if (stepIcon3) stepIcon3.textContent = '3'; if (stepSub3) stepSub3.textContent = 'Tap Shutter'; }
       }
     } else {
       // OpenCV / Manual / Simulator Fallbacks
@@ -2071,13 +2124,19 @@ function updateTrackingUI(hasSurface, isStable) {
   } else {
     elements.hudTrackingDot.className = 'dot red';
     elements.hudTrackingText.textContent = 'Scanning surrounding surface...';
-    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Move camera slowly over surface';
+    if (elements.hudReticleHint) elements.hudReticleHint.textContent = 'Hold phone ~75 cm over flat trousers';
     if (elements.btnScanTrigger) {
       elements.btnScanTrigger.disabled = true;
-      elements.scanActionLabel.textContent = 'Aim at surface...';
-      elements.stepText.textContent = 'Scan surface until tracking locks';
-      elements.stepIcon.textContent = '🔍';
+      elements.scanActionLabel.textContent = 'Aim at trousers on floor...';
+      elements.stepText.textContent = 'Step 1 of 3: Aim camera down at flat trousers (60–90 cm above)';
+      elements.stepIcon.textContent = '🎯';
     }
+
+    if (stepNode1) { stepNode1.className = 'stepper-step active'; if (stepIcon1) stepIcon1.textContent = '1'; if (stepSub1) stepSub1.textContent = 'Find surface'; }
+    if (stepConn1) stepConn1.className = 'stepper-connector';
+    if (stepNode2) { stepNode2.className = 'stepper-step'; if (stepIcon2) stepIcon2.textContent = '2'; if (stepSub2) stepSub2.textContent = 'Hold still'; }
+    if (stepConn2) stepConn2.className = 'stepper-connector';
+    if (stepNode3) { stepNode3.className = 'stepper-step'; if (stepIcon3) stepIcon3.textContent = '3'; if (stepSub3) stepSub3.textContent = 'Tap Shutter'; }
   }
 }
 
@@ -4427,6 +4486,16 @@ function setupEventListeners() {
     elements.btnRunCameraDiag.addEventListener('click', (e) => {
       e.stopPropagation();
       runCameraHardwareDiagnostics();
+    });
+  }
+
+  // Dismiss AR quick tip banner
+  const btnDismissTip = document.getElementById('btn-dismiss-tip');
+  const arQuickTip = document.getElementById('ar-quick-tip');
+  if (btnDismissTip && arQuickTip) {
+    btnDismissTip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      arQuickTip.style.display = 'none';
     });
   }
 

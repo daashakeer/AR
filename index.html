@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>AR Distance Calculator — Precision Spatial Measurement</title>
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
   <!-- Inline theme preloader to eliminate theme flash -->
   <script>
     (function() {
@@ -366,6 +366,40 @@
           </button>
         </div>
 
+        <!-- Interactive 3-Step Live Guidance Stepper -->
+        <div id="ar-progress-stepper" class="ar-progress-stepper">
+          <div class="stepper-step active" id="step-node-1">
+            <div class="step-num" id="step-icon-1">1</div>
+            <div class="step-desc">
+              <span class="step-title">Map Surface</span>
+              <span class="step-sub" id="step-sub-1">Move in circles</span>
+            </div>
+          </div>
+          <div class="stepper-connector" id="step-conn-1"></div>
+          <div class="stepper-step" id="step-node-2">
+            <div class="step-num" id="step-icon-2">2</div>
+            <div class="step-desc">
+              <span class="step-title">Hold Steady</span>
+              <span class="step-sub" id="step-sub-2">Flat &lt; 5&deg;</span>
+            </div>
+          </div>
+          <div class="stepper-connector" id="step-conn-2"></div>
+          <div class="stepper-step" id="step-node-3">
+            <div class="step-num" id="step-icon-3">3</div>
+            <div class="step-desc">
+              <span class="step-title">Scan</span>
+              <span class="step-sub" id="step-sub-3">Tap Shutter</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Guidance Tip -->
+        <div id="ar-quick-tip" class="ar-quick-tip">
+          <span class="tip-icon">💡</span>
+          <span class="tip-text">Hold phone <strong>60–90 cm</strong> above trousers facing straight down</span>
+          <button type="button" id="btn-dismiss-tip" class="tip-close" title="Dismiss tip">&times;</button>
+        </div>
+
         <!-- In-AR Mode Switcher & Calibration Indicator (Kept for compatibility) -->
         <div class="ar-mode-pill-bar" style="display:none;">
           <button type="button" id="btn-toggle-ar-mode" class="hud-mode-pill" title="Toggle Mode">
@@ -500,9 +534,9 @@
           </div>
         </div>
 
-        <!-- Garment Measurements (Waist, Outseam & Inseam with AR vs Depth) -->
+        <!-- Garment Measurements (Waist, Outseam & Inseam) -->
         <div class="card hero-measurement-card">
-          <div class="measurement-kicker">AI TROUSER MEASUREMENTS (AR VS DEPTH)</div>
+          <div class="measurement-kicker">CONFIRMED TROUSER SIZES</div>
           
           <div class="dual-focus-grid">
             <!-- 1. WAIST CARD -->
@@ -513,29 +547,14 @@
               </div>
               
               <div class="dual-measure-container">
-                <!-- AR Source -->
                 <div class="measure-source-row ar-source">
                   <div class="source-tag-col">
-                    <span class="source-pill ar-pill">AR</span>
-                    <span class="source-sublabel">ARCore Hit-Test</span>
+                    <span class="source-pill" style="color:var(--text-primary); font-size:0.95rem; font-weight:700;">Size</span>
+                    <span class="source-sublabel">AR Measured</span>
                   </div>
                   <div class="source-vals">
                     <span class="source-main-val" id="res-waist-ar-val">-- in</span>
                     <span class="source-sub-val" id="res-waist-ar-sub">-- cm</span>
-                  </div>
-                </div>
-
-                <div class="measure-divider"></div>
-
-                <!-- Depth Source -->
-                <div class="measure-source-row depth-source">
-                  <div class="source-tag-col">
-                    <span class="source-pill depth-pill">DEPTH</span>
-                    <span class="source-sublabel">Depth API Sensor</span>
-                  </div>
-                  <div class="source-vals">
-                    <span class="source-main-val" id="res-waist-depth-val">-- in</span>
-                    <span class="source-sub-val" id="res-waist-depth-sub">-- cm</span>
                   </div>
                 </div>
               </div>
@@ -549,29 +568,14 @@
               </div>
               
               <div class="dual-measure-container">
-                <!-- AR Source -->
                 <div class="measure-source-row ar-source">
                   <div class="source-tag-col">
-                    <span class="source-pill ar-pill">AR</span>
-                    <span class="source-sublabel">ARCore Hit-Test</span>
+                    <span class="source-pill" style="color:var(--text-primary); font-size:0.95rem; font-weight:700;">Length</span>
+                    <span class="source-sublabel">AR Measured</span>
                   </div>
                   <div class="source-vals">
                     <span class="source-main-val" id="res-outseam-ar-val">-- in</span>
                     <span class="source-sub-val" id="res-outseam-ar-sub">-- cm</span>
-                  </div>
-                </div>
-
-                <div class="measure-divider"></div>
-
-                <!-- Depth Source -->
-                <div class="measure-source-row depth-source">
-                  <div class="source-tag-col">
-                    <span class="source-pill depth-pill">DEPTH</span>
-                    <span class="source-sublabel">Depth API Sensor</span>
-                  </div>
-                  <div class="source-vals">
-                    <span class="source-main-val" id="res-outseam-depth-val">-- in</span>
-                    <span class="source-sub-val" id="res-outseam-depth-sub">-- cm</span>
                   </div>
                 </div>
               </div>
@@ -585,29 +589,14 @@
               </div>
               
               <div class="dual-measure-container">
-                <!-- AR Source -->
                 <div class="measure-source-row ar-source">
                   <div class="source-tag-col">
-                    <span class="source-pill ar-pill">AR</span>
-                    <span class="source-sublabel">ARCore Hit-Test</span>
+                    <span class="source-pill" style="color:var(--text-primary); font-size:0.95rem; font-weight:700;">Inseam</span>
+                    <span class="source-sublabel">AR Measured</span>
                   </div>
                   <div class="source-vals">
                     <span class="source-main-val" id="res-inseam-ar-val">-- in</span>
                     <span class="source-sub-val" id="res-inseam-ar-sub">-- cm</span>
-                  </div>
-                </div>
-
-                <div class="measure-divider"></div>
-
-                <!-- Depth Source -->
-                <div class="measure-source-row depth-source">
-                  <div class="source-tag-col">
-                    <span class="source-pill depth-pill">DEPTH</span>
-                    <span class="source-sublabel">Depth API Sensor</span>
-                  </div>
-                  <div class="source-vals">
-                    <span class="source-main-val" id="res-inseam-depth-val">-- in</span>
-                    <span class="source-sub-val" id="res-inseam-depth-sub">-- cm</span>
                   </div>
                 </div>
               </div>
@@ -623,6 +612,12 @@
 
           <!-- Hidden placeholders for backwards compatibility with tests and scripts -->
           <div style="display:none;" aria-hidden="true">
+            <span id="res-waist-depth-val"></span>
+            <span id="res-waist-depth-sub"></span>
+            <span id="res-outseam-depth-val"></span>
+            <span id="res-outseam-depth-sub"></span>
+            <span id="res-inseam-depth-val"></span>
+            <span id="res-inseam-depth-sub"></span>
             <span id="consumer-waist-val"></span>
             <span id="consumer-waist-sub"></span>
             <span id="consumer-outseam-val"></span>
@@ -657,6 +652,6 @@
   </div>
 
   <!-- Main Application Script with cache busting -->
-  <script type="module" src="app.js?v=31"></script>
+  <script type="module" src="app.js?v=32"></script>
 </body>
 </html>
