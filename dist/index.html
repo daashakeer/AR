@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>AR Distance Calculator — Precision Spatial Measurement</title>
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=10">
   <!-- Inline theme preloader to eliminate theme flash -->
   <script>
     (function() {
@@ -510,6 +510,35 @@
       </div>
     </div>
 
+    <!-- 2b. FULL-SCREEN WHITE LOADING SCREEN: SCANNING & FINDING SIZE -->
+    <section id="screen-loading" class="screen-loading hidden">
+      <div class="loading-content">
+        <!-- Animated Scanning Trouser Graphic -->
+        <div class="loading-scanner-graphic">
+          <div class="scanner-icon-box">
+            <svg class="scanner-trouser-icon" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 4h16v3l-2 13h-4l-2-9-2 9H6L4 7V4z"></path>
+              <path d="M4 7h16"></path>
+            </svg>
+            <div class="scanner-laser-bar"></div>
+          </div>
+        </div>
+
+        <!-- Scanning and Finding Size Title -->
+        <h2 class="loading-title">Scanning and finding the size...</h2>
+        <p class="loading-subtitle" id="loading-status-text">Detecting garment landmarks and calculating exact measurements</p>
+
+        <!-- Clean Animated Spinner -->
+        <div class="loading-spinner-ring"></div>
+
+        <!-- Reassuring Status Badge -->
+        <div class="loading-reassurance">
+          <span class="reassurance-dot"></span>
+          <span>AI measurement in progress. Just a few seconds...</span>
+        </div>
+      </div>
+    </section>
+
     <!-- 3. RESULTS & SUMMARY SCREEN -->
     <section id="screen-results" class="screen hidden">
       <header class="results-header">
@@ -652,6 +681,6 @@
   </div>
 
   <!-- Main Application Script with cache busting -->
-  <script type="module" src="app.js?v=32"></script>
+  <script type="module" src="app.js?v=33"></script>
 </body>
 </html>

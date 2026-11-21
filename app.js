@@ -292,6 +292,8 @@ const state = {
 const elements = {
   // Screens
   screenLanding: document.getElementById('screen-landing'),
+  screenLoading: document.getElementById('screen-loading'),
+  loadingStatusText: document.getElementById('loading-status-text'),
   screenResults: document.getElementById('screen-results'),
   arContainer: document.getElementById('ar-container'),
   arCanvas: document.getElementById('ar-canvas'),
@@ -1380,7 +1382,7 @@ function onSessionEnded() {
   state.hitTestSource = null;
   state.glBinding = null;
   elements.arContainer.classList.add('hidden');
-  if (state.flowState !== STATES.MEASURED) {
+  if (state.flowState !== STATES.MEASURED && state.flowState !== STATES.DETECTING) {
     elements.screenLanding.classList.remove('hidden');
   }
 }
@@ -2550,13 +2552,25 @@ async function handleOneShotFrameCapture(session, frame, view, time) {
 
     state.frozenSnapshot = snapshot;
 
+    // Transition immediately to the plain white loading screen
+    showLoadingScreen('Detecting trouser landmarks and calculating exact measurements');
+
+    // End active XR session immediately to free camera resources
+    if (state.xrSession) {
+      try {
+        state.xrSession.end().catch(() => {});
+      } catch (e) {}
+    }
+
     // 2. Dispatch to HRNet Backend for garment keypoint detection
     await dispatchToBackend(snapshot);
 
   } catch (err) {
     console.error('Frame capture error:', err);
+    hideLoadingScreen();
     hideToast();
     state.flowState = STATES.SCANNING;
+    elements.screenLanding.classList.remove('hidden');
     showErrorBanner(`Capture failed: ${err.message}`);
   }
 }
@@ -2757,16 +2771,24 @@ export function prewarmBackend() {
 }
 
 async function dispatchToBackend(snapshot) {
-  showToast('Detecting trouser landmarks...');
+  showLoadingScreen('Scanning and finding the size...');
   hideErrorBanner();
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s timeout for ZeroGPU cold start / scheduling
 
-  // If taking > 4s, update toast to inform about server wake up / GPU queue
-  const wakeNoticeTimer = setTimeout(() => {
-    showToast('Waking up Hugging Face GPU container...');
+  // Consumer friendly status progression
+  const stageTimer1 = setTimeout(() => {
+    if (elements.loadingStatusText) {
+      elements.loadingStatusText.textContent = 'Analyzing waistband, outseam & garment dimensions...';
+    }
   }, 4000);
+
+  const stageTimer2 = setTimeout(() => {
+    if (elements.loadingStatusText) {
+      elements.loadingStatusText.textContent = 'Calculating accurate measurements from surface geometry...';
+    }
+  }, 12000);
 
   try {
     let data = null;
@@ -2801,7 +2823,8 @@ async function dispatchToBackend(snapshot) {
     }
 
     clearTimeout(timeoutId);
-    clearTimeout(wakeNoticeTimer);
+    clearTimeout(stageTimer1);
+    clearTimeout(stageTimer2);
 
     if (!data || !data.ok || !Array.isArray(data.keypoints) || data.keypoints.length === 0) {
       throw new Error(data?.error || 'Empty keypoints returned by model');
@@ -2815,14 +2838,16 @@ async function dispatchToBackend(snapshot) {
 
   } catch (err) {
     clearTimeout(timeoutId);
-    clearTimeout(wakeNoticeTimer);
+    clearTimeout(stageTimer1);
+    clearTimeout(stageTimer2);
+    hideLoadingScreen();
     hideToast();
     state.flowState = STATES.SCANNING;
-
+    elements.screenLanding.classList.remove('hidden');
     if (err.name === 'AbortError') {
       showErrorBanner('Server timeout. The model server may be starting up or GPU queue busy. Please tap Retry.');
     } else {
-      showErrorBanner(`Detection error: ${err.message}`);
+      showErrorBanner(`Measurement error: ${err.message}. Please try again.`);
     }
     console.error('Detection error:', err);
   }
@@ -2896,11 +2921,13 @@ async function predictViaGradioQueue(jpegBlob, debug, signal) {
       try {
         const payload = JSON.parse(trimmed.slice(5).trim());
         if (payload.msg === 'estimation') {
-          const rank = typeof payload.rank === 'number' ? payload.rank + 1 : 1;
-          const eta = payload.rank_eta ? ` (~${Math.round(payload.rank_eta)}s)` : '';
-          showToast(`Allocating GPU (Queue #${rank}${eta})...`);
+          if (elements.loadingStatusText) {
+            elements.loadingStatusText.textContent = 'Processing garment contours...';
+          }
         } else if (payload.msg === 'process_starts') {
-          showToast('Processing keypoints with ZeroGPU...');
+          if (elements.loadingStatusText) {
+            elements.loadingStatusText.textContent = 'Measuring waist, inseam and outseam...';
+          }
         } else if (payload.msg === 'process_completed') {
           reader.cancel().catch(() => {});
           if (payload.success && payload.output?.data?.[0]) {
@@ -2909,7 +2936,7 @@ async function predictViaGradioQueue(jpegBlob, debug, signal) {
             throw new Error(payload.output.error);
           }
         } else if (payload.msg === 'queue_full') {
-          throw new Error('Hugging Face GPU queue is currently full. Try again shortly.');
+          throw new Error('Measurement server is currently busy. Please try again shortly.');
         }
       } catch (jsonErr) {
         if (jsonErr.message && !jsonErr.message.includes('Unexpected token')) {
@@ -3309,7 +3336,9 @@ function showGarmentResults(backendData, snapshot) {
     stopSimulator();
   }
 
+  hideLoadingScreen();
   elements.arContainer.classList.add('hidden');
+  elements.screenLanding.classList.add('hidden');
   elements.screenResults.classList.remove('hidden');
   window.scrollTo(0, 0);
   document.body.scrollTop = 0;
@@ -3792,6 +3821,31 @@ function hideErrorBanner() {
   if (elements.arErrorBanner) elements.arErrorBanner.classList.add('hidden');
 }
 
+/**
+ * Shows the full-screen plain white loading screen ("Scanning and finding the size...").
+ * Completely conceals camera feed and backend details from the consumer.
+ */
+function showLoadingScreen(statusMsg = 'Detecting trouser landmarks and calculating exact measurements') {
+  if (elements.screenLoading) {
+    elements.screenLoading.classList.remove('hidden');
+    if (elements.loadingStatusText && statusMsg) {
+      elements.loadingStatusText.textContent = statusMsg;
+    }
+  }
+  if (elements.arContainer) elements.arContainer.classList.add('hidden');
+  if (elements.screenLanding) elements.screenLanding.classList.add('hidden');
+  if (elements.screenResults) elements.screenResults.classList.add('hidden');
+}
+
+/**
+ * Hides the full-screen loading screen.
+ */
+function hideLoadingScreen() {
+  if (elements.screenLoading) {
+    elements.screenLoading.classList.add('hidden');
+  }
+}
+
 /* ==========================================================================
    9. Manual 2-Point AR Measurement Mode Engine
    ========================================================================== */
@@ -4104,6 +4158,7 @@ function handleSimulatorImageUpload(file) {
         timestamp: performance.now()
       };
       state.frozenSnapshot = snapshot;
+      showLoadingScreen('Scanning and finding the size...');
       dispatchToBackend(snapshot);
     };
     img.src = dataUrl;
