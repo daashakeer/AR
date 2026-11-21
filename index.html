@@ -484,50 +484,135 @@
           </div>
         </div>
 
-        <!-- 3 Essential Consumer ARCore Sized Metrics: Waist, Outseam, Inseam -->
-        <div class="card consumer-measurements-card">
-          <div class="measurement-kicker">ARCore Fit Sizes</div>
+        <!-- Garment Measurements (Waist, Outseam & Inseam with AR vs Depth) -->
+        <div class="card hero-measurement-card">
+          <div class="measurement-kicker">AI TROUSER MEASUREMENTS (AR VS DEPTH)</div>
           
-          <div class="consumer-sizes-grid">
+          <div class="dual-focus-grid">
             <!-- 1. WAIST CARD -->
-            <div class="consumer-size-card highlight">
-              <span class="size-label">Waist</span>
-              <span class="size-val" id="consumer-waist-val">-- in</span>
-              <span class="size-sub" id="consumer-waist-sub">-- cm</span>
+            <div class="dual-measure-card primary">
+              <div class="measure-header">
+                <span class="measure-title">Waist</span>
+                <span class="measure-badge formula-badge">Formula: (width + 1) &times; 2</span>
+              </div>
+              
+              <div class="dual-measure-container">
+                <!-- AR Source -->
+                <div class="measure-source-row ar-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill ar-pill">AR</span>
+                    <span class="source-sublabel">ARCore Hit-Test</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-waist-ar-val">-- in</span>
+                    <span class="source-sub-val" id="res-waist-ar-sub">-- cm</span>
+                  </div>
+                </div>
+
+                <div class="measure-divider"></div>
+
+                <!-- Depth Source -->
+                <div class="measure-source-row depth-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill depth-pill">DEPTH</span>
+                    <span class="source-sublabel">Depth API Sensor</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-waist-depth-val">-- in</span>
+                    <span class="source-sub-val" id="res-waist-depth-sub">-- cm</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- 2. OUTSEAM CARD -->
-            <div class="consumer-size-card">
-              <span class="size-label">Outseam</span>
-              <span class="size-val" id="consumer-outseam-val">-- in</span>
-              <span class="size-sub" id="consumer-outseam-sub">-- cm</span>
+            <div class="dual-measure-card">
+              <div class="measure-header">
+                <span class="measure-title">Outseam</span>
+                <span class="measure-badge">Side Seam (Waist to Hem)</span>
+              </div>
+              
+              <div class="dual-measure-container">
+                <!-- AR Source -->
+                <div class="measure-source-row ar-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill ar-pill">AR</span>
+                    <span class="source-sublabel">ARCore Hit-Test</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-outseam-ar-val">-- in</span>
+                    <span class="source-sub-val" id="res-outseam-ar-sub">-- cm</span>
+                  </div>
+                </div>
+
+                <div class="measure-divider"></div>
+
+                <!-- Depth Source -->
+                <div class="measure-source-row depth-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill depth-pill">DEPTH</span>
+                    <span class="source-sublabel">Depth API Sensor</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-outseam-depth-val">-- in</span>
+                    <span class="source-sub-val" id="res-outseam-depth-sub">-- cm</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- 3. INSEAM CARD -->
-            <div class="consumer-size-card">
-              <span class="size-label">Inseam</span>
-              <span class="size-val" id="consumer-inseam-val">-- in</span>
-              <span class="size-sub" id="consumer-inseam-sub">-- cm</span>
+            <div class="dual-measure-card">
+              <div class="measure-header">
+                <span class="measure-title">Inseam</span>
+                <span class="measure-badge">Inner Leg (Crotch to Hem)</span>
+              </div>
+              
+              <div class="dual-measure-container">
+                <!-- AR Source -->
+                <div class="measure-source-row ar-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill ar-pill">AR</span>
+                    <span class="source-sublabel">ARCore Hit-Test</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-inseam-ar-val">-- in</span>
+                    <span class="source-sub-val" id="res-inseam-ar-sub">-- cm</span>
+                  </div>
+                </div>
+
+                <div class="measure-divider"></div>
+
+                <!-- Depth Source -->
+                <div class="measure-source-row depth-source">
+                  <div class="source-tag-col">
+                    <span class="source-pill depth-pill">DEPTH</span>
+                    <span class="source-sublabel">Depth API Sensor</span>
+                  </div>
+                  <div class="source-vals">
+                    <span class="source-main-val" id="res-inseam-depth-val">-- in</span>
+                    <span class="source-sub-val" id="res-inseam-depth-sub">-- cm</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
           <!-- Rescan Trousers Action Button -->
           <div class="export-actions">
             <button id="btn-new-measure" class="btn btn-primary btn-large">
-              <span>Scan Another Trouser</span>
+              <span>Rescan Trousers</span>
             </button>
           </div>
 
           <!-- Hidden placeholders for backwards compatibility with tests and scripts -->
           <div style="display:none;" aria-hidden="true">
-            <span id="res-waist-ar-val"></span>
-            <span id="res-waist-ar-sub"></span>
-            <span id="res-waist-depth-val"></span>
-            <span id="res-waist-depth-sub"></span>
-            <span id="res-outseam-ar-val"></span>
-            <span id="res-outseam-ar-sub"></span>
-            <span id="res-outseam-depth-val"></span>
-            <span id="res-outseam-depth-sub"></span>
+            <span id="consumer-waist-val"></span>
+            <span id="consumer-waist-sub"></span>
+            <span id="consumer-outseam-val"></span>
+            <span id="consumer-outseam-sub"></span>
+            <span id="consumer-inseam-val"></span>
+            <span id="consumer-inseam-sub"></span>
             <span id="res-waist-width"></span>
             <span id="res-waist-width-sub"></span>
             <span id="res-waist-circ"></span>
@@ -547,6 +632,8 @@
             <span id="res-p2-coords"></span>
             <div id="res-notices-container"><ul id="res-notices-list"></ul></div>
           </div>
+
+          <div class="accuracy-tag">&#10003; Directly measured via AR hardware surface geometry + HRNet keypoints</div>
         </div>
       </main>
     </section>
@@ -554,6 +641,6 @@
   </div>
 
   <!-- Main Application Script with cache busting -->
-  <script type="module" src="app.js?v=28"></script>
+  <script type="module" src="app.js?v=29"></script>
 </body>
 </html>

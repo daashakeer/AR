@@ -370,6 +370,10 @@ const elements = {
   resOutseamArSub: document.getElementById('res-outseam-ar-sub'),
   resOutseamDepthVal: document.getElementById('res-outseam-depth-val'),
   resOutseamDepthSub: document.getElementById('res-outseam-depth-sub'),
+  resInseamArVal: document.getElementById('res-inseam-ar-val'),
+  resInseamArSub: document.getElementById('res-inseam-ar-sub'),
+  resInseamDepthVal: document.getElementById('res-inseam-depth-val'),
+  resInseamDepthSub: document.getElementById('res-inseam-depth-sub'),
   resWaistWidth: document.getElementById('res-waist-width'),
   resWaistWidthSub: document.getElementById('res-waist-width-sub'),
   resWaistCirc: document.getElementById('res-waist-circ'),
@@ -1805,9 +1809,136 @@ function onXRFrame(time, frame) {
  * 7. Stability status (Stable / Calibrating / Level Phone / Hold Steady)
  */
 function renderMethodBDiagnosticsUI() {
-  // Hide in-AR tracking and depth validation card for clean consumer experience
-  const existing = document.getElementById('hud-method-b-diag');
-  if (existing) existing.style.display = 'none';
+  if (state.flowState !== STATES.SCANNING) {
+    const existing = document.getElementById('hud-method-b-diag');
+    if (existing) existing.style.display = 'none';
+    return;
+  }
+
+  let diagCard = document.getElementById('hud-method-b-diag');
+  if (!diagCard && elements.arOverlay) {
+    diagCard = document.createElement('div');
+    diagCard.id = 'hud-method-b-diag';
+    diagCard.className = 'hud-calib-card';
+    diagCard.style.cssText = 'position:absolute; top:66px; left:12px; right:12px; padding:10px 14px; background:rgba(10,16,28,0.95); border:1.5px solid rgba(0,229,255,0.45); border-radius:12px; pointer-events:none; z-index:15; box-shadow:0 6px 20px rgba(0,0,0,0.65);';
+    diagCard.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:4px; border-bottom:1px solid rgba(255,255,255,0.12);">
+        <span style="font-family:monospace; font-size:0.75rem; font-weight:800; color:#00e5ff; letter-spacing:0.5px;">📐 ARCORE TRACKING &amp; DEPTH VALIDATION</span>
+        <span id="diag-b-status-badge" class="badge checking" style="font-size:0.68rem; padding:2px 8px; border-radius:10px;">SAMPLING</span>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; text-align:center;">
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">AR Tracking</div>
+          <div id="diag-b-median" style="font-size:0.86rem; font-weight:800; color:#00e5ff; font-family:monospace;">-- cm</div>
+        </div>
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Depth Sensor</div>
+          <div id="diag-b-depth" style="font-size:0.86rem; font-weight:800; color:#a3e635; font-family:monospace;">-- cm</div>
+        </div>
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Disparity (&Delta;)</div>
+          <div id="diag-b-disparity" style="font-size:0.86rem; font-weight:800; color:#ffe600; font-family:monospace;">-- cm</div>
+        </div>
+        <div>
+          <div style="font-size:0.62rem; color:#8ea0b4; text-transform:uppercase; font-weight:600;">Samples (Std)</div>
+          <div id="diag-b-samples" style="font-size:0.86rem; font-weight:800; color:#fff; font-family:monospace;">0 / 60</div>
+        </div>
+      </div>
+      <div style="margin-top:6px; font-size:0.72rem; color:#c7d6e8; display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.08); padding-top:4px;">
+        <span>Tilt: <strong id="diag-b-tilt" style="color:#fff;">0.0°</strong></span>
+        <span>Floor Validation: <strong id="diag-b-depth-val" style="color:#00e676;">Checking</strong></span>
+        <span>Status: <strong id="diag-b-stability" style="color:#ffb300;">Stabilizing</strong></span>
+      </div>
+    `;
+    elements.arOverlay.appendChild(diagCard);
+  }
+
+  if (diagCard) {
+    diagCard.style.display = 'block';
+    const medEl = document.getElementById('diag-b-median');
+    const depthEl = document.getElementById('diag-b-depth');
+    const dispEl = document.getElementById('diag-b-disparity');
+    const sampEl = document.getElementById('diag-b-samples');
+    const tiltEl = document.getElementById('diag-b-tilt');
+    const dValEl = document.getElementById('diag-b-depth-val');
+    const stabEl = document.getElementById('diag-b-stability');
+    const badgeEl = document.getElementById('diag-b-status-badge');
+
+    const b = state.methodB;
+    const dv = state.depthValidation;
+
+    if (medEl) medEl.textContent = b.medianVerticalDistCm !== null ? `${b.medianVerticalDistCm.toFixed(1)} cm` : '-- cm';
+    if (depthEl) depthEl.textContent = dv && dv.depthVerticalCm !== null ? `${dv.depthVerticalCm.toFixed(1)} cm` : '--';
+    if (dispEl) {
+      if (dv && dv.disparityCm !== null) {
+        dispEl.textContent = `${dv.disparityCm.toFixed(1)} cm`;
+        dispEl.style.color = dv.disparityCm <= 4.5 ? '#00e676' : '#ff9100';
+      } else {
+        dispEl.textContent = '-- cm';
+        dispEl.style.color = '#ffe600';
+      }
+    }
+    if (sampEl) {
+      const stdStr = b.validSamplesCount >= 2 ? ` (±${b.stdDevCm.toFixed(1)})` : '';
+      sampEl.textContent = `${b.validSamplesCount}/60${stdStr}`;
+    }
+    if (tiltEl) {
+      tiltEl.textContent = `${state.phoneTiltDeg.toFixed(1)}°`;
+      tiltEl.style.color = state.isPhoneLevel ? '#00e676' : '#ff9100';
+    }
+    if (dValEl) {
+      if (dv && dv.isValidated) {
+        dValEl.textContent = `Verified (diff ${dv.disparityCm.toFixed(1)}cm)`;
+        dValEl.style.color = '#00e676';
+      } else if (dv && dv.available) {
+        dValEl.textContent = `Disparity (${dv.disparityCm !== null ? dv.disparityCm.toFixed(1) + 'cm' : 'calculating'})`;
+        dValEl.style.color = '#ff9100';
+      } else {
+        dValEl.textContent = 'Depth Sensor Active';
+        dValEl.style.color = '#00e5ff';
+      }
+    }
+    if (stabEl) {
+      let stabText = 'Stabilizing...';
+      let stabColor = '#ffb300';
+      if (state.isTrackingStable) {
+        stabText = dv && dv.isValidated ? 'Locked & Verified' : 'Locked & Stable';
+        stabColor = '#00e676';
+      } else if (!b.hitAvailable) {
+        stabText = 'No Horizontal Floor';
+        stabColor = '#ff5252';
+      } else if (b.validSamplesCount < 30) {
+        stabText = `Sampling (${b.validSamplesCount}/30)`;
+        stabColor = '#ffb300';
+      } else if (!state.isPhoneLevel) {
+        stabText = `Level Phone (${state.phoneTiltDeg.toFixed(1)}°)`;
+        stabColor = '#ff9100';
+      } else if (state.camMovement >= 0.012) {
+        stabText = 'Hold Steady';
+        stabColor = '#ffb300';
+      }
+      stabEl.textContent = stabText;
+      stabEl.style.color = stabColor;
+    }
+    if (badgeEl) {
+      if (state.isTrackingStable && dv && dv.isValidated) {
+        badgeEl.textContent = 'VERIFIED';
+        badgeEl.className = 'badge success';
+      } else if (state.isTrackingStable) {
+        badgeEl.textContent = 'STABLE';
+        badgeEl.className = 'badge success';
+      } else if (b.hitAvailable && b.validSamplesCount >= 10) {
+        badgeEl.textContent = 'CONVERGING';
+        badgeEl.className = 'badge checking';
+      } else if (b.hitAvailable) {
+        badgeEl.textContent = 'SAMPLING';
+        badgeEl.className = 'badge checking';
+      } else {
+        badgeEl.textContent = 'NO HIT';
+        badgeEl.className = 'badge error';
+      }
+    }
+  }
 }
 
 function updateTrackingUI(hasSurface, isStable) {
@@ -3070,7 +3201,7 @@ function showGarmentResults(backendData, snapshot) {
   updateCard(elements.resHemWidth, elements.resHemWidthSub, m.hem_width);
 
   // ------------------------------------------------------------------
-  // Consumer ARCore Measurements: Waist (whole in), Outseam (0.5-in), Inseam (0.5-in)
+  // Dual-Source Garment Metrics (Waist, Outseam & Inseam: AR vs Depth)
   // ------------------------------------------------------------------
   const arHeight = snapshot?.arHeightM || (state.methodB?.medianVerticalDistCm ? state.methodB.medianVerticalDistCm / 100 : null) || 1.05;
   const depthHeight = snapshot?.depthHeightM || (state.depthValidation?.depthVerticalCm ? state.depthValidation.depthVerticalCm / 100 : null);
@@ -3088,7 +3219,7 @@ function showGarmentResults(backendData, snapshot) {
     if (elements.consumerWaistSub) elements.consumerWaistSub.textContent = `${waistCm_AR.toFixed(1)} cm`;
 
     if (elements.resWaistArVal) elements.resWaistArVal.textContent = `${wholeWaist_AR} in`;
-    if (elements.resWaistArSub) elements.resWaistArSub.textContent = `${waistCm_AR.toFixed(1)} cm`;
+    if (elements.resWaistArSub) elements.resWaistArSub.textContent = `${waistCm_AR.toFixed(1)} cm (exact: ${waistIn_AR.toFixed(1)}")`;
 
     if (hasValidDepth && depthScaleRatio !== null) {
       const rawWaistIn_Depth = rawWaistIn_AR * depthScaleRatio;
@@ -3097,7 +3228,7 @@ function showGarmentResults(backendData, snapshot) {
       const waistCm_Depth = waistIn_Depth * 2.54;
 
       if (elements.resWaistDepthVal) elements.resWaistDepthVal.textContent = `${wholeWaist_Depth} in`;
-      if (elements.resWaistDepthSub) elements.resWaistDepthSub.textContent = `${waistCm_Depth.toFixed(1)} cm`;
+      if (elements.resWaistDepthSub) elements.resWaistDepthSub.textContent = `${waistCm_Depth.toFixed(1)} cm (exact: ${waistIn_Depth.toFixed(1)}")`;
     } else {
       if (elements.resWaistDepthVal) elements.resWaistDepthVal.textContent = '-- in';
       if (elements.resWaistDepthSub) elements.resWaistDepthSub.textContent = 'Depth sensor unavailable';
@@ -3111,7 +3242,7 @@ function showGarmentResults(backendData, snapshot) {
     if (elements.resWaistDepthSub) elements.resWaistDepthSub.textContent = 'Not detected';
   }
 
-  // 2. OUTSEAM: ARCore size, rounded to nearest 0.5 (e.g. 30, 30.5, 40, 40.5)
+  // 2. OUTSEAM: AR vs Depth, rounded to nearest 0.5 (e.g. 30, 30.5, 40, 40.5)
   if (m.outseam && m.outseam.valid) {
     const outseamIn_AR = m.outseam.distInches;
     const roundedOutseam_AR = Math.round(outseamIn_AR * 2) / 2;
@@ -3122,7 +3253,7 @@ function showGarmentResults(backendData, snapshot) {
     if (elements.consumerOutseamSub) elements.consumerOutseamSub.textContent = `${outseamCm_AR.toFixed(1)} cm`;
 
     if (elements.resOutseamArVal) elements.resOutseamArVal.textContent = outseamStr_AR;
-    if (elements.resOutseamArSub) elements.resOutseamArSub.textContent = `${m.outseam.distCm.toFixed(1)} cm`;
+    if (elements.resOutseamArSub) elements.resOutseamArSub.textContent = `${m.outseam.distCm.toFixed(1)} cm (exact: ${outseamIn_AR.toFixed(1)}")`;
 
     if (hasValidDepth && depthScaleRatio !== null) {
       const outseamIn_Depth = outseamIn_AR * depthScaleRatio;
@@ -3131,7 +3262,7 @@ function showGarmentResults(backendData, snapshot) {
       const outseamCm_Depth = roundedOutseam_Depth * 2.54;
 
       if (elements.resOutseamDepthVal) elements.resOutseamDepthVal.textContent = outseamStr_Depth;
-      if (elements.resOutseamDepthSub) elements.resOutseamDepthSub.textContent = `${outseamCm_Depth.toFixed(1)} cm`;
+      if (elements.resOutseamDepthSub) elements.resOutseamDepthSub.textContent = `${(m.outseam.distCm * depthScaleRatio).toFixed(1)} cm (exact: ${outseamIn_Depth.toFixed(1)}")`;
     } else {
       if (elements.resOutseamDepthVal) elements.resOutseamDepthVal.textContent = '-- in';
       if (elements.resOutseamDepthSub) elements.resOutseamDepthSub.textContent = 'Depth sensor unavailable';
@@ -3145,7 +3276,7 @@ function showGarmentResults(backendData, snapshot) {
     if (elements.resOutseamDepthSub) elements.resOutseamDepthSub.textContent = 'Not detected';
   }
 
-  // 3. INSEAM: ARCore size, rounded to nearest 0.5 (e.g. 30, 30.5, 31, 31.5)
+  // 3. INSEAM: AR vs Depth, rounded to nearest 0.5 (e.g. 30, 30.5, 31, 31.5)
   if (m.inseam && m.inseam.valid) {
     const inseamIn_AR = m.inseam.distInches;
     const roundedInseam_AR = Math.round(inseamIn_AR * 2) / 2;
@@ -3155,11 +3286,31 @@ function showGarmentResults(backendData, snapshot) {
     if (elements.consumerInseamVal) elements.consumerInseamVal.textContent = inseamStr_AR;
     if (elements.consumerInseamSub) elements.consumerInseamSub.textContent = `${inseamCm_AR.toFixed(1)} cm`;
 
+    if (elements.resInseamArVal) elements.resInseamArVal.textContent = inseamStr_AR;
+    if (elements.resInseamArSub) elements.resInseamArSub.textContent = `${m.inseam.distCm.toFixed(1)} cm (exact: ${inseamIn_AR.toFixed(1)}")`;
+
     if (elements.resInseam) elements.resInseam.textContent = inseamStr_AR;
     if (elements.resInseamSub) elements.resInseamSub.textContent = `${inseamCm_AR.toFixed(1)} cm`;
+
+    if (hasValidDepth && depthScaleRatio !== null) {
+      const inseamIn_Depth = inseamIn_AR * depthScaleRatio;
+      const roundedInseam_Depth = Math.round(inseamIn_Depth * 2) / 2;
+      const inseamStr_Depth = (roundedInseam_Depth % 1 === 0 ? roundedInseam_Depth.toFixed(0) : roundedInseam_Depth.toFixed(1)) + ' in';
+      const inseamCm_Depth = roundedInseam_Depth * 2.54;
+
+      if (elements.resInseamDepthVal) elements.resInseamDepthVal.textContent = inseamStr_Depth;
+      if (elements.resInseamDepthSub) elements.resInseamDepthSub.textContent = `${(m.inseam.distCm * depthScaleRatio).toFixed(1)} cm (exact: ${inseamIn_Depth.toFixed(1)}")`;
+    } else {
+      if (elements.resInseamDepthVal) elements.resInseamDepthVal.textContent = '-- in';
+      if (elements.resInseamDepthSub) elements.resInseamDepthSub.textContent = 'Depth sensor unavailable';
+    }
   } else {
     if (elements.consumerInseamVal) elements.consumerInseamVal.textContent = '--';
     if (elements.consumerInseamSub) elements.consumerInseamSub.textContent = m.inseam?.reason || 'Not detected';
+    if (elements.resInseamArVal) elements.resInseamArVal.textContent = '--';
+    if (elements.resInseamArSub) elements.resInseamArSub.textContent = m.inseam?.reason || 'Not detected';
+    if (elements.resInseamDepthVal) elements.resInseamDepthVal.textContent = '--';
+    if (elements.resInseamDepthSub) elements.resInseamDepthSub.textContent = 'Not detected';
     if (elements.resInseam) elements.resInseam.textContent = '--';
     if (elements.resInseamSub) elements.resInseamSub.textContent = m.inseam?.reason || 'Not detected';
   }
